@@ -236,14 +236,128 @@
 4. **Redcomponent-DB im Text** — muss zu comdare-DB umbenannt werden (User-Entscheidung)
 5. **15+ bib-Eintraege werden im Text nicht zitiert** (DuckDB, PG, CH, Cassandra, MongoDB) — fuer zukuenftige Sektionen vorbereitet
 
-## Naechste Schritte (PRIORISIERT, ab Session 3)
+## Session 3 (Kontext 3, 2026-02-16 ~23:30 UTC): Dual-Pipeline + Architektur-Redesign
 
-1. **Agent a291b1d Ergebnis abholen** (Quellen-Webrecherche)
-2. **INITIAL COMMIT + PUSH** auf GitHub + GitLab (alle Fixes + Kartografie)
-3. **CI PIPELINE DUAL:** LaTeX-Kompilierung + DB-Test-Pipeline einrichten
-4. **Phase 2 Inhalt:** Ungenutzte bib-Eintraege im Text einarbeiten (DuckDB, Cassandra, etc.)
-5. **Redcomponent-DB → comdare-DB** Entscheidung einholen
-6. **MESSSYSTEM:** Basierend auf konsolidierter EN-Version aufbauen
+### Was wurde gemacht
+
+#### 1. Bibliographie-Verifikation KOMPLETT (Agent a291b1d)
+- **59/59 Eintraege verifiziert — 0 kaputte URLs, 0 Inhaltsfehler**
+- 46/46 direkte URLs = HTTP 200
+- 4/4 DOIs korrekt aufgeloest (302→ACM/IEEE)
+- 9/9 akademische Papers ohne URL via Web-Suche bestaetigt
+- Ergebnisse in `sessions/20260216-kartografie-doku-tex.md` Sektion H dokumentiert
+
+#### 2. Dual-Pipeline .gitlab-ci.yml fertig
+- **Pipeline 1 (LaTeX):** Auto-Trigger auf `docs/**/*.tex`, `docs/**/*.bib`, `docs/**/*.cls`, `docs/**/*.bst`
+  - Image: `texlive/texlive:latest`
+  - Triple-Pass Build: pdflatex → bibtex → pdflatex × 2
+  - Artifact: `docs/doku.pdf` (30d)
+  - Warnings/Undefined Refs/Missing Citations Summary im Log
+- **Pipeline 2 (DB-Experiment):** ALLE Jobs `when: manual`
+  - Bestehende 11 Stages unveraendert
+  - Image: `alpine/k8s:1.34.0`
+  - YAML-Anchors fuer experiment-default
+
+#### 3. SSH Config gefixt
+- `ProxyJump pve1` zu `gitlab-push` Host hinzugefuegt
+- `ssh -T gitlab-push` = "Welcome to GitLab, @root!" (funktioniert!)
+- GitLab Push laeuft aber SEHR LANGSAM durch ProxyJump (Timeout)
+
+#### 4. K8s Produktions-DB Reconnaissance (READ-ONLY!)
+
+| System | Namespace | Pods | Storage | Service-IP | Ports |
+|--------|-----------|------|---------|------------|-------|
+| CockroachDB | cockroach-operator-system | 4/4 | 125Gi×4=500Gi | 10.99.220.209 | 26257(SQL), 8080(UI) |
+| PostgreSQL HA | databases | 4/4 | 50Gi×4=200Gi | 10.101.101.119(LB), 10.106.148.251(Primary) | 5432 |
+| Redis Cluster | redis | 4/4 | 25Gi×4=100Gi | 10.106.48.77(Standalone) | 6379, 16379 |
+| Redis GitLab | gitlab | 2/1(!) | 5Gi×4=20Gi | 10.108.176.157 | 6379 |
+| Kafka (Strimzi) | kafka | 4+3=7 | 50Gi×4+10Gi×3=230Gi | 10.109.224.239(Bootstrap) | 9091-9093 |
+| MinIO | minio | 4/4 | Direct Disk | 10.0.90.55(LB) | 9000, 9001 |
+| **TOTAL Longhorn** | | **23 PVCs** | | **1.050 Gi** | |
+
+**NICHT im Cluster:** MariaDB, ClickHouse, MongoDB, DuckDB
+
+#### 5. Architektur-Redesign (User-Anforderungen)
+
+### KRITISCHE USER-ANFORDERUNGEN (Session 3)
+
+#### A. Sicherheitsarchitektur: Labor vs Produktion
+- **ALLE DBs im Cluster = PRODUKTIONSDATEN!** Labor noch NICHT getrennt
+- **Loesung: SEPARATE SCHEMATA** auf bestehenden Prod-DBs
+- **Labor-User** ueber Samba AD anlegen (LDAP-Auth fuer alle DBs)
+- **Test-Schemata nach jedem Lauf zuruecksetzen** (Reset auf Null)
+- **Kundendaten bleiben UNVERAENDERT** fuer alle Datenbanken!
+- **Regel:** Integrationstest-User darf NUR auf eigene Schemata zugreifen
+
+#### B. C++ Testprogramm (statt Python) — BEGRUENDUNG
+- **Cluster-Hardware: Intel N97** (Alder Lake-N, 4C/4T, max 3.6 GHz, passiv)
+- **Python-Overhead auf N97 ZU DEUTLICH sichtbar** — verfaelscht Messergebnisse
+- **C++ Vorteile:** std::chrono::steady_clock, kein GC/GIL, deterministisch
+- **Praezise Zeitmessungen** sind PFLICHT fuer die Forschungsarbeit
+- Kompilierung ueber BuildSystem (cd-buildsystem)
+- Artefakte im MinIO buildsystem-artifact Cache
+
+#### C. 3-Pipeline-Architektur (ERWEITERT!)
+1. **Pipeline 1: LaTeX** (automatisch bei .tex/.bib) — FERTIG
+2. **Pipeline 2: C++ Kompilierung** (automatisch bei Code-Aenderungen)
+   - Smoke Tests
+   - Umfangreiche Trocken-Test-Suite (Dry-Run ohne DB)
+   - Artefakt → MinIO buildsystem-artifact Cache
+3. **Pipeline 3: Testintegration** (MANUELL)
+   - Holt kompiliertes C++ Binary aus MinIO Cache
+   - Fuehrt Forschungs-Experiment durch (verschiedene Datentypen + Parameter)
+   - Loggt Metriken an Grafana
+
+#### D. Grafana-Service im K8s
+- **NEU:** Grafana muss auf dem K8s Cluster deployed werden
+- C++ Applikation loggt Werte direkt an Grafana (via Prometheus/InfluxDB)
+- Echtzeit-Monitoring der Experiment-Laeufe
+
+#### E. Netzwerk-Interfaces
+- **Multiple Netzwerk-Interfaces** zu ALLEN HA-Datenbanken unter Test
+- Jede DB hat eigene Service-IPs (siehe Tabelle oben)
+- C++ Programm muss zu allen gleichzeitig verbinden koennen
+
+#### F. Schema-Isolation (Detail-Design)
+
+| Datenbank | Prod-Schema | Labor-Schema | Reset-Methode |
+|-----------|-------------|-------------|---------------|
+| PostgreSQL | public | dedup_lab | DROP SCHEMA dedup_lab CASCADE; CREATE SCHEMA dedup_lab; |
+| CockroachDB | defaultdb | dedup_lab | DROP DATABASE dedup_lab; CREATE DATABASE dedup_lab; |
+| Kafka | prod-topics | dedup-lab-* | kafka-topics --delete --topic 'dedup-lab-*' |
+| MinIO | prod-buckets | dedup-lab-* | mc rb --force minio/dedup-lab-*; mc mb minio/dedup-lab-U0 |
+| Redis | db0 (prod) | db15 (lab) | FLUSHDB auf db15 |
+
+#### G. Samba AD Labor-User (TODO)
+
+```
+# Auf Samba AD Controller anlegen:
+samba-tool user add dedup-lab ' [CLUSTER-PW-REDACTED]' --description="Dedup Research Lab User"
+samba-tool group addmembers "Database Admins" dedup-lab  # NICHT! Nur DB-Lab-Rechte!
+# Separate Gruppe:
+samba-tool group add "Research Lab"
+samba-tool group addmembers "Research Lab" dedup-lab
+```
+
+### Attention Items aus Reconnaissance
+1. **redis-gitlab-1** stuck in Terminating (node talos-5x2-s49)
+2. **PostgreSQL pod-1/pod-2** beide auf talos-qkr-yc0 (kein Anti-Affinity)
+3. **Strimzi Operator** 10 Restarts, Entity Operator 25 Restarts
+4. **MinIO = Direct Disk** (kein Longhorn, kein Snapshot-Backup)
+
+---
+
+## Naechste Schritte (PRIORISIERT, Session 3+)
+
+1. **[IN PROGRESS]** GitLab Push (Timeout — SSH ProxyJump langsam, muss retried werden)
+2. **[TODO]** Samba AD Labor-User + Gruppe "Research Lab" anlegen
+3. **[TODO]** Schema-Isolation auf allen Prod-DBs einrichten (separate Schemata/Databases)
+4. **[TODO]** Grafana-Service im K8s deployen (Metriken-Dashboard)
+5. **[TODO]** C++ Testprogramm Grundgeruest: DB-Konnektoren, Schema-Reset, Metriken-Push
+6. **[TODO]** Pipeline 2 (C++ Kompilierung) in .gitlab-ci.yml hinzufuegen
+7. **[TODO]** Pipeline 3 (Testintegration) MANUELL in .gitlab-ci.yml einrichten
+8. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB)
+9. **[SPAETER]** MariaDB/ClickHouse im Cluster deployen (fehlen noch)
 
 ## Technische Notizen
 

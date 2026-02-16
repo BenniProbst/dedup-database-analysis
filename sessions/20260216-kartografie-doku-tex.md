@@ -319,10 +319,37 @@ Die folgenden bib-Eintraege werden NIRGENDWO im Text zitiert (sind aber in doku.
 
 ---
 
-## H. NAECHSTE SCHRITTE (PRIORISIERT)
+## H. BIBLIOGRAPHIE-VERIFIKATION (Agent a291b1d, 2026-02-16 ~21:18 UTC)
 
-1. **[LAEUFT]** Quellen-Webrecherche (Agent a291b1d verifiziert alle URLs)
-2. **[NAECHSTES]** Phase 1 Fixes ausfuehren (doku.tex ersetzen, Artefakte bereinigen, bib mergen)
-3. **[DANN]** Initial Commit + Push (GitHub + GitLab)
-4. **[DANN]** Dual CI-Pipeline einrichten (LaTeX + DB-Test)
-5. **[SPAETER]** Phase 2 inhaltliche Erweiterung starten
+**Ergebnis: ALLE 59 Eintraege verifiziert — 0 kaputte URLs, 0 Inhaltsfehler!**
+
+| Kategorie | Anzahl |
+|-----------|--------|
+| URLs mit HTTP 200 | 46/46 |
+| DOIs korrekt aufgeloest (302→Publisher) | 4/4 |
+| Akademische Papers verifiziert (ohne URL) | 9/9 |
+| **Kaputte URLs** | **0** |
+| **Inhalts-Mismatches** | **0** |
+
+### Hinweise:
+- PostgreSQL "current" URLs zeigen auf v18 (aktuell stabil) — korrektes Verhalten
+- Cassandra "latest" zeigt auf v5.0 — korrektes Verhalten
+- Longhorn "latest" zeigt auf v1.11.0 — korrektes Verhalten
+- `Bhagwat2009` nutzt Mirror-URL (shiftleft.com) da HP Labs decommissioned — Mirror lebt
+- `DuckDBStorageInternals`: Seitentitel "Storage Versions and Format" statt "Storage Internals" — kosmetisch
+
+---
+
+## I. NAECHSTE SCHRITTE (PRIORISIERT, aktualisiert Session 3)
+
+1. **[DONE]** Quellen-Webrecherche: 59/59 URLs verifiziert
+2. **[DONE]** Phase 1 Fixes: doku.tex ersetzt, Artefakte bereinigt, bib gemerged
+3. **[DONE]** Initial Commit + Push GitHub (fa9d890)
+4. **[DONE]** Dual CI-Pipeline: LaTeX auto + DB-Experiment manuell
+5. **[IN PROGRESS]** GitLab Push (SSH ProxyJump gefixt, Push laeuft)
+6. **[NAECHSTES]** Phase 2 inhaltliche Erweiterung starten:
+   - DuckDB als Column-Store mit FSST-Compression
+   - Cassandra mit LSM-Tree Compaction
+   - MongoDB mit WiredTiger Compression
+   - "Redcomponent-DB" → "comdare-DB" (User-Entscheidung)
+7. **[SPAETER]** Messsystem basierend auf konsolidierter EN-Version aufbauen

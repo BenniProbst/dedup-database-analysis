@@ -1,7 +1,8 @@
 # =============================================================================
-# Dedup Database Analysis - GitLab CI/CD Pipeline
+# Dedup Database Analysis - GitLab CI/CD Dual Pipeline
 # =============================================================================
-# Automatisierte Datenintegration, Cleanup und Stats-Reporting im K8s-Cluster
+# Pipeline 1: LaTeX compilation (auto on .tex/.bib/.cls/.bst changes)
+# Pipeline 2: DB experiment (all manual triggers)
 #
 # Cluster: 4 Worker Nodes, Talos v1.11.6, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
@@ -9,6 +10,7 @@
 # =============================================================================
 
 stages:
+  - latex
   - prepare
   - deploy-databases
   - generate-data
@@ -36,10 +38,67 @@ variables:
   BULK_TIMEOUT: "3600"
   MAINTENANCE_TIMEOUT: "1800"
 
-# -----------------------------------------------------------------------------
-# Default: K8s Runner im Cluster
-# -----------------------------------------------------------------------------
-default:
+# =============================================================================
+# PIPELINE 1: LaTeX Compilation (auto-triggered on document changes)
+# =============================================================================
+
+latex:compile:
+  stage: latex
+  tags:
+    - kubernetes
+  image: texlive/texlive:latest
+  before_script:
+    - cd docs
+  script:
+    - |
+      echo "=== LaTeX Compilation: Triple-Pass Build ==="
+      echo "Start: $(date -Iseconds)"
+
+      # Pass 1: Initial compilation
+      pdflatex -interaction=nonstopmode -halt-on-error doku.tex || true
+
+      # BibTeX pass
+      bibtex doku || true
+
+      # Pass 2+3: Resolve references
+      pdflatex -interaction=nonstopmode -halt-on-error doku.tex || true
+      pdflatex -interaction=nonstopmode -halt-on-error doku.tex
+
+      echo "=== Compilation Complete ==="
+      ls -lh doku.pdf 2>/dev/null && echo "PDF generated successfully" || echo "ERROR: PDF not generated"
+
+      # Show warnings summary (but don't fail on them)
+      echo ""
+      echo "=== LaTeX Warnings ==="
+      grep -c "Warning" doku.log 2>/dev/null && grep "Warning" doku.log | head -20 || echo "No warnings"
+
+      echo ""
+      echo "=== Undefined References ==="
+      grep -c "undefined" doku.log 2>/dev/null && grep "undefined" doku.log | head -10 || echo "No undefined references"
+
+      echo ""
+      echo "=== Missing Citations ==="
+      grep -c "Citation.*undefined" doku.log 2>/dev/null && grep "Citation.*undefined" doku.log | head -10 || echo "No missing citations"
+  artifacts:
+    paths:
+      - docs/doku.pdf
+      - docs/doku.log
+    expire_in: 30 days
+    when: always
+  rules:
+    - changes:
+        - "docs/**/*.tex"
+        - "docs/**/*.bib"
+        - "docs/**/*.cls"
+        - "docs/**/*.bst"
+        - "docs/Makefile"
+
+# =============================================================================
+# PIPELINE 2: DB Experiment (all manual triggers)
+# =============================================================================
+# Default for experiment jobs: K8s Runner im Cluster
+
+.experiment-default: &experiment-default
   tags:
     - kubernetes
   image: alpine/k8s:1.34.0
@@ -52,6 +111,7 @@ default:
 # =============================================================================
 
 prepare:namespace:
+  <<: *experiment-default
   stage: prepare
   script:
     - |
@@ -105,6 +165,7 @@ prepare:namespace:
 # =============================================================================
 
 .deploy-db-template: &deploy-db
+  <<: *experiment-default
   stage: deploy-databases
   needs: ["prepare:namespace"]
   script:
@@ -182,6 +243,7 @@ deploy:comdare-db:
 # =============================================================================
 
 generate:datasets:
+  <<: *experiment-default
   stage: generate-data
   script:
     - |
@@ -210,6 +272,7 @@ generate:datasets:
 # =============================================================================
 
 .bulk-insert-template: &bulk-insert
+  <<: *experiment-default
   stage: stage1-bulk-insert
   timeout: 2 hours
   script:
@@ -261,6 +324,8 @@ generate:datasets:
     paths:
       - results/
     expire_in: 30 days
+  rules:
+    - when: manual
 
 # PostgreSQL Bulk-Insert fuer alle Duplikationsgrade
 bulk:postgresql:U0:
@@ -421,6 +486,7 @@ bulk:comdare-db:U90:
 # =============================================================================
 
 measure:stage1:
+  <<: *experiment-default
   stage: stage1-measure
   script:
     - |
@@ -447,6 +513,7 @@ measure:stage1:
 # =============================================================================
 
 .perfile-insert-template: &perfile-insert
+  <<: *experiment-default
   stage: stage2-perfile-insert
   timeout: 3 hours
   script:
@@ -509,6 +576,8 @@ measure:stage1:
     paths:
       - results/
     expire_in: 30 days
+  rules:
+    - when: manual
 
 # Stage 2 Jobs (exemplarisch fuer alle Systeme x Duplikationsgrade)
 perfile:postgresql:U0:
@@ -530,6 +599,7 @@ perfile:postgresql:U90:
     DUP_GRADE: U90
 
 measure:stage2:
+  <<: *experiment-default
   stage: stage2-measure
   script:
     - |
@@ -555,6 +625,7 @@ measure:stage2:
 # =============================================================================
 
 .delete-template: &delete-job
+  <<: *experiment-default
   stage: stage3-delete
   timeout: 2 hours
   script:
@@ -591,6 +662,8 @@ measure:stage2:
     paths:
       - results/
     expire_in: 30 days
+  rules:
+    - when: manual
 
 delete:postgresql:U90:
   <<: *delete-job
@@ -603,6 +676,7 @@ delete:postgresql:U90:
 # =============================================================================
 
 .maintenance-template: &maintenance-job
+  <<: *experiment-default
   stage: stage3-maintenance
   timeout: 1 hour
   script:
@@ -642,6 +716,8 @@ delete:postgresql:U90:
     paths:
       - results/
     expire_in: 30 days
+  rules:
+    - when: manual
 
 maintenance:postgresql:
   <<: *maintenance-job
@@ -676,6 +752,7 @@ maintenance:cockroachdb:
 # =============================================================================
 
 measure:stage3:
+  <<: *experiment-default
   stage: stage3-measure
   script:
     - |
@@ -701,6 +778,7 @@ measure:stage3:
 # =============================================================================
 
 cleanup:volumes:
+  <<: *experiment-default
   stage: cleanup
   script:
     - |
@@ -731,6 +809,7 @@ cleanup:volumes:
       allow_failure: true
 
 cleanup:namespace:
+  <<: *experiment-default
   stage: cleanup
   needs: ["cleanup:volumes"]
   script:
@@ -747,6 +826,7 @@ cleanup:namespace:
 # =============================================================================
 
 report:final:
+  <<: *experiment-default
   stage: report
   script:
     - |
