@@ -1,0 +1,45 @@
+# Build artifacts
+build/
+_build/
+*.o
+*.so
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Results (generated, large)
+results/
+
+# Datasets (generated, very large)
+datasets/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# LaTeX build artifacts
+docs/*.aux
+docs/*.log
+docs/*.toc
+docs/*.bbl
+docs/*.blg
+docs/*.pdf
+docs/*.synctex.gz
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.out
+
+# Kubernetes secrets (never commit)
+k8s/secrets/
+*.secret.yaml
