@@ -43,3 +43,8 @@ docs/*.out
 # Kubernetes secrets (never commit)
 k8s/secrets/
 *.secret.yaml
+
+# Credentials (NEVER commit!)
+credentials.env
+*.credentials
+.env.local

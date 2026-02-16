@@ -394,28 +394,70 @@ samba-tool group addmembers "Research Lab" dedup-lab
 
 ---
 
-## Naechste Schritte (PRIORISIERT, ab Session 4)
+## Session 4 (Kontext 4, 2026-02-16 ~22:05 UTC): Lab-Isolation + CockroachDB TLS
 
-1. **[SOFORT]** GitLab Push retry (nach Backup-Last, ~1h, 3 Commits ausstehend)
-2. **[TODO]** Samba AD Labor-User + Gruppe "Research Lab" anlegen
-   ```
-   samba-tool user add dedup-lab ' [CLUSTER-PW-REDACTED]'
-   samba-tool group add "Research Lab"
-   samba-tool group addmembers "Research Lab" dedup-lab
-   ```
-3. **[TODO]** Schema-Isolation auf Prod-DBs einrichten:
-   - PostgreSQL: `CREATE SCHEMA dedup_lab` + Lab-User GRANT
-   - CockroachDB: `CREATE DATABASE dedup_lab`
-   - Redis: SELECT 15
-   - Kafka: Topic-Prefix `dedup-lab-*`
-   - MinIO: Bucket-Prefix `dedup-lab-*`
-4. **[TODO]** Grafana-Service im K8s deployen (Prometheus Pushgateway + Dashboard)
-5. **[TODO]** C++ SHA-256 implementieren (aktuell Placeholder 64×'0')
-6. **[TODO]** C++ COPY Protocol für PostgreSQL Bulk-Insert (aktuell Prepared Statements)
-7. **[TODO]** Kafka AdminClient API für Topic-Deletion
-8. **[TODO]** MinIO Bucket-Cleanup (ListObjects + DeleteObjects)
-9. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB in doku.tex)
-10. **[SPAETER]** MariaDB/ClickHouse im Cluster deployen (fehlen noch)
+### Was wurde gemacht
+
+#### 1. GitLab Push retry
+- SSH Test: `ssh -T gitlab-push` = "Welcome to GitLab, @root!" (sofort)
+- Push im Hintergrund gestartet (4 Commits ausstehend)
+- **Status: LAEUFT** (task b44c03e)
+
+#### 2. Samba AD Labor-User ANGELEGT
+- **User:** `dedup-lab` (UPN: dedup-lab@comdare.de)
+- **SID:** S-1-5-21-1633907924-69945966-2584419805-1111
+- **Gruppe:** "Research Lab" erstellt + dedup-lab hinzugefuegt
+- **DN:** CN=Dedup Lab,CN=Users,DC=comdare,DC=de
+- **Passwort:**  [CLUSTER-PW-REDACTED]
+- **Credentials:** gespeichert in `credentials.env` (in .gitignore!)
+
+#### 3. Schema-Isolation TEILWEISE EINGERICHTET
+
+| Datenbank | Status | Detail |
+|-----------|--------|--------|
+| PostgreSQL | **DONE** | Schema `dedup_lab` erstellt, User `dedup-lab` mit GRANT ALL, public CREATE revoked |
+| CockroachDB | **DONE (insecure)** | Database `dedup_lab` erstellt, User `dedup_lab` (ohne Passwort wg insecure mode) |
+| Redis | **AENDERUNG** | Redis Cluster Mode → kein SELECT moeglich! → Key-Prefix `dedup:*` statt DB 15 |
+| Kafka | **PENDING** | Topic-Prefix `dedup-lab-*` (auto-create bei erstem Produce) |
+| MinIO | **PENDING** | Bucket-Prefix `dedup-lab-*` (TODO: Lab-User in MinIO anlegen) |
+
+#### 4. CockroachDB Cluster-Check
+- **4/4 Nodes healthy:** alle `is_available=true`, `is_live=true`
+- **Version:** v24.3.0
+- **PROBLEM:** `tlsEnabled: false` in CrdbCluster Spec!
+- **User-Anweisung:** Nach User-Erstellung ZURUECK in sicheren Modus (TLS)
+
+#### 5. Redis Cluster Mode Erkenntnis
+- Redis 7.4.7 im **Cluster Mode** — SELECT nicht verfuegbar
+- **Loesung:** Key-Prefix `dedup:*` statt separater DB
+- C++ Code muss angepasst werden (config.hpp + redis_connector.*)
+
+### OFFEN: CockroachDB TLS-Migration
+- **Aktuell:** `tlsEnabled: false` → insecure mode
+- **Ziel:** `tlsEnabled: true` → TLS-gesicherter Betrieb
+- **Vorgehen:**
+  1. cert-manager im Cluster pruefen (braucht CockroachDB Operator)
+  2. CrdbCluster Spec patchen: `tlsEnabled: true`
+  3. Operator generiert Certs + Rolling Restart
+  4. Lab-User mit Passwort neu anlegen
+  5. Connection Strings auf TLS updaten
+- **ACHTUNG:** Rolling Restart = kurze Downtime! Mit User absprechen!
+
+---
+
+## Naechste Schritte (PRIORISIERT, ab Session 5)
+
+1. **[SOFORT]** CockroachDB TLS aktivieren (User hat angewiesen!)
+   - cert-manager pruefen, CrdbCluster patchen, Rolling Restart
+   - Lab-User mit Passwort neu anlegen
+2. **[SOFORT]** GitLab Push Ergebnis pruefen (task b44c03e)
+3. **[TODO]** Redis Connector anpassen: DB 15 → Key-Prefix `dedup:*`
+4. **[TODO]** MinIO Lab-User anlegen + Lab-Buckets erstellen
+5. **[TODO]** Grafana-Service im K8s deployen
+6. **[TODO]** C++ SHA-256 implementieren (aktuell Placeholder)
+7. **[TODO]** C++ COPY Protocol für PostgreSQL Bulk-Insert
+8. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB in doku.tex)
+9. **[SPAETER]** MariaDB/ClickHouse im Cluster deployen
 
 ## Technische Notizen
 
