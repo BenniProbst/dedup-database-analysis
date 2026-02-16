@@ -347,17 +347,75 @@ samba-tool group addmembers "Research Lab" dedup-lab
 
 ---
 
-## Naechste Schritte (PRIORISIERT, Session 3+)
+#### 6. C++ Integration Test Framework (Session 3, zweiter Teil)
+- **20 Dateien, 2.051 Zeilen C++ Code**
+- **Commit 39cb309:** "Add C++ integration test framework + triple CI pipeline"
+- **Struktur:**
+  ```
+  src/cpp/
+    CMakeLists.txt          — CMake Build (gcc:14-bookworm, FetchContent nlohmann/json)
+    config.hpp              — ExperimentConfig, DbConnection, DupGrade, Stage enums
+    main.cpp                — CLI mit --systems, --grades, --dry-run, --verbose
+    connectors/
+      db_connector.hpp      — Abstrakte DbConnector-Interface
+      postgres_connector.*  — PostgreSQL + CockroachDB (libpq, PG wire protocol)
+      redis_connector.*     — Redis (hiredis, DB 15 = Lab)
+      kafka_connector.*     — Kafka (librdkafka, topic prefix dedup-lab-*)
+      minio_connector.*     — MinIO (libcurl S3 API, bucket prefix dedup-lab-*)
+    experiment/
+      schema_manager.*      — Lab-Schema Lifecycle (create/reset/drop auf allen DBs)
+      data_loader.*         — Experiment-Orchestrierung (Stages 1-3, EDR-Berechnung)
+      metrics_collector.*   — Prometheus Longhorn-Metriken + Grafana Push
+    utils/
+      timer.hpp             — steady_clock Timer + RAII ScopedTimer
+      logger.hpp            — Timestamp-Logger mit LogLevel (DEBUG/INFO/WARN/ERROR)
+  ```
+- **Dependencies:** libpq, libcurl, hiredis (optional), librdkafka (optional), nlohmann/json
+- **Build:** `cmake ../src/cpp && make -j$(nproc)`
+- **Targets:** `dedup-test` (real) + `dedup-smoke-test` (DEDUP_DRY_RUN=1)
+- **N97 Optimierung:** `-O2 -march=alderlake`
 
-1. **[IN PROGRESS]** GitLab Push (Timeout — SSH ProxyJump langsam, muss retried werden)
+#### 7. Triple CI Pipeline KOMPLETT
+- **Dual→Triple erweitert** in .gitlab-ci.yml
+- **Pipeline 2 (C++ Build):** Auto auf `src/cpp/**` Aenderungen
+  - Stage `cpp-build`: gcc:14-bookworm, cmake, alle Dependencies
+  - Stage `cpp-test`: Smoke Test (DRY RUN) + Dry Test Suite (alle Systems/Grades)
+  - Artefakte in MinIO `buildsystem-artifacts/dedup-database-analysis/`
+- **Pipeline 3 (DB Experiment):** Alle Jobs `when: manual` (wie zuvor)
+
+#### 8. Commits + Push
+- **3 Commits auf `development` Branch:**
+  1. `fa9d890` — Initial commit: LaTeX paper + experiment framework + kartografie
+  2. `2cac967` — Dual CI pipeline + session update: 3-pipeline architecture
+  3. `39cb309` — Add C++ integration test framework + triple CI pipeline
+- **GitHub Push:** ALLE 3 Commits erfolgreich gepusht
+- **GitLab Push:** SSH ProxyJump funktioniert (`ssh -T gitlab-push` = OK), aber
+  `git push` hängt bei `git-receive-pack` — Cluster unter Backup-Last (~1h)
+
+---
+
+## Naechste Schritte (PRIORISIERT, ab Session 4)
+
+1. **[SOFORT]** GitLab Push retry (nach Backup-Last, ~1h, 3 Commits ausstehend)
 2. **[TODO]** Samba AD Labor-User + Gruppe "Research Lab" anlegen
-3. **[TODO]** Schema-Isolation auf allen Prod-DBs einrichten (separate Schemata/Databases)
-4. **[TODO]** Grafana-Service im K8s deployen (Metriken-Dashboard)
-5. **[TODO]** C++ Testprogramm Grundgeruest: DB-Konnektoren, Schema-Reset, Metriken-Push
-6. **[TODO]** Pipeline 2 (C++ Kompilierung) in .gitlab-ci.yml hinzufuegen
-7. **[TODO]** Pipeline 3 (Testintegration) MANUELL in .gitlab-ci.yml einrichten
-8. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB)
-9. **[SPAETER]** MariaDB/ClickHouse im Cluster deployen (fehlen noch)
+   ```
+   samba-tool user add dedup-lab ' [CLUSTER-PW-REDACTED]'
+   samba-tool group add "Research Lab"
+   samba-tool group addmembers "Research Lab" dedup-lab
+   ```
+3. **[TODO]** Schema-Isolation auf Prod-DBs einrichten:
+   - PostgreSQL: `CREATE SCHEMA dedup_lab` + Lab-User GRANT
+   - CockroachDB: `CREATE DATABASE dedup_lab`
+   - Redis: SELECT 15
+   - Kafka: Topic-Prefix `dedup-lab-*`
+   - MinIO: Bucket-Prefix `dedup-lab-*`
+4. **[TODO]** Grafana-Service im K8s deployen (Prometheus Pushgateway + Dashboard)
+5. **[TODO]** C++ SHA-256 implementieren (aktuell Placeholder 64×'0')
+6. **[TODO]** C++ COPY Protocol für PostgreSQL Bulk-Insert (aktuell Prepared Statements)
+7. **[TODO]** Kafka AdminClient API für Topic-Deletion
+8. **[TODO]** MinIO Bucket-Cleanup (ListObjects + DeleteObjects)
+9. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB in doku.tex)
+10. **[SPAETER]** MariaDB/ClickHouse im Cluster deployen (fehlen noch)
 
 ## Technische Notizen
 
