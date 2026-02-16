@@ -1,16 +1,19 @@
 # =============================================================================
-# Dedup Database Analysis - GitLab CI/CD Dual Pipeline
+# Dedup Database Analysis - GitLab CI/CD Triple Pipeline
 # =============================================================================
 # Pipeline 1: LaTeX compilation (auto on .tex/.bib/.cls/.bst changes)
-# Pipeline 2: DB experiment (all manual triggers)
+# Pipeline 2: C++ compilation + smoke tests (auto on src/cpp/** changes)
+# Pipeline 3: DB experiment integration test (all manual triggers)
 #
-# Cluster: 4 Worker Nodes, Talos v1.11.6, K8s v1.34.0
+# Cluster: 4 Worker Nodes (Intel N97), Talos v1.11.6, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
-# Metriken: Prometheus (longhorn_volume_actual_size_bytes)
+# Metriken: Prometheus (longhorn_volume_actual_size_bytes) + Grafana
 # =============================================================================
 
 stages:
   - latex
+  - cpp-build
+  - cpp-test
   - prepare
   - deploy-databases
   - generate-data
@@ -32,8 +35,9 @@ variables:
   PROMETHEUS_URL: http://prometheus.monitoring.svc.cluster.local:9090
   # Duplikationsgrade
   DUP_GRADES: "U0 U50 U90"
-  # Systeme unter Test
-  SYSTEMS: "postgresql mariadb kafka minio cockroachdb clickhouse comdare-db"
+  # Systeme unter Test (nur im Cluster vorhandene)
+  SYSTEMS: "postgresql cockroachdb redis kafka minio"
+  # TODO: mariadb clickhouse wenn deployed
   # Timeouts
   BULK_TIMEOUT: "3600"
   MAINTENANCE_TIMEOUT: "1800"
@@ -94,7 +98,111 @@ latex:compile:
         - "docs/Makefile"
 
 # =============================================================================
-# PIPELINE 2: DB Experiment (all manual triggers)
+# PIPELINE 2: C++ Compilation + Tests (auto on src/cpp/** changes)
+# =============================================================================
+
+.cpp-default: &cpp-default
+  tags:
+    - kubernetes
+  image: gcc:14-bookworm
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq cmake libpq-dev libcurl4-openssl-dev libhiredis-dev librdkafka-dev
+    - mc alias set minio http://minio-lb.minio.svc.cluster.local:9000 buildsystem-ci ' [CLUSTER-PW-REDACTED]' 2>/dev/null || true
+
+cpp:build:
+  <<: *cpp-default
+  stage: cpp-build
+  script:
+    - |
+      echo "=== C++ Build: dedup-integration-test ==="
+      echo "Compiler: $(gcc --version | head -1)"
+      echo "CMake: $(cmake --version | head -1)"
+
+      mkdir -p build && cd build
+      cmake ../src/cpp \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_FLAGS="-O2"
+
+      make -j$(nproc) dedup-test dedup-smoke-test 2>&1
+
+      echo "=== Build artifacts ==="
+      ls -lh dedup-test dedup-smoke-test 2>/dev/null
+
+      # Upload to MinIO buildsystem-artifacts cache
+      if command -v mc &>/dev/null; then
+        mc cp dedup-test minio/buildsystem-artifacts/dedup-database-analysis/dedup-test 2>/dev/null || true
+        mc cp dedup-smoke-test minio/buildsystem-artifacts/dedup-database-analysis/dedup-smoke-test 2>/dev/null || true
+        echo "Artifacts uploaded to MinIO"
+      fi
+  artifacts:
+    paths:
+      - build/dedup-test
+      - build/dedup-smoke-test
+    expire_in: 30 days
+  rules:
+    - changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+
+cpp:smoke-test:
+  <<: *cpp-default
+  stage: cpp-test
+  needs: ["cpp:build"]
+  script:
+    - |
+      echo "=== Smoke Test (DRY RUN - no DB connections) ==="
+      chmod +x build/dedup-smoke-test
+
+      # Smoke test: runs with DEDUP_DRY_RUN=1, no actual DB connections
+      build/dedup-smoke-test --dry-run --verbose 2>&1
+
+      echo "=== Smoke Test PASSED ==="
+  rules:
+    - changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+
+cpp:dry-test-suite:
+  <<: *cpp-default
+  stage: cpp-test
+  needs: ["cpp:build"]
+  script:
+    - |
+      echo "=== Dry Test Suite (all systems, all grades, no DB) ==="
+      chmod +x build/dedup-smoke-test
+
+      # Test all systems
+      for sys in postgresql cockroachdb redis kafka minio; do
+        echo "--- Testing ${sys} ---"
+        build/dedup-smoke-test --dry-run --systems ${sys} --verbose 2>&1
+        echo "  ${sys}: OK"
+      done
+
+      # Test all grades
+      for grade in U0 U50 U90; do
+        echo "--- Testing grade ${grade} ---"
+        build/dedup-smoke-test --dry-run --grades ${grade} --verbose 2>&1
+        echo "  ${grade}: OK"
+      done
+
+      # Test help output
+      build/dedup-smoke-test --help 2>&1
+
+      echo "=== Dry Test Suite PASSED ==="
+  rules:
+    - changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+
+# =============================================================================
+# PIPELINE 3: DB Experiment Integration (all manual triggers)
 # =============================================================================
 # Default for experiment jobs: K8s Runner im Cluster
 
