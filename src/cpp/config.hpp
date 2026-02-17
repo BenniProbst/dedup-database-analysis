@@ -80,6 +80,24 @@ struct GrafanaConfig {
     std::string dashboard_uid;
 };
 
+// Kafka metrics trace configuration (100ms sampling)
+// Kafka serves DUAL ROLE: DB under test AND metrics log
+struct MetricsTraceConfig {
+    std::string kafka_bootstrap = "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092";
+    std::string metrics_topic = "dedup-lab-metrics";   // 100ms DB metric snapshots
+    std::string events_topic = "dedup-lab-events";     // Experiment stage events/results
+    int sample_interval_ms = 100;                      // 10 Hz sampling rate
+    bool enabled = true;
+};
+
+// Git export configuration (commit+push results before cleanup)
+struct GitExportConfig {
+    std::string remote_name = "gitlab";
+    std::string branch = "development";
+    bool auto_push = true;                             // Push to GitLab after export
+    bool ssl_verify = false;                           // GitLab uses self-signed cert
+};
+
 // Full experiment configuration
 struct ExperimentConfig {
     // Lab isolation
@@ -105,6 +123,12 @@ struct ExperimentConfig {
     // Grafana metrics push
     GrafanaConfig grafana;
 
+    // Kafka metrics trace (100ms sampling to Kafka + Grafana)
+    MetricsTraceConfig metrics_trace;
+
+    // Git export (commit+push results before cleanup)
+    GitExportConfig git_export;
+
     // Behavior
     bool dry_run = false;
     bool reset_schema_after_run = true;  // ALWAYS reset lab schema!
@@ -120,23 +144,23 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
     cfg.databases = {
         {DbSystem::POSTGRESQL, "postgres-lb.databases.svc.cluster.local", 5432,
          cfg.lab_user, "", "postgres", "dedup_lab",
-         "data-postgres-postgresql-0", "databases"},
+         "data-postgres-ha-0", "databases"},
 
         {DbSystem::COCKROACHDB, "cockroachdb-public.cockroach-operator-system.svc.cluster.local", 26257,
          cfg.lab_user, "", "dedup_lab", "dedup_lab",
          "datadir-cockroachdb-0", "cockroach-operator-system"},
 
-        {DbSystem::REDIS, "redis-standalone.redis.svc.cluster.local", 6379,
+        {DbSystem::REDIS, "redis-cluster.redis.svc.cluster.local", 6379,
          "", "", "", "",
-         "redis-data-redis-node-0", "redis"},
+         "data-redis-cluster-0", "redis"},
 
         {DbSystem::KAFKA, "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local", 9092,
          "", "", "", "dedup-lab",
-         "data-kafka-cluster-kafka-0", "kafka"},
+         "data-kafka-cluster-broker-0", "kafka"},
 
         {DbSystem::MINIO, "minio-lb.minio.svc.cluster.local", 9000,
          cfg.lab_user, "", "", "dedup-lab",
-         "export-minio-0", "minio"},
+         "", "minio"},  // MinIO = Direct Disk, NO Longhorn PVC!
     };
 
     return cfg;
@@ -207,6 +231,23 @@ inline ExperimentConfig ExperimentConfig::from_json(const std::string& path) {
             else if (gs == "U50") cfg.dup_grades.push_back(DupGrade::U50);
             else if (gs == "U90") cfg.dup_grades.push_back(DupGrade::U90);
         }
+    }
+
+    if (j.contains("metrics_trace")) {
+        auto& mt = j["metrics_trace"];
+        cfg.metrics_trace.kafka_bootstrap = mt.value("kafka_bootstrap", cfg.metrics_trace.kafka_bootstrap);
+        cfg.metrics_trace.metrics_topic = mt.value("kafka_topic", cfg.metrics_trace.metrics_topic);
+        cfg.metrics_trace.events_topic = mt.value("events_topic", cfg.metrics_trace.events_topic);
+        cfg.metrics_trace.sample_interval_ms = mt.value("sample_interval_ms", cfg.metrics_trace.sample_interval_ms);
+        cfg.metrics_trace.enabled = mt.value("enabled", cfg.metrics_trace.enabled);
+    }
+
+    if (j.contains("git_export")) {
+        auto& ge = j["git_export"];
+        cfg.git_export.remote_name = ge.value("remote_name", cfg.git_export.remote_name);
+        cfg.git_export.branch = ge.value("branch", cfg.git_export.branch);
+        cfg.git_export.auto_push = ge.value("auto_push", cfg.git_export.auto_push);
+        cfg.git_export.ssl_verify = ge.value("ssl_verify", cfg.git_export.ssl_verify);
     }
 
     return cfg;

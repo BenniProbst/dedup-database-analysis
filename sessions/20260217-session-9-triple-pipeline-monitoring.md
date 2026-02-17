@@ -216,6 +216,49 @@ Die Longhorn-Replikation (N=4) ist im PVC-Volume bereits enthalten.
 
 ---
 
+## Session 9b (Kontext-Ende, ~22:30 UTC): MetricsTrace Architektur
+
+### User-Anforderungen (Session 9b)
+1. **Kafka = Doppelrolle:** DB unter Test UND Messdaten-Log
+2. **100ms Sampling ALLER DB-Metriken** (pg_stat_*, crdb_internal, INFO ALL, system.*, etc.)
+3. **2 neue Kafka Topics:**
+   - `dedup-lab-metrics` — 100ms DB-Metrik-Snapshots
+   - `dedup-lab-events` — Experiment-Stage-Events (start/stop/error)
+4. **Beide Topics unter Lab-User** — werden MIT Testdaten zurueckgesetzt
+5. **Export VOR Cleanup:** Messwerte → CSV → git commit+push → GitLab → DANN ERST Cleanup
+6. **Grafana-Anbindung** fuer beide Topics (Live-Dashboard)
+7. **Samba AD = ANDERER AGENT** (nicht mein Scope!)
+
+### Was implementiert wurde (TEILWEISE)
+- `config.hpp`: MetricsTraceConfig + GitExportConfig Structs + JSON-Parsing
+- `config.hpp`: PVC-Namen korrigiert (data-postgres-ha-0, data-redis-cluster-0, etc.)
+- `experiment/metrics_trace.hpp`: MetricPoint, ExperimentEvent, MetricsTrace Klasse
+  - Background-Thread mit 100ms Sampling
+  - Kafka Producer fuer metrics + events Topics
+  - Built-in Collectors pro DB-System (PostgreSQL, CockroachDB, Redis, etc.)
+
+### NICHT FERTIG (naechste Session)
+- `experiment/metrics_trace.cpp` — Implementation fehlt KOMPLETT
+- `experiment/results_exporter.hpp/.cpp` — Export (Kafka→CSV→git) fehlt KOMPLETT
+- `main.cpp` Integration — MetricsTrace Start/Stop + Export + Cleanup Reihenfolge
+- `CMakeLists.txt` — Neue Source-Dateien eintragen
+- Grafana Dashboard JSON
+
+### Experiment-Workflow (ZIEL)
+```
+1. Connect to all DBs
+2. Create lab schemas
+3. Create Kafka metrics/events topics
+4. Start MetricsTrace background thread (100ms)
+5. Run experiment stages (bulk insert, per-file insert, per-file delete)
+6. Stop MetricsTrace thread
+7. Export: Kafka consume → CSV/JSON → results/
+8. Git: add + commit + push results to GitLab
+9. DANN ERST: Drop lab schemas + delete metrics topics
+```
+
+---
+
 ## Git History
 
 ```
