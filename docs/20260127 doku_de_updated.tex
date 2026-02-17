@@ -1,0 +1,315 @@
+\documentclass[beleg,zihtitle,american,final,hyperref,utf8,open=any,oneside]{zihpub}
+
+% Libraries
+\usepackage{setspace}
+\usepackage{booktabs} % für \toprule, \midrule, \bottomrule, \cmidrule
+\usepackage{pgfplots}
+\usepackage{enumitem}
+\pgfplotsset{compat=1.18}
+\usepackage{siunitx}
+\sisetup{
+  per-mode = symbol,
+  group-minimum-digits = 4,
+  detect-mode,
+  detect-weight,
+  detect-family
+}
+\usepgfplotslibrary{groupplots,statistics,fillbetween,dateplot}
+\newcommand{\BibLaTeX}{\textsc{Bib}\LaTeX}
+
+
+\author{Benjamin-Elias Probst}
+\title{Analyse eines Forschungsthemas -- Deduplikation in Datenhaltungssystemen}
+\bibfiles{doku}
+
+\birthday{11. April 1996}
+\placeofbirth{Potsdam}
+\matno{4510512}
+
+\betreuer{Dr. Sebastian G\"otz}
+
+\begin{document}
+
+\let\cleardoublepage\clearpage
+\selectlanguage{ngerman} % ensure German is active
+
+% ---------------------------------------------------------
+% ZOPP structure (headings only; content to be added later)
+% ---------------------------------------------------------
+
+% (Optional) Abstract
+\chapter*{Abstract}
+% Brief, 5–8 sentences: problem, objective, approach, key results, impact.
+% \addcontentsline{toc}{chapter}{Abstract} % uncomment if you want it in the ToC
+Some abstract
+
+% -----------------------------------------------
+% Hauptinhalt
+% -----------------------------------------------
+
+\chapter{Einleitung und Motivation}
+\label{ch:einleitung}
+In modernen IT-Systemen fallen enorme Datenmengen an, die häufig redundante Inhalte enthalten. \emph{Datendeduplikation} (auch Deduplizierung genannt) bezeichnet Verfahren, um solche redundanten Daten zu erkennen und nur einmal zu speichern. Auf diese Weise lassen sich Speicherbedarf und Übertragungskosten drastisch reduzieren. Besonders in Datensicherungsumgebungen (Backups) werden durch Deduplikation Speicherplatz und Netzwerkbandbreite eingespart, da z.\,B. identische E-Mail-Anhänge oder mehrfach gesicherte Dateien nur einmal abgelegt werden müssen. Aber auch in Cloud-Speichern und modernen Datenhaltungssystemen spielt Deduplikation eine wichtige Rolle, da identische Daten, die von verschiedenen Nutzern oder Anwendungen mehrfach gespeichert werden, nur einmal vorgehalten werden müssen. Durch diese Effizienzsteigerung können Unternehmen Kosten für Speichermedien, Strom und Kühlung senken und zugleich die Datenübertragung beschleunigen.
+
+Darüber hinaus trägt Deduplikation dazu bei, Sicherungsfenster zu verkürzen und die Gesamt-Performance von Speicher- und Backup-Systemen zu verbessern. In der *Einleitung* dieser Arbeit werden zunächst Motivation und Ziele der Deduplikation umrissen. Anschließend werden die Begrifflichkeiten geklärt und gegenüber verwandten Konzepten (wie Kompression) abgegrenzt. Ein Abriss der historischen Entwicklung zeigt, wie sich Deduplikationstechniken von ersten Ansätzen bis zu aktuellen Systemen entwickelt haben. Darauf aufbauend werden in einer *Taxonomie* verschiedene Formen und Strategien der Deduplikation vorgestellt – von hash-basierten und inhaltsbewussten Verfahren über unterschiedliche Granularitäten (Datei-, Block- und Chunk-Ebene) bis hin zu Inline- und Post-Prozess-Deduplikation. Im Hauptteil werden typische Anwendungsbereiche von Deduplikation in verschiedenen Datenhaltungssystemen untersucht: in relationalen Datenbanksystemen, in objektbasierten Speichern, in Zeitreihendatenbanken sowie in skalierbaren Systemen wie Apache Kafka und Hadoop. Abschließend erfolgt eine erste Bewertung der vorgestellten Ansätze und es werden offene Herausforderungen abgeleitet, aus denen das Forschungsziel der weiteren Arbeit formuliert wird.
+
+\chapter{Begriffsklärung und Abgrenzung}
+\label{ch:begriffe}
+Grundsätzlich bezeichnet Deduplikation einen datenverarbeitenden Prozess, der redundante bzw. doppelte Daten erkennt und vermeidet, bevor diese dauerhaft gespeichert oder übertragen werden. Das System durchsucht Daten nach identischen Abschnitten und ersetzt Wiederholungen durch Verweise auf ein einmal gespeichertes Original. Dadurch wird die Gesamtmenge der zu speichernden oder zu übertragenden Daten verringert, ohne dass Informationen verloren gehen. Deduplikation kann als eine Form der Datenkompression betrachtet werden, jedoch unterscheidet sie sich von klassischen Kompressionsverfahren: Während etwa LZ77/LZ78-Kompressionsalgorithmen Redundanz \emph{innerhalb} einzelner Dateien suchen und durch verkürzte Kodierung ersetzen, wirkt Deduplikation über \emph{Dateigrenzen hinweg} bzw. auf größeren Datenbereichen. So kann Deduplikation beispielsweise identische Blöcke oder Dateien erkennen, selbst wenn diese in verschiedenen Dateien oder Backups auftreten, was klassische Kompression in der Regel nicht leistet~\cite{Paulo2014,Fu2025}.
+
+Ein verwandter Begriff ist *Single Instance Storage* (SIS). Dabei wird von mehrfach vorhandenen Dateien nur eine einzige Instanz gespeichert. SIS arbeitet also auf vollständiger Dateiebene und eliminiert doppelte Dateien. Deduplikation im engeren Sinne geht meist feingranularer vor, nämlich auf Block- oder Chunk-Ebene innerhalb von Dateien, um auch Teilduplikate (z.\,B. gleiche Teilstücke in zwei verschiedenen Dateien) zu entfernen. Der Übergang ist fließend: SIS kann als Spezialfall der Deduplikation betrachtet werden, beschränkt auf die Granularität ganzer Objekte.
+
+Wichtig ist die Abgrenzung zur *Datenbereinigung* (engl. data cleansing) oder *Dublettenerkennung* in Datenbanken: Dort geht es darum, semantisch gleiche Datensätze (z.\,B. gleiche Person unter verschiedenen Kundeneinträgen) zu identifizieren und zu konsolidieren. Die hier behandelte Deduplikation hingegen operiert auf Byte- oder Blockebene in Speichersystemen und Dateibeständen, unabhängig von der Semantik der Daten. Zudem ist zu beachten, dass der Erfolg von Deduplikationsalgorithmen stark von der Datenbeschaffenheit abhängt – hochgradig eindeutige oder bereits verschlüsselte Daten bieten naturgemäß wenig Potenzial für Einsparungen.
+
+Zusammenfassend: Deduplikation erkennt gleiche Datenblöcke und speichert sie nur einmal. Sie ergänzt andere Speicheroptimierungen wie Kompression, ohne sie zu ersetzen – häufig werden beide kombiniert eingesetzt (erst Deduplikation großer Wiederholungen, anschließend Kompression der einzigartigen Daten). Im nächsten Abschnitt werden die historischen Wurzeln und wichtigsten Entwicklungen in diesem Bereich vorgestellt.
+
+\chapter{Historische Entwicklung der Deduplikationstechniken}
+\label{ch:historie}
+Die Anfänge moderner Deduplikation liegen in den frühen 2000er-Jahren, motiviert durch die Herausforderungen rasant wachsender Backup-Datenmengen. Eines der ersten einflussreichen Systeme war das Low-Bandwidth File System (LBFS) von Muthitacharoen et al.~\cite{Muthitacharoen2001}. LBFS führte Deduplikation auf Dateisystem-Ebene ein, um Dateitransfers über langsame Netzwerke zu beschleunigen: Ähnliche Dateiinhalte wurden durch einen Abgleich von Blöcken erkannt, sodass redundante Daten nicht erneut übertragen werden mussten. Dadurch reduzierte LBFS den Bandbreitenbedarf gegenüber traditionellen Netz-Dateisystemen um mehr als eine Größenordnung.
+
+Kurz darauf präsentierten Quinlan und Dorward (2002) mit *Venti* ein archivorientiertes Speichersystem, das konsequent auf inhaltsadressierter Speicherung basierte. Jeder Datenblock erhielt einen eindeutigen Hash als Adresse; doppelte Blöcke ließen sich so erkennen und auf eine einzelne Kopie zusammenführen. Venti etablierte das Prinzip des \emph{Write-Once-Stores} – einmal gespeicherte Blöcke werden unveränderlich abgelegt und bei erneutem Auftreten nur referenziert. Dieses Konzept beeinflusste zahlreiche nachfolgende Backup- und Archivierungslösungen.
+
+Mitte der 2000er wurde Deduplikation im kommerziellen Bereich populär, insbesondere durch die Firma *Data Domain*. Ihr Dateisystem DDFS setzte neue Maßstäbe, indem es Deduplikation für Enterprise-Backups mit hoher Geschwindigkeit realisierte. Eine zentrale Veröffentlichung von Zhu et al.~\cite{Zhu2008} beschreibt drei Schlüsseltechniken, mit denen DDFS den \glqq Flaschenhals Festplatte\grqq{} umging: (1) einen kompakten In-Memory-Index (\emph{Summary Vector}), um neue Datenblöcke schnell als bekannt oder neu zu klassifizieren, (2) eine segmentierte Ablage (\emph{Stream-Informed Segment Layout}), die physikalische Lokalität verwandter Blöcke auf der Disk verbessert, und (3) \emph{Locality Preserved Caching}, das die Fingerprints kürzlich deduplizierter Blöcke im Cache hält. Durch diese Optimierungen konnte DDFS über 99\,\% der sonst notwendigen Plattenzugriffe vermeiden und so Durchsatzraten von über 100~MB/s auf handelsüblicher Hardware erreichen. Damit wurde erstmalig gezeigt, dass Inline-Deduplikation auch bei sehr hohen Datenraten praktikabel ist, was den Weg für den breiten Einsatz in Backup-Appliances ebnete.
+
+In den 2010er-Jahren verlagerte sich der Fokus zunehmend auf Primärspeicher und Performance-Aspekte. Früh wurde erkannt, dass die im Backup bewährten Techniken auf Live-Systeme nur bedingt übertragbar sind, da hier Latenz und Fragmentierung kritisch sind. Ein wichtiger Beitrag in diesem Kontext ist *iDedup* von Srinivasan et al.~\cite{Srinivasan2012}. Dieses System führte Deduplikation in primären Storage-Workloads (etwa virtuelle Maschinen, Datenbanken) ein, jedoch mit einem \emph{latenzsensitiven} Ansatz. iDedup dedupliziert nur ausgewählte Datenbereiche mit hoher Wiederholungsrate und nutzt lokale Gruppierungen (\emph{spatial locality}), um die durch Deduplikation entstehende Datenfragmentierung gering zu halten. Außerdem werden Metadaten, wie Hash-Indizes, im Arbeitsspeicher gecacht, um zusätzliche Plattenzugriffe zu vermeiden. Die Evaluation zeigte, dass iDedup immer noch etwa 60–70\,\% der maximal möglichen Platzersparnis erzielt, dabei aber die Latenz nur um 2–4\,\% erhöht und weniger als 5\,\% CPU-Overhead verursacht. Damit wies iDedup nach, dass eine sinnvolle Trade-off-Lösung zwischen Speicherersparnis und Performance für produktive Primärspeicher möglich ist.
+
+Parallel dazu wurden fortlaufend Verbesserungen der eigentlichen Deduplizierungs-Algorithmen erforscht. Ein zentrales Element ist das \emph{Chunking}, also die Aufteilung von Datenströmen in Blöcke. Bereits LBFS nutzte variable Blockgrößen mittels \emph{Rabin-Fingerprints}, um verschobene Inhalte trotz Versatz zu erkennen. In den Folgejahren entstanden effizientere Chunking-Methoden. Einen Meilenstein stellt \emph{FastCDC} von Xia et al.~\cite{Xia2016} dar. FastCDC beschleunigte die bis dahin rechenintensive content-defined Chunking deutlich, u.\,a. durch vereinfachte Hash-Prüfungen und das Überspringen von Bereichen zur Laufzeit. In Tests war FastCDC etwa 10-mal so schnell wie das klassische Rabin-basierte Verfahren, erzielte aber nahezu die gleiche Deduplikationsquote. Solche Algorithmen sind essenziell, um Deduplikation in großem Maßstab mit vertretbarem Aufwand durchführen zu können.
+
+Schließlich sind auch skalierbare, verteilte Deduplikationsansätze Teil der Entwicklung. Ein Beispiel ist \emph{Sparse Indexing} (Lillibridge et al.~\cite{Lillibridge2009}), das für sehr große Backup-Datensätze entwickelt wurde. Durch stichprobenartiges Indexieren (Sampling) und Ausnutzen von Datenlokalität konnte der Speicherbedarf des Deduplikations-Indexes drastisch reduziert werden. Dies erlaubt es, selbst Petabyte-Datenbestände mit begrenztem RAM effizient zu deduplizieren. Aktuelle Übersichtsarbeiten (z.\,B. Paulo \& Pereira 2014: und Fu et al.~\cite{Fu2025}:) zeigen, dass Deduplikation heute ein ausgereiftes Forschungsfeld ist, das sowohl in Einzelplatzsystemen als auch in verteilten Cloud-Architekturen eingesetzt wird. Moderne verteilte Deduplikationssysteme koordinieren etwa die Aufteilung der Daten auf Knoten, führen dort jeweils lokale Deduplikation durch und meistern Herausforderungen wie Index-Skalierung, Datensicherheit (z.\,B. bei verschlüsselten Daten) und Fehlertoleranz in verteilten Umgebungen.
+
+\textbf{Zwischenfazit:} Von den ersten Prototypen zur Bandbreitenreduktion (2001) über Enterprise-Backup-Appliances (2008) bis hin zu latenzarmen Primärspeicherlösungen (2012) und hochskalierbaren verteilten Ansätzen (heute) hat sich die Deduplikation kontinuierlich weiterentwickelt. Im nächsten Kapitel wird eine systematische Taxonomie der verschiedenen Verfahren und Dimensionen der Deduplikation vorgestellt.
+
+\chapter{Taxonomie der Deduplikationstechniken}
+\label{ch:taxonomie}
+Deduplikationsverfahren lassen sich anhand mehrerer Kriterien klassifizieren. Im Folgenden werden die wichtigsten Unterscheidungsmerkmale und Kategorien vorgestellt:
+
+\textbf{(1) Erkennungsprinzip:} Nahezu alle heutigen Deduplikationssysteme nutzen kryptographische Hashfunktionen (z.\,B. SHA-1, SHA-256), um Datenblöcken sogenannte Fingerprints zuzuweisen. Treffen zwei Blöcke auf den gleichen Hash, gilt das (mit sehr hoher Wahrscheinlichkeit) als Indiz, dass die Inhalte identisch sind. In einfacheren Systemen wird bei Hash-Kollisionen kein weiterer Abgleich durchgeführt und Kollisionsrisiken werden aufgrund der großen Hashräume vernachlässigt. Aus Sicherheitsgründen verifizieren manche Lösungen jedoch den Byte-für-Byte Vergleich, sobald ein Hash-Doppel gefunden wurde. Eine Alternative zum rein inhaltagnostischen Hash-Vergleich ist \emph{inhaltsbewusste Deduplikation}. Dabei fließen Kenntnisse über das Datenformat oder die semantische Struktur mit ein. Beispielsweise könnten bestimmte Dateiarten (etwa Bilder vs. Text) unterschiedlich behandelt oder ähnliche Inhalte erkannt werden, die nicht bit-genau identisch sind. Inhaltssensible Verfahren sind eher Spezialfälle – der Regelfall in Storage-Systemen ist das \textbf{inhaltagnostische Hash-basierte} Matching, das weder Dateityp noch Bedeutung berücksichtigt, sondern ausschließlich auf Wiederholungsmuster der Bytes schaut.
+
+\textbf{(2) Granularität (Block- vs. Dateiebene):} Ein zentrales Unterscheidungsmerkmal ist, ob Deduplikation auf kompletter Datei-Ebene oder auf Untereinheiten erfolgt. \textbf{File-Level-Deduplikation} (Single Instance Storage) markiert identische Dateien und speichert nur eine Kopie. Dieses Verfahren ist einfach umzusetzen (durch Vergleich von Datei-Hashes), übersieht aber Redundanz innerhalb verschiedener Dateien. Daher verbreiteter sind \textbf{Block- bzw. Chunk-Level-Verfahren}, die Dateien in Blöcke fester oder variabler Größe aufteilen. Durch das Zerlegen lassen sich auch Teilduplikate finden, z.\,B. wenn eine Datei eine andere eingebettet enthält oder wenn sich ein Dokument nur geringfügig geändert hat. Typischerweise arbeiten Deduplikationssysteme heute mit Blockgrößen im Bereich 4–128~KB. Kleinere Blöcke erhöhen die Deduplikationsquote (feineres Matching), verursachen aber mehr Overhead (mehr Indexeinträge, mehr Verweise). Hier kommt \textbf{Chunking} ins Spiel: Einige Systeme nutzen fixe Blockgrößen (z.\,B. immer 8~KB), was einfach und schnell ist, jedoch bei verschobenen Änderungen ineffizient sein kann. Andere verwenden \textbf{variable, inhaltsdefinierte Chunking-Verfahren}, bei denen die Blockgrenzen abhängig vom Inhalt gesetzt werden (z.\,B. mittels Rolling Hash/Rabin-Fingerprint). Diese \glqq gleitenden Fenster\grqq{} erkennen natürliche Datenstrukturen und stellen sicher, dass bei Einfügungen oder Verschiebungen in Dateien die Synchronisation der Chunk-Grenzen nicht vollständig verloren geht. Content-Defined Chunking gilt als effektiver, ist aber rechenaufwändiger als fester Zuschnitt. Moderne Algorithmen wie FastCDC zielen darauf ab, diese Lücke zu schließen, indem sie Content-Defined Chunking nahe an die Geschwindigkeit fester Blöcke bringen.
+
+\textbf{(3) Zeitlicher Ablauf (Inline vs. Post-Process):} Deduplikation kann zu unterschiedlichen Zeitpunkten erfolgen. \textbf{Inline-Deduplikation} bedeutet, dass die Daten unmittelbar beim Schreiben dedupliziert werden, d.\,h. bevor sie auf den Speicher geschrieben werden. Das spart direkt Speicherplatz und vermeidet, dass doppelte Daten jemals vollständig auf die Festplatte gelangen. Allerdings muss das System hierfür im Datenpfad genügend schnell arbeiten, um keine größeren Latenzen zu verursachen – was bei hohem Durchsatz eine Herausforderung ist. \textbf{Post-Process-Deduplikation} (oft auch \glqq Out-of-band\grqq{} genannt) verzögert die Eliminierung redundanter Daten: Zunächst werden die Daten normal gespeichert, und erst im Nachgang (etwa während lastarmer Zeiten oder per periodischem Job) werden Duplikate erkannt und bereinigt. Der Vorteil dieser Methode liegt darin, dass der Schreibpfad nicht verlangsamt wird; die Deduplikation erfolgt \glqq offline\grqq{}. Der Nachteil ist ein vorübergehend höherer Speicherverbrauch, da doppelte Daten erst einmal mehrfach abgelegt werden. Viele Backup-Lösungen früherer Generationen setzten auf Post-Process-Deduplikation, um die Backup-Streams nicht auszubremsen. Heutzutage tendieren jedoch die meisten Appliances zu Inline-Ansätzen, da die Hardware (insbesondere CPU und ggf. spezielle ASICs) leistungsfähig genug geworden ist, um Deduplikation in Echtzeit zu ermöglichen. In einigen Fällen werden auch Mischformen genutzt: z.\,B. sofortige Deduplikation für besonders große, offensichtlich redundante Daten und nachträgliche für den Rest.
+
+\textbf{(4) Architektur (Quelle vs. Ziel):} Ein weiteres Kriterium ist, wo die Deduplikation stattfindet. Bei \textbf{Quell-Deduplikation} (\emph{source-side}) werden die Daten bereits auf dem sendenden System dedupliziert, bevor sie über das Netzwerk geschickt oder gesichert werden. Beispielsweise kann eine Backup-Software auf dem Client redundante Blöcke erkennen und gar nicht erst übertragen – das spart nicht nur Speicher, sondern auch Bandbreite. Dem gegenüber steht die \textbf{Ziel-Deduplikation} (\emph{target-side}), bei der die Deduplikation im Speicherziel erfolgt, z.\,B. innerhalb eines Backup-Servers oder Speichersystems, ohne dass der Client davon etwas merkt. Source-Deduplikation reduziert Netzlast, erfordert aber Rechenaufwand auf jedem Client sowie ein verteiltes Abgleichen (um globale Redundanz zu erkennen). Target-Deduplikation zentralisiert die Aufgabe auf dem Speichersystem; Clients senden alle Daten ungehindert, was einfacher zu implementieren ist, aber das Netzwerk nicht entlastet. Viele kommerzielle Lösungen (etwa Data Domain) verfolgen hauptsächlich Ziel-Deduplikation, während einige Backup-Softwarelösungen (wie EMC Avamar oder CommVault) auch Quell-Deduplikation beherrschen, um Remote-Backup effizienter zu gestalten.
+
+\textbf{(5) Primär- vs. Sekundärspeicher:} Historisch wurde Deduplikation vor allem für \emph{Sekundärdaten} (Backups, Archivdaten) eingesetzt, wo leichte Performanceeinbußen zugunsten großer Platzersparnis akzeptabel sind. In diesem Bereich erreichen Deduplizierungsraten von 10:1 und mehr in der Praxis erhebliche Kostenvorteile. Bei \emph{Primärspeichern} (Produktivdaten auf denen direkt gearbeitet wird) war man lange zögerlich, da hier jeder zusätzliche Verarbeitungsschritt Latenz bedeuten kann. Moderne Systeme und Forschungsarbeiten (wie iDedup) zeigen jedoch, dass mit durchdachten Algorithmen auch im Primärspeicher Deduplication einsetzbar ist, z.\,B. in virtuellen Desktops oder Storage-Systemen für VMware-Images. Einige Storage-Arrays (NetApp, Pure Storage etc.) haben inzwischen integrierte Always-on-Deduplikation, die kontinuierlich im Hintergrund läuft, ohne die IO-Antwortzeiten merklich zu verschlechtern. Der Kernunterschied ist: Primärspeicher-Deduplikation muss \emph{leistungsschonend} und meist inline erfolgen, während Sekundärspeicher-Deduplikation maximalen Platzgewinn priorisiert und auch post-process sein darf.
+
+Zusätzlich zu obigen Kategorien gibt es weitere technische Unterscheidungen (etwa die Art der Indexierung: Inline-Index im RAM vs. chunk-stores auf SSD, Verwendung von Bloom-Filtern zur Vorauswahl usw.). Die genannten Aspekte sind jedoch die grundlegenden, um Deduplikationsansätze einzuordnen. In der folgenden Übersicht werden nun konkrete Einsatzfelder betrachtet, in denen Deduplikation angewendet wird, und welche Besonderheiten dort jeweils auftreten.
+
+\chapter{Deduplikation in verschiedenen Datenhaltungssystemen}
+\label{ch:bereiche}
+Im Folgenden werden vier wichtige Kategorien von Datenhaltungssystemen untersucht, in denen Deduplikation zum Einsatz kommt oder kommen kann. Für jeden Bereich werden typische Quellen von redundanten Daten und bekannte Lösungsansätze zur Deduplikation dargestellt.
+
+\section{Relationale Datenbanksysteme}
+Relationale Datenbanken (wie Oracle, PostgreSQL, MySQL und andere) verwalten ihre Daten typischerweise in Tabellen und Indizes auf Blockspeicher (Dateisystem oder Raw-Device). Klassischerweise war Deduplikation innerhalb von Datenbank-Storage kein primäres Thema, da relationale DBMS andere Methoden der Speicheroptimierung verwenden (z.\,B. Kompression von Tabellen und Indizes, Normalisierung redundanter Werte auf Anwendungsebene). Dennoch gibt es Bereiche, in denen auch in Datenbanken identische Daten mehrfach gespeichert werden:
+\begin{itemize}
+  \item \textbf{Große Objekte (BLOBs/CLOBs):} Viele moderne Datenbanken erlauben das Speichern von Dokumenten, Bildern oder anderen großen Binärdaten als LOB (Large Object). Wenn etwa dasselbe Dokument an mehreren Stellen in der DB abgelegt wird (z.\,B. ein Firmenlogo in vielen Datensätzen), entstehen bit-identische Kopien.
+  \item \textbf{Sicherungen und Snapshots:} Datenbanken werden oft regelmäßig gesichert, teilweise auch auf Blockebene (physische Backups, z.\,B. Oracle RMAN Backup Sets). Über die Zeit enthalten diese Sicherungen viele identische Kopien unveränderter Blöcke.
+  \item \textbf{Replikation und Sharding:} In verteilten Datenbank-Setups könnten redundante Kopien desselben Datenbestands auf mehreren Knoten liegen (aus Hochverfügbarkeit oder Performance-Gründen). Allerdings wird hier aus Konsistenzgründen bewusst repliziert, was nicht als \glqq unnötige\grqq{} Duplikation gilt, sondern als Feature. Deduplikation würde diese Replikate nicht eliminieren dürfen, da sie unabhängige Kopien sein müssen.
+\end{itemize}
+Ein konkretes Beispiel für Deduplikation im Kontext relationaler DBs ist die \textbf{SecureFiles Deduplication} in Oracle-Datenbanken. Oracle führte mit der Option \emph{Advanced Compression} ab Version 11g eine LOB-Deduplizierung ein. Dabei erkennt die DB identische SecureFile-LOBs und speichert von gleichen LOB-Inhalten nur noch eine Instanz. Oracle beschreibt den Anwendungsfall exemplarisch mit E-Mail-Anhängen: Erhalten 10 Benutzer die gleiche 1-MB-Datei per Mail und diese wird in der DB abgelegt, so würden ohne Deduplikation 10~MB gespeichert. Mit aktivierter LOB-Deduplikation wird diese Datei nur einmal (1~MB) gespeichert und die weiteren neun Vorkommen verweisen intern darauf. Dies entspricht 90\,\% Platzersparnis. Gleichzeitig beschleunigt sich das Einfügen und Kopieren solcher LOBs, da bei Duplikaten lediglich Referenzen geschrieben werden anstatt des gesamten Inhalts. Oracle erreicht dies transparent für die Anwendung – die Deduplikation läuft innerhalb der Datenbank-Storage-Engine.
+
+Andere relationale DBs wie PostgreSQL oder MySQL haben keine eingebaute Deduplizierungsfunktion für LOBs; hier könnte aber das zugrundeliegende Speichersystem Deduplikation anbieten (z.\,B. NTFS mit Windows Server Dedup, ZFS oder das Storage-System unter einer VMware-Datenbank). Es gibt auch Forschungsideen, redundante Spaltenwerte in Column-Store-Datenbanken deduplikationsartig zu komprimieren (Stichwort \emph{dictionary compression}), was jedoch eher in Richtung In-File-Kompression geht.
+
+Insgesamt ist Deduplikation in relationalen DBMS ein Nischenfeature, das vor allem bei spezifischen Einsatzmustern (viele identische LOBs, sehr ähnliche Backups etc.) relevant wird. Oracle konnte mit seinem Ansatz signifikante Einsparungen bei Kunden erzielen, die z.\,B. Dokumentenmanagement direkt in der DB betreiben. Bei den Kernstrukturdaten (Zahlen, Zeichenketten in Tabellen) hingegen setzen relationale Systeme eher auf klassische Kompressionsalgorithmen und Normalisierung statt auf blockbasierte Deduplikation.
+
+\section{Objektbasierte Speicher}
+Objektspeicher (etwa Ceph, OpenStack Swift oder Amazon S3) organisieren Daten in Objekten (typischerweise Dateien oder Blobs mit zugehörigen Metadaten), die über flache Adressräume (z.\,B. anhand eines Keys) angesprochen werden. Solche Systeme werden vielfach für Backups, Cloud Storage und große unveränderliche Daten verwendet. Hier tritt Duplikation häufig auf, z.\,B. wenn:
+\begin{itemize}
+  \item Identische Dateien von verschiedenen Nutzern hochgeladen werden (beliebtes Beispiel: das gleiche ISO-Image oder Container-Image liegt mehrfach in einem Storage-Bucket).
+  \item Versionierung aktiviert ist – mehrere Versionen eines Objekts können weite Teile gleichen Inhalts aufweisen.
+  \item In verteilten Umgebungen (Geo-Replication) Kopien desselben Objekts an verschiedenen Standorten liegen (ähnlich wie bei DB-Replikation aber bewusst).
+\end{itemize}
+Kommerzielle Cloud-Speicher wie Amazon S3 machen in der Regel keine öffentlichen Aussagen, ob sie intern Deduplikation einsetzen. Da Abrechnung oft nach belegtem Speicher erfolgt, hätte eine zu aggressive Deduplikation sogar finanzielle Folgen. Allerdings nutzen manche Backup-Lösungen, die S3 als Backend verwenden, eigene Deduplikation, indem sie die Daten vor dem Upload chunken und nur Unikate als Objekte speichern.
+
+Ein prominentes Open-Source-Beispiel ist \textbf{Ceph}, ein verteiltes Objektspeichersystem. Ceph hat in neueren Versionen experimentelle Unterstützung für Deduplikation auf Cluster-Ebene eingeführt. Der grundsätzliche Mechanismus besteht darin, dass ein \emph{Dedup-Pool} eingerichtet wird: Anstatt jedes Objekt bytewörtlich im Base-Pool zu speichern, kann Ceph die Objekte in kleinere, gleich große \emph{Chunks} (z.\,B. 4~MB) zerlegen und diese in einem separaten \glqq Chunk-Pool\grqq{} ablegen. Jeder Original-Objekt wird dann aus Verweisen auf die deduplizierten Chunks zusammengestellt. Redundante Chunks (gleiche Inhalte aus verschiedenen Objekten) werden nur einmal gespeichert. Um dies zu ermöglichen, erzeugt Ceph für jeden Chunk einen Hash (Fingerprint) und verwaltet einen Index, um gleiche Chunks zu erkennen. Die Herausforderung dabei ist die Skalierbarkeit des Fingerprint-Indexes in einem großen verteilten System und die Konsistenz der Metadaten. Forschungsarbeiten wie \emph{TiDedup} (Oh et al.~\cite{Oh2023}) haben Cephs ursprünglichen Deduplizierungsansatz verbessert. TiDedup adressiert konkrete Probleme der ersten Implementierung (übermäßiger Metadatenverbrauch bei einzigartigen Daten, starre Chunkgröße, ineffiziente Referenzzählungs-Updates) und führt selektive, inhaltsdefinierte Chunking sowie ein Ereignis-gesteuertes Tiering ein. Die Integration von TiDedup in Ceph zeigte in Tests eine Speicherreduktion von bis zu 34\,\% auf realen Workloads und wesentlich geringeren Einfluss auf Vordergrund-I/O während der Deduplikation. Dies verdeutlicht das Potential, Deduplikation auch in großen verteilten Objektspeichern produktiv einzusetzen, sofern die Systemarchitektur darauf ausgelegt ist.
+
+Interessant ist, dass \textbf{Objektspeicher durch ihre \glqq Write-Once, Read-Many\grqq{}-Charakteristik} besonders geeignet für Inline-Deduplikation sind. Da Objekte typischerweise nach dem Ablegen nicht mehr modifiziert, sondern nur gelesen oder gelöscht werden, entfällt die komplizierte Behandlung partieller Updates (im Gegensatz z.B. zu veränderlichen Blockspeichern). Redundante Daten treten häufig in Form vollständiger Duplikate oder großer identischer Teilstücke auf, was chunk-basierte Ansätze gut erkennen können. Cephs Entwickler bemerken etwa, dass deduplizierte S3-Workloads sinnvoll sind, weil Objekte selten Überschreibungen erfahren und daher ein upfront-Fingerprinting mit Hashvergleich praktikabel ist.
+
+Nicht unerwähnt bleiben sollten \textbf{Sicherheitsaspekte} in Objektspeichern: Deduplikation kann Konflikte mit Verschlüsselung verursachen. Wenn jeder Nutzer seine Objekte client-seitig verschlüsselt (mit verschiedenen Schlüsseln), sind gleiche Inhalte nicht mehr als Duplikat erkennbar (da die Ciphertexte unterschiedlich sind). In Multi-Tenant-Clouds muss Deduplikation zudem aufpassen, keine \glqq cross-tenant\grqq{} Information Leaks zu ermöglichen (Stichwort \emph{Deduplification Side-Channel}, bei dem ein Angreifer durch Speichern eines bekannten Hash-Werts raten könnte, ob ein anderes Nutzer denselben Inhalt bereits gespeichert hat). Einige Cloud-Speicher verzichten deshalb bewusst auf globale Deduplikation aus Sicherheitsgründen.
+
+Zusammengefasst setzen objektbasierte Speicher deduplizierende Verfahren vor allem in kontrollierten Umgebungen ein (z.\,B. privater Ceph-Cluster für Backups). Bei öffentlichen Cloud-Storage-Diensten ist wenig Konkretes bekannt, aber es gibt Hinweise, dass beispielsweise Dienste wie Dropbox deduplizierende Speichermethoden verwenden (etwa um identische Dateien verschiedener Nutzer nur einmal zu behalten). In jedem Fall zeigen Projekte wie Ceph, dass die Technik prinzipiell auch auf Objektebene funktioniert und signifikante Einsparungen liefern kann, sofern die genannten Herausforderungen (Metadaten-Flut, Snapshots, Sicherheit) gelöst sind.
+
+\section{Zeitreihendatenbanken}
+Zeitreihendatenbanken (Time Series Databases, z.\,B. InfluxDB, TimescaleDB, Prometheus, QuestDB) sind spezialisiert auf das Speichern von Sequenzen zeitlich indexierter Messwerte. Typischerweise sind die Daten als Tupel $(\mathit{timestamp}, \mathit{metriken})$ organisiert, oft zusätzlich mit Tags (z.\,B. Sensor-ID). Redundante Daten treten in solchen Systemen weniger in Form identischer großer Blöcke auf, sondern eher als wiederholte Einträge:
+\begin{itemize}
+  \item \textbf{Doppelte Messpunkte:} In verteilten IoT-Systemen kann es vorkommen, dass aufgrund von Netzwerk-Wiederholungen dieselbe Messung mehrfach ankommt (at-least-once Semantik). Ohne Erkennung würden diese Duplikate als getrennte Einträge gespeichert.
+  \item \textbf{Unveränderte Werte:} Viele Sensoren liefern ständig den gleichen Wert (z.\,B. Temperatur konstant 20°C über Stunden). Naiv würde die DB hundertmal \glqq 20°C\grqq{} speichern. Intelligente Verfahren erkennen dagegen \glqq keine Änderung\grqq{} und könnten die Wiederholung einsparen.
+  \item \textbf{Wiederkehrende Muster:} Bei regelmäßigen Ereignissen könnten Datensequenzen sich periodisch wiederholen.
+\end{itemize}
+Zeitreihendatenbanken adressieren diese Redundanzen teils durch eigene Mechanismen. So unterstützen einige Systeme sogenannte \textbf{Upsert-Keys oder Uniqueness Constraints} auf Kombinationen aus Zeitstempel und Tags. Beispielsweise ermöglicht TimescaleDB das Definieren eines Primärschlüssels auf (\textit{time}, \textit{series\_id}), sodass doppelte Einträge mit gleichem Zeitstempel die vorherige überschreiben oder ignoriert werden. QuestDB und ClickHouse bieten \glqq Dedup\glqq{}-Optionen beim Laden, die identische Zeilen verwerfen. In InfluxDB 1.x wurden identische Punkte (gleiche Tags und Timestamp) per Standard zusammengeführt (die neueren Werte überschrieben die alten Felder). 
+
+Neuere Architekturen wie \textbf{InfluxDB 3.0 (aka InfluxDB IOx)} führen dedizierte Deduplizierungs-Schritte in der Ingestion-Pipeline ein. Laut einem technischen Bericht von InfluxData ist es in Zeitreihenszenarien üblich, dass dieselben Daten mehrfach eingespeist werden, weshalb InfluxDB~3 \glqq einen Deduplizierungsprozess durchführt\grqq{}. Konkret implementiert InfluxDB dies durch Sortieren und Mergen der eingehenden Daten nach eindeutigen Schlüsselfeldern, sodass nur ein Eintrag pro eindeutiger Kombination übrigbleibt. Dieses Vorgehen ist eng mit dem Query-Executor verknüpft und nutzt die Tatsache, dass Zeitreihendaten in Blöcken (Parquet-Dateien) persistiert werden, die nach Zeit und Tags sortiert sind – dadurch lassen sich Duplikate effizient herausfiltern.
+
+Eine andere, mehr speicherorientierte Sicht ist die Kompression: Zeitreihendatenbanken nutzen meist aggressive Kompressionsverfahren (Run-Length, Gorilla-Kompression etc.), um wiederholte Werte extrem platzsparend abzulegen. Streng genommen ist dies keine \glqq Deduplikation\grqq{} im Sinne von globalen Hash-Vergleichen, aber erfüllt denselben Zweck auf sequentielle Weise (lange Folgen identischer Werte werden als \glqq Wert + Anzahl der Wiederholungen\grqq{} gespeichert). So erzwingt etwa Prometheus, dass Metriken monoton in der Zeit eingefügt werden; identische aufeinanderfolgende Werte werden implizit komprimiert.
+
+In der Praxis ist die \textbf{Deduplizierung in Zeitreihendatenbanken} vor allem wichtig, um Eingabeduplikate (z.\,B. durch Netzprobleme mehrfach gelieferte Daten) zu erkennen und um konsistente Abfragen zu gewährleisten (kein doppeltes Zählen derselben Ereignisse). Systeme wie Kafka Streams oder Flink, die oft vor einer TSDB zwischengeschaltet sind, bieten ebenfalls Möglichkeiten zum \glqq Exactly-once\grqq{} oder zum Filtern von Duplikaten anhand eindeutiger IDs. Insofern wird Deduplikation hier als Teil der Datenfluss-Verarbeitung verstanden.
+
+Zusammenfassend kann man sagen: Zeitreihendatenbanken nutzen Deduplikation vor allem als \textbf{Datenqualitäts- und Speicheroptimierungsmaßnahme auf Record-Ebene}. Sie verhindert die unkontrollierte Aufblähung durch doppelte Einträge. Bei klassischen Chunk-basierten Deduplikationsalgorithmen (wie sie bei Backup-Dateien greifen) spielen Zeitreihendaten weniger eine Rolle, da die Struktur sehr homogen und kontinuierlich ist und globale identische Blöcke seltener auftreten. Dennoch profitieren TSDBs vom generellen Prinzip, redundante Informationen nur einmal zu speichern, sei es durch Upsert/Dedup-Regeln bei der Ingestion oder durch nachgelagerte Kompression. Ein treffendes Zitat aus einem QuestDB-Vergleich lautet: \glqq Duplikate sind schmerzhaft – sie verschwenden Ressourcen, verfälschen Analysen. Genau deshalb streben wir an, aus 'at-least-once' ein 'exactly-once' zu machen\grqq. Deduplikation ist das Mittel dazu.
+
+\section{Skalierbare Systeme: Apache Kafka und Hadoop}
+Unter \emph{skalierbaren Systemen} seien hier einerseits verteilte Log-Streaming-Plattformen wie Apache Kafka, andererseits Big-Data-Ökosysteme wie Hadoop (insb. HDFS und MapReduce) verstanden. Beide stellen insofern Sonderfälle dar, als sie Datenhaltung mit bestimmten Redundanzprinzipien verbinden.
+
+\textbf{Apache Kafka} ist eine verteilte Event-Streaming-Plattform, die Nachrichten in \emph{Topics} speichert. Kafka selbst unternimmt im Standardbetrieb keine inhaltliche Deduplikation der gespeicherten Nachrichten – jede produzierte Message wird an alle Broker-Replikate verteilt und dort abgespeichert. Redundanz entsteht hier vor allem durch die gewollte Replikation (typischerweise hält Kafka jede Nachricht in $r$ Kopien für Ausfallsicherheit). Diese Redundanz ist aber intentional und sollte nicht dedupliziert werden, da sonst die Ausfallsicherheit verloren ginge. Dennoch gibt es auf höherer Ebene Aspekte:
+- Kafka bietet die Option des \textbf{Log Compaction}: Bei kompaktieren Topics speichert Kafka pro Schlüssel nur noch die neueste Nachricht und löscht ältere Versionen desselben Schlüssels nach und nach. Dies ist eine Form der Deduplikation auf Schlüsselbasis: wenn z.\,B. für User~123 mehrere Update-Events vorliegen, bleibt nach Compaction nur das letzte (aktuellste) Event im Log, die früheren werden als veraltet entfernt. Log Compaction sorgt so dafür, dass das Log eine Art \glqq Snapshot der letzten Zustände\grqq{} pro Schlüssel darstellt. Wichtig: Es garantiert nicht, dass nur noch eine Nachricht pro Schlüssel vorhanden ist, aber auf lange Sicht werden doppelte Keys bereinigt. Für die Storage-Effizienz bedeutet das, dass bei z.B. einem ständig upgedateten Konfigurationswert nicht alle Zwischenstände ewig Platz belegen, sondern nur der aktuelle Wert persistiert bleibt. Insbesondere bei Anwendungsfällen wie \emph{Statenachbildungen} (Event Sourcing) ist das essenziell. Allerdings entfernt Compaction nur ältere Versionen eines Keys, \emph{nicht aber zwei identische Nachrichten mit verschiedenen Keys}.
+- Auf Producer/Consumer-Seite stellt Kafka mit \textbf{Exactly-Once Semantics} (EOS) sicher, dass Nachrichten nicht mehrfach verarbeitet werden. Dies erreicht Kafka durch \emph{idempotente Producer} und Transaktionen. Das verhindert Duplikate insofern, als ein Producer bei Wiederholungsverbindungen nicht versehentlich denselben Datensatz doppelt einstellt. EOS adressiert die *Verarbeitung* von Events; auf der Speicherebene können temporär Duplikate auftreten, werden aber durch Consumer-Offsets und Transaktionen konsequent ignoriert. Sollte dennoch mal die gleiche Nachricht doppelt im Log landen, könnte ein Verbraucher deduplizieren, indem er z.\,B. eine eindeutige Event-ID prüft. Dieses Schema muss jedoch die Anwendungslogik vorsehen. Kurz: Kafka bietet Mechanismen, um *logische* Doppelübermittlungen zu vermeiden, aber speichert erstmal alles, was reinkommt. 
+
+Man könnte sich ein Feature vorstellen, dass Kafka auf Broker-Seite identische Payloads erkennt und dedupliziert, doch das ist in der Praxis nicht implementiert – u.a. weil Nachrichten in Kafka nicht unbedingt identisch sein müssen, um als Duplikat zu gelten (sie könnten unterschiedliche Offsets haben, die man nicht einfach zusammenführen kann, da Kafka ein sequentielles Commit-Log garantieren muss).
+
+\textbf{Hadoop/HDFS}: Das Hadoop Distributed File System hält große Dateien verteilt mit typischerweise 3-facher Replikation. Wie bei Kafka sind diese Replikate absichtlich vorhanden zur Fehlertoleranz und fallen nicht unter \glqq vermeidbare Redundanz\grqq{}. Dennoch entstehen in Hadoop-Umgebungen redundante Daten auf anderen Ebenen:
+- Wenn dasselbe Input-Dataset mehrfach in HDFS abgelegt wird (z.B. Kopien in verschiedenen Verzeichnissen oder Backup-Snapshots), hätte man globale Duplikate.
+- In MapReduce-Jobs treten oft Zwischenergebnisse (Spill Files, Shuffle Data) auf, die teilweise identische Inhalte haben können. In der Regel werden diese jedoch kurzfristig und verteilt gehalten und nicht dedupliziert.
+- Hadoop ist oft Plattform für Backup-Lösungen (Stichwort \emph{Disk-to-Disk-Backup auf HDFS}). Einige kommerzielle Backup-Produkte schreiben ihre deduplizierten Daten als Chunk-Objekte nach HDFS. In diesem Fall passiert die Deduplikation aber in der Applikationsschicht (Backup-Software), HDFS speichert dann nur bereits deduplizierte Chunks.
+
+Die Forschung hat einige Ansätze untersucht, um Deduplikation \emph{innerhalb} von HDFS bereitzustellen. Ein Beispiel ist \textbf{Extreme Binning} (Bhagwat et al.), das auf verteilte Dateisysteme angewandt werden kann, oder der Ansatz von Wei et al. (2010) mit \emph{ChunkStash}, der schnelle Chunk-Indices auf SSD auslagerte, um Deduplikation performant zu halten. Für Hadoop gab es Prototypen, bei denen ein deduplizierendes Schichten-Dateisystem (z.B. Datamesh oder IBM ProtecTIER) unter HDFS gelegt wurde, sodass HDFS selbst keine Änderung brauchte.
+
+Im Big-Data-Kontext ist oft eher die \textbf{Anwendungs-Deduplikation} gefragt: Zum Beispiel beim Data Cleaning will man doppelte Datensätze (gleiche Zeile in einer großen Sammlung) entfernen. Das ist aber eher der \glqq data cleansing\grqq{}-Aspekt, nicht auf Byte-Ebene. MapReduce-Jobs können solche Duplikaterkennung per Mapper/Reducer (z.B. mit einem \texttt{distinct} oder \texttt{group by}) leicht durchführen: – Hadoop selbst stellt die Infrastruktur (Hashing nach Key in der Shuffle-Phase kann man als deduplizierende Gruppierung betrachten, da identische Keys zusammengeführt werden:).
+
+Aus Infrastruktursicht ist deduplizierter Speicher in Hadoop vor allem bei \textbf{Backup-on-Hadoop} Lösungen interessant: Hier wird Hadoop als kostengünstiges, skalierbares Backup-Target verwendet. Um dort nicht Unmengen identischer Daten zu speichern, kombinieren Anbieter es mit Deduplikation. Beispielsweise legt *Veritas NetBackup* oder *Cloudera* deduplizierte Backup-Images auf HDFS ab; die Deduplikation erfolgt aber in deren Software. 
+
+Eine native Unterstützung in HDFS wurde nicht in den Mainline aufgenommen, vermutlich wegen der Komplexität (HDFS Replikation und Erasure Coding kollidieren etwas mit dem Konzept, deduplizierte Blöcke global zu managen).
+
+Abschließend: Kafka und Hadoop selbst führen keine generelle Inhalts-Deduplikation durch, da bei beiden Systemen Replikation ein zentrales Feature ist und Deduplikation eher auf höherer Ebene oder Spezialfällen überlassen wird. Dennoch profitieren sie von deduplizierten Ansätzen in ihrem Ökosystem – etwa Log Compaction in Kafka für Schlüssel-Zustände: oder deduplizierende Backup-Lösungen auf HDFS. Es zeigt sich, dass Deduplikation in skalierbaren Architekturen machbar ist, aber meist spezifisch eingebaut wird (z.\,B. in Form von kompaktierenden Logs oder externen Tools), statt generisch alle Datenblöcke dedupliziert zu speichern.
+
+
+\chapter{Experimentelles Design und Messplan}
+\label{ch:experiment}
+
+Dieses Kapitel übersetzt die Leitfrage \emph{``Was ist Deduplikation im Kern?''} in ein reproduzierbares, messbares Experiment auf einem modernen cloud-nativen Testbed. Ziel ist es nicht, Deduplikation als gegeben \emph{anzunehmen}, sondern empirisch zu \emph{detektieren} und zu \emph{quantifizieren}, ob (und unter welchen Bedingungen) duplizierte Nutzdaten zu einem geringeren physischen Speicherverbrauch führen.
+
+\section{Testbed und Storage-Konfiguration}
+
+Das experimentelle Testbed ist ein Kubernetes-Cluster mit vier Worker-Nodes. Jedes System unter Test wird als eigener Workload (z.\,B. StatefulSet) mit einer dedizierten PersistentVolumeClaim (PVC) von 100\,GiB betrieben. Die PVCs werden über eine Longhorn StorageClass bereitgestellt.
+
+Longhorn implementiert verteilten \emph{Block-Storage} für Kubernetes, indem eine Engine-Komponente und mehrere Volume-\emph{Replikas} auf unterschiedlichen Nodes ausgeführt werden. Es ist eine Replikationszahl $N=4$ konfiguriert (``Replica 4 über 4 Nodes''), sodass geschriebene Blöcke synchron auf vier Nodes repliziert werden~\cite{LonghornConcepts2026}. Longhorn ist thin-provisioned: der physische Speicherverbrauch wächst mit geschriebenen Blöcken, schrumpft aber \emph{nicht} automatisch, wenn Dateien gelöscht werden, weil Block-Storage nicht erkennen kann, welche Dateisystem-Blöcke frei geworden sind. Daher müssen Post-Delete-Messungen explizite Reclamation-Schritte (z.\,B. DB-Kompaktierung + Dateisystem-Discard/TRIM) enthalten, um freigegebenen Speicher auf Storage-Ebene sichtbar zu machen~\cite{LonghornConcepts2026}.
+
+\paragraph{Speichermessung.}
+Pro Testschritt werden zwei komplementäre Perspektiven erfasst:
+\begin{itemize}
+    \item \textbf{Logische Größe} laut System unter Test (z.\,B. DB-interne Tabellen-/Relationgrößen, interne ``bytes on disk'' Zähler).
+    \item \textbf{Physische Größe} auf Storage-Ebene via Longhorn-Metriken. Longhorn stellt Prometheus-Metriken wie \texttt{longhorn\_volume\_actual\_size\_bytes} bereit, beschrieben als tatsächlich genutzter Speicher pro Volume-Replica~\cite{LonghornMetrics2026}. Für ein Volume mit $N$ Replikas kann der clusterweite physische Footprint näherungsweise als Summe dieser Metrik über alle Replikas bestimmt werden.
+\end{itemize}
+
+\section{Systeme unter Test}
+
+Der Fokus liegt auf den bereits im Cluster integrierten Systemen:
+\begin{itemize}
+    \item \textbf{PostgreSQL} (relationales DBMS).
+    \item \textbf{MariaDB} (relationales DBMS).
+    \item \textbf{Apache Kafka} (Distributed Log / Streaming-Plattform). Retention und Compaction werden über \texttt{cleanup.policy} gesteuert (z.\,B. \texttt{delete} vs.\ \texttt{compact})~\cite{KafkaTopicConfig2026}.
+    \item \textbf{MinIO} (S3-kompatibler Object Storage)~\cite{MinIOGitHub2026}.
+    \item \textbf{Redcomponent-DB} (sehr neues/experimentelles System; wird als Blackbox gemessen und empirisch verglichen).
+\end{itemize}
+
+Um neben der neuen Redcomponent-DB mindestens zwei weitere etablierte Architekturen abzudecken, werden zusätzlich einbezogen:
+\begin{itemize}
+    \item \textbf{ClickHouse} (spaltenorientiertes analytisches DBMS mit starker Kompression)~\cite{SchulzeEtAl2024ClickHouse}.
+    \item \textbf{CockroachDB} (robuste geo-verteilte SQL-Datenbank)~\cite{TaftEtAl2020CockroachDB}.
+\end{itemize}
+
+\section{Datensätze und Payload-Typen}
+
+Ziel ist es, Payload-Typen abzudecken, die (a) reproduzierbar einfügbar sind, (b) reale Workloads repräsentieren und (c) kontrollierte Duplikation erlauben. Zusätzlich zu bereits vorhandenen GitHub-Logs, Banktransaktionen und synthetischen Zufallszahlen werden folgende öffentliche, reproduzierbare Quellen genutzt:
+
+Die bereits vorhandenen GitHub-Logs können als Event-Stream-Daten im Stil der öffentlichen GitHub-Timeline (z.\,B. GH Archive) verstanden werden~\cite{GHArchive2026}.
+
+\paragraph{Bilder (große Binärdaten).}
+NASA stellt umfangreiche Bilddaten bereit und erlaubt eine breite Nachnutzung von NASA-erzeugten Medien~\cite{NASAMediaGuidelines2026}. Als Beispiel für eine einzelne große Datei mit stabilen Download-Links eignet sich das Hubble Ultra Deep Field in hoher Auflösung (z.\,B. \texttt{.tif})~\cite{NASAUltraDeepField2026}. Für Skalierung können weitere NASA-Bilddaten über die NASA Image and Video Library bezogen werden~\cite{NASAImagesLibrary2026}.
+
+\paragraph{Video (sehr große Binärdaten).}
+Für reproduzierbare und legal nutzbare Videodaten eignen sich offen lizenzierte Blender-Filme, z.\,B. \emph{Big Buck Bunny}~\cite{WikimediaBigBuckBunny2026}, \emph{Sintel}~\cite{WikimediaSintel2026} und \emph{Tears of Steel}~\cite{WikimediaTearsOfSteel2026}. Diese Quellen liefern feste Metadaten (Größe, Format, Auflösung) und mehrere Qualitätsstufen.
+
+\paragraph{Volltext (große Textdaten).}
+Public-Domain-Romane sind bei Project Gutenberg verfügbar~\cite{ProjectGutenbergTerms2026}. Für Reproduzierbarkeit wird eine feste Liste von Gutenberg-IDs definiert (z.\,B. \texttt{1342} für \emph{Pride and Prejudice}, \texttt{2701} für \emph{Moby-Dick}) und die Plain-Text-\texttt{.txt}-Varianten gespeichert.
+
+\paragraph{Zusätzliche SQL-Datentypen.}
+Neben Zeitstempeln, numerischen Werten und Strings/VARCHAR werden zwei weitere SQL-relevante Datentypen getestet:
+\begin{itemize}
+    \item \textbf{UUID/GUID} (hoch-entrope Schlüssel; typisch für verteilte Systeme).
+    \item \textbf{JSON/JSONB} (semi-strukturierte Metadaten; häufig in modernen Anwendungen).
+\end{itemize}
+
+\section{Workload-Definition und experimentelle Durchführung}
+
+Das Experiment ist in drei Stufen strukturiert, die direkt die Messanforderungen abbilden: (i) Einfügen, (ii) Einfügen pro Datei, (iii) Löschen pro Datei. Alle Stufen werden für mehrere \emph{Duplikationsgrade} ausgeführt, um Deduplikationseffekte von Kompressionseffekten trennen zu können.
+
+\subsection{Kontrollierte Duplikationsgrade}
+
+Für jeden Datensatz werden drei Varianten erzeugt:
+\begin{itemize}
+    \item \textbf{U0 (unique):} keine intentionalen Duplikate.
+    \item \textbf{U50:} 50\,\% Duplikate (jedes zweite Objekt ist byte-identisch zu einem früheren Payload, aber mit anderem Primärschlüssel/Objektnamen).
+    \item \textbf{U90:} 90\,\% Duplikate (hoch redundanter Workload).
+\end{itemize}
+Damit kann Deduplikation (falls vorhanden) als sub-lineares Wachstum des physischen Speicherverbrauchs bei steigendem Duplikationsgrad sichtbar werden.
+
+\subsection{Stufe 1: Bulk-Insert in einem ``natürlichen'' Schema}
+
+\begin{enumerate}
+    \item \textbf{Schema/Topic/Bucket anlegen.} Tabellen für strukturierte Daten (Zeitstempel, Numerik, Strings, JSON) anlegen, Kafka-Topics erstellen und MinIO-Buckets anlegen.
+    \item \textbf{Bulk-Load.} Jede Datensatzvariante (U0/U50/U90) möglichst idiomatisch laden:
+    \begin{itemize}
+        \item SQL-Systeme: Bulk-Insert/COPY/LOAD in relationale bzw. spaltenorientierte Tabellen.
+        \item Kafka: Messages produzieren (Key = UUID; Value = Payload-Bytes).
+        \item MinIO: Objekte hochladen (Objektname aus UUID; Content = Payload-Bytes).
+    \end{itemize}
+    \item \textbf{Messen.} Wall-Clock Zeit $T_\text{bulk}$ erfassen und Durchsatz (Bytes/s) berechnen. Longhorn-Metrik \texttt{longhorn\_volume\_actual\_size\_bytes} vor und nach dem Load erfassen.
+\end{enumerate}
+
+\subsection{Stufe 2: Per-File Insert als einzelne Records/Objekte/Messages}
+
+Diese Stufe isoliert Effekte der \emph{Objektgranularität}, indem jede Datei als atomare Einheit gespeichert wird.
+
+\begin{enumerate}
+    \item \textbf{Datei explizit modellieren.} Für SQL-Datenbanken eine Tabelle z.\,B.
+    \[
+      \texttt{files(id UUID PRIMARY KEY, mime TEXT, size\_bytes BIGINT, sha256 BYTEA, payload BYTEA)}.
+    \]
+    \item \textbf{Eine Datei pro Operation.} Jede Datei einzeln einfügen (U0/U50/U90), Latenzen pro Datei sowie Gesamtdurchsatz messen.
+    \item \textbf{Deduplikation messen.} Logische Bytes $B_\text{logical}=\sum_i |payload_i|$ berechnen. Physisches Wachstum $B_\text{phys}$ aus Longhorn-Metriken ableiten. Ein effektives Deduplikationsmaß kann z.\,B. als
+    \[
+      \mathrm{EDR} = \frac{B_\text{logical}}{B_\text{phys}/N}
+    \]
+    angegeben werden, wobei $N=4$ die Replikationszahl ist. Werte $\mathrm{EDR}\approx 1$ deuten auf keine Deduplikation über Replikation/Kompression hinaus hin, während $\mathrm{EDR}>1$ auf inhaltliche Wiederverwendung identischer Daten schließen lässt.
+\end{enumerate}
+
+\subsection{Stufe 3: Per-File Delete und Post-Delete Reclamation}
+
+Die Löschstufe misst, ob und wie schnell Speicher nach Entfernen von Duplikaten wieder freigegeben wird.
+
+\begin{enumerate}
+    \item \textbf{Eine Datei nach der anderen löschen.} Jede Datei (Record/Object/Message-Key) einzeln löschen.
+    \item \textbf{Notwendige Maintenance ausführen.} Um Reclamation messbar zu machen, werden systemspezifische Maintenance-Schritte ausgeführt:
+    \begin{itemize}
+        \item PostgreSQL: \texttt{VACUUM FULL} schreibt Tabellen neu und kann Speicher an das Betriebssystem zurückgeben, benötigt aber einen exklusiven Lock~\cite{PostgresVacuum2026}.
+        \item Kafka: Löschung erfolgt über Retention und/oder Compaction (\texttt{cleanup.policy}); daher Messungen nach Ablauf der konfigurierten Retention/Compaction durchführen~\cite{KafkaTopicConfig2026}.
+        \item MinIO: Objekte löschen und Bucket-Größenänderung prüfen.
+        \item Andere SQL-Systeme: jeweils nächstliegende Optimize-/Compaction-Prozedur ausführen.
+    \end{itemize}
+    \item \textbf{Physische Größe erneut messen.} Longhorn-Metriken erneut erfassen. Da Block-Storage freie Blöcke nicht automatisch erkennt, muss vor der finalen Messung Dateisystem-Discard/TRIM durchgeführt werden~\cite{LonghornConcepts2026}.
+\end{enumerate}
+
+\paragraph{Primäre Ergebnisse.}
+Das Experiment liefert (i) Einfügedurchsatz je System und Datentyp, (ii) Kurven des physischen Speicherwachstums über den Duplikationsgrad (U0/U50/U90) und (iii) das Reclamation-Verhalten nach Löschung. Damit wird empirisch beantwortbar, ob Deduplikation eher eine \emph{Datenbankfunktion}, eine \emph{Storage-Layer-Funktion} oder in den getesteten Konfigurationen weitgehend \emph{nicht vorhanden} ist.
+
+
+\chapter{Erste Bewertung und Forschungsziel}
+\label{ch:bewertung}
+Aus der obenstehenden Analyse wird deutlich, dass Deduplikation ein vielseitig einsetzbares Konzept ist, das jedoch je nach Anwendungsdomäne unterschiedlich umgesetzt und gewichtet wird. Eine \textbf{erste Bewertung} der betrachteten Bereiche lässt sich wie folgt zusammenfassen:
+\begin{itemize}
+  \item In \textbf{Backup- und Archivsystemen} (z.\,B. Data Domain) erzielt Deduplikation die größten relativen Einsparungen. Hier ist der Anteil redundanter Daten extrem hoch (viele ähnliche Vollsicherungen über die Zeit) und Performance kann durch geeignete Technik (etwa Sparse Indexing oder spezieller Hardware) ausreichend sichergestellt werden. Diese Systeme erreichen Deduplikationsraten von 10:1 bis 50:1 und sind mittlerweile Stand der Technik in Unternehmen.
+  \item In \textbf{Primärspeichern} und \textbf{Datenbanken} ist Deduplikation diffiziler: Sie muss transparent und latenzarm sein. Dort wird sie nur gezielt für bestimmte Datentypen (LOBs) oder in All-Flash-Arrays stets mit Bedacht auf die Performance implementiert. Die Einsparungen sind moderat (vielleicht 2:1 bis 5:1), können aber im Zusammenspiel mit Kompression dennoch sinnvoll sein. Wichtig ist hier die Möglichkeit, Deduplikation abzuschalten, falls Workloads eher unregelmäßig oder bereits komprimiert sind (denn deduplikationsunfreundliche Daten würden sonst CPU kosten ohne Nutzen).
+  \item In \textbf{Cloud- und Big-Data-Umgebungen} steckt Deduplikation teils noch in den Anfängen oder wird in höheren Schichten adressiert. Verteilte Deduplikation kann viel bringen (Speicher- und Netzlastreduktion), erfordert aber ausgeklügelte verteilte Indexe und birgt Sicherheitsfragen. Die aktuellen Forschungsarbeiten (z.\,B. Fu et al.~\cite{Fu2025}:) zeigen, dass Skalierbarkeit erreicht werden kann, aber oft Kompromisse nötig sind (z.B. segmentierte Indizes, zweistufige Architektur mit Source-Hashing und dann Node-lokaler Dedupe).
+  \item Spezifische Systeme wie \textbf{Kafka} oder \textbf{Zeitreihendatenbanken} nutzen Deduplikation in eingeschränkter Weise (Log-Compaction, Abgleich von Keys/Zeitstempeln) mehr zur Sicherstellung von Konsistenz und geringem Overhead, als um maximale Speicherreduktion zu erzielen. Hier steht die Datenintegrität im Vordergrund (kein Duplikat soll die Auswertung verfälschen), weniger die Platzeinsparung – wobei diese ein willkommener Nebeneffekt sein kann.
+\end{itemize}
+
+Als \textbf{Forschungsziel} dieser Arbeit ergibt sich, die bestehenden Deduplikationsansätze weiterzuentwickeln und auf neue Einsatzfelder zu übertragen. Insbesondere sollen folgende Fragen adressiert werden:
+- \textbf{Optimierung für heterogene Workloads:} Wie kann ein Deduplikationssystem erkennen, mit welcher Art von Daten (hochredundant vs. einmalig, komprimierbar vs. bereits komprimiert) es zu tun hat, um dynamisch die beste Strategie (Chunk-Größe, Indexierung, Inline an/aus) zu wählen? Eine adaptive Deduplikation könnte die Vorteile maximieren, ohne die Nachteile (z.B. Latenz) pauschal in Kauf zu nehmen.
+- \textbf{Verteilte globale Deduplikation:} Auf welche Weise lässt sich Deduplikation in großskaligen Speichern durchführen, ohne an einem globalen Index zu scheitern? Mögliche Richtungen sind hier hierarchische Hash-Indizes, Partitionierung des Fingerprints-Raums (ähnlich Consistent Hashing) oder Peer-to-Peer-Abgleiche zwischen Knoten. Ziel ist ein nahezu lineares Skalierungsverhalten der Deduplikation in einem Cluster.
+- \textbf{Kombination mit Datenschutz:} Da Deduplikation auf inhaltliche Gleichheit prüft, steht sie im Konflikt mit Verschlüsselung. Forschungsbedarf besteht darin, \emph{verschlüsseltes} Deduplizieren zu ermöglichen, z.B. durch konvergente Verschlüsselung (gleiche Klartext ergibt gleichen Ciphertext) oder vertrauenswürdige Module. Wie kann man Deduplikation und Ende-zu-Ende-Verschlüsselung vereinbaren, ohne beides ad absurdum zu führen?
+- \textbf{Fallstudie in speziellen Systemen:} Als Anwendungsfall wird erwogen, Deduplikation in einem skalierbaren Datenhaltungssystem (etwa einem verteilten Datei- oder Objektsystem) prototypisch zu implementieren und zu evaluieren. Hier könnten etwa Kafka-tiered Storage oder HDFS als Basis dienen, um zu zeigen, welche Einsparungen erreichbar sind und wie sich der Durchsatz verhält.
+
+Die Ergebnisse dieser Untersuchung sollen helfen, zu entscheiden, \textbf{wo und wie Deduplikation in Zukunft integraler Bestandteil von Datenhaltungssystemen sein kann}. Während sie in Backups unverzichtbar ist, könnte sie in anderen Bereichen bisher unerschlossene Potenziale bieten – beispielsweise in Kubernetes-basierten Storage-Lösungen, in Data-Lake-Architekturen oder im Edge-Computing (wo Bandbreite teuer ist). Das übergeordnete Forschungsziel lässt sich formulieren als: \emph{Entwicklung eines adaptiven, skalierbaren Deduplikationskonzepts, das in unterschiedlichen modernen Datenhaltungssystemen nahtlos eingebettet werden kann, um Redundanz zu minimieren, ohne die Systemleistung oder -sicherheit wesentlich zu beeinträchtigen.}
+
+Dieses Ziel bildet die Grundlage für weiterführende Arbeiten. Im Rahmen dieser Belegarbeit wurde dafür der Stand der Technik erhoben und die vielfältigen Facetten der Deduplikation aufgezeigt. Die gewonnenen Erkenntnisse fließen nun in die Konzeption eines prototypischen Lösungsansatzes ein, der im nächsten Schritt ausgearbeitet werden soll.
+
+\end{document}
