@@ -750,9 +750,113 @@ a041c82 Complete MetricsTrace + ResultsExporter: 100ms sampling, Kafka dual outp
 
 ---
 
+## Session 9d: comdare-DB Connector + Redis doku.tex + Missing-DB-Analyse
+
+**Datum:** 2026-02-17, Kontext-Fortsetzung
+**Branch:** `development`
+
+### Zusammenfassung Session 9d
+
+1. **Redis zu doku.tex hinzugefuegt** (Section 5.2 "Systems under test")
+   - AOF/RDB Persistenz-Modi erklärend eingeordnet
+   - Cluster-Modus und Key-Prefix-Isolation dokumentiert
+   - War als einziges der 5 bereits deployed-en Systeme NICHT in doku.tex gelistet
+
+2. **comdare-DB Connector erstellt** (8. Connector, vollstaendiges Skeleton)
+   - `comdare_connector.hpp` (45 Zeilen): REST API Interface
+   - `comdare_connector.cpp` (230 Zeilen): HTTP GET/POST via libcurl, DRY_RUN support
+   - `DbSystem::COMDARE_DB` Enum + Parser in config.hpp
+   - MetricsTrace: `collect_comdare_db()` Collector + Factory-Case
+   - main.cpp: include + switch-case + --help Aktualisierung
+   - CMakeLists.txt: comdare_connector.cpp in DEDUP_SOURCES
+
+3. **Missing-DB-Analyse** (aus vorheriger Session, dokumentiert):
+   - **Im Cluster vorhanden, in C++ integriert:** PostgreSQL, CockroachDB, Redis, Kafka, MinIO
+   - **Connector vorhanden, K8s Install FEHLT:** MariaDB, ClickHouse, comdare-DB
+   - **In doku.tex erwähnt, KEIN Connector:** Prometheus (nur Monitoring), Grafana (nur Dashboard)
+   - **doku.tex Phase 2 (P2):** DuckDB, Cassandra, MongoDB (noch ohne Connector)
+
+### comdare-DB API Annahmen (Black Box)
+
+Das REST-API-Design ist vorläufig und wird angepasst sobald comdare-DB deployed ist:
+
+```
+POST   /api/v1/databases/{name}           -- Create database
+DELETE /api/v1/databases/{name}           -- Drop database
+POST   /api/v1/databases/{name}/ingest    -- Binary payload ingest
+DELETE /api/v1/databases/{name}/objects   -- Delete all objects
+POST   /api/v1/databases/{name}/maintain  -- Compaction/GC trigger
+GET    /api/v1/databases/{name}/stats     -- {"logical_size_bytes": N, "object_count": N}
+GET    /api/v1/health                     -- Health check
+```
+
+### MetricsTrace Collector fuer comdare-DB
+
+Der 100ms-Collector pollt `/api/v1/databases/{db}/stats` und extrahiert:
+- `logical_size_bytes` (Bytes)
+- `object_count` (Anzahl)
+- `compaction_pending` (Anzahl ausstehende Compaction-Jobs)
+
+### Dateien geaendert/erstellt in Session 9d
+
+| Datei | Aktion | Zeilen |
+|-------|--------|--------|
+| `connectors/comdare_connector.hpp` | NEU | ~45 |
+| `connectors/comdare_connector.cpp` | NEU | ~230 |
+| `config.hpp` | Erweitert | +4 (COMDARE_DB enum+str+parser) |
+| `experiment/metrics_trace.hpp` | Erweitert | +1 (collect_comdare_db decl) |
+| `experiment/metrics_trace.cpp` | Erweitert | +25 (collector + factory case) |
+| `main.cpp` | Erweitert | +5 (include, switch, help, comment) |
+| `CMakeLists.txt` | Erweitert | +1 |
+| `docs/doku.tex` | Erweitert | +1 (Redis in Section 5.2) |
+| Session-Doku | Erweitert | +120 |
+
+### Connector-Inventar nach Session 9d (8 von 8 komplett)
+
+| # | System | Header | .cpp | MetricsCollector | DRY_RUN | K8s deployed |
+|---|--------|--------|------|------------------|---------|--------------|
+| 1 | PostgreSQL | postgres_connector.hpp | ✅ | ✅ collect_postgresql | ✅ | ✅ 4/4 |
+| 2 | CockroachDB | postgres_connector.hpp | ✅ | ✅ collect_cockroachdb | ✅ | ✅ 4/4 |
+| 3 | Redis | redis_connector.hpp | ✅ | ✅ collect_redis | ✅ | ✅ 4+4/4 |
+| 4 | Kafka | kafka_connector.hpp | ✅ | ✅ collect_kafka | ✅ | ✅ 7/7 |
+| 5 | MinIO | minio_connector.hpp | ✅ | ✅ collect_minio | ✅ | ✅ 4/4 |
+| 6 | MariaDB | mariadb_connector.hpp | ✅ | ✅ collect_mariadb | ✅ | ❌ TODO |
+| 7 | ClickHouse | clickhouse_connector.hpp | ✅ | ✅ collect_clickhouse | ✅ | ❌ TODO |
+| 8 | **comdare-DB** | **comdare_connector.hpp** | **✅** | **✅ collect_comdare_db** | **✅** | **❌ TODO** |
+
+### Verbleibende Aufgaben nach Session 9d
+
+#### DONE (Session 9 + 9c + 9d)
+- [x] CI Triple Pipeline (7 Jobs, 6 Stages)
+- [x] --cleanup-only Modus
+- [x] PVC-Namen korrigiert (4 Fehler)
+- [x] MetricsTrace Header + Implementation (8 Collectors + Kafka Producer)
+- [x] ResultsExporter (Kafka→CSV→git push)
+- [x] main.cpp Integration (register/start/stop + export-before-cleanup)
+- [x] MinIO Physical Size via Prometheus Endpoint
+- [x] doku.tex Naming (Redcomponent-DB → comdare-DB)
+- [x] Redis in doku.tex Section 5.2 aufgenommen
+- [x] comdare-DB Connector Skeleton (vollstaendig)
+
+#### OFFEN (naechste Session)
+
+| Prioritaet | Typ | Aufgabe | Abhaengigkeit |
+|-----------|-----|---------|---------------|
+| P0 | INFRA | K8s Runner neustart | kubectl rollout restart |
+| P0 | INFRA | Prometheus + Grafana deployen | kube-prometheus-stack |
+| P0 | INFRA | MariaDB in Cluster deployen | StatefulSet, 4 Replicas |
+| P0 | INFRA | ClickHouse in Cluster deployen | StatefulSet, 4 Replicas |
+| P0 | INFRA | comdare-DB in Cluster deployen | StatefulSet, Longhorn PVC |
+| P1 | CODE | comdare-DB API Endpunkte alignen | comdare-DB muss deployed sein |
+| P2 | CODE | Grafana Dashboard JSON Template | Prometheus muss deployed sein |
+| P2 | DOC | doku.tex Phase 2 (DuckDB, Cassandra, MongoDB) | Kein Blocker |
+
+---
+
 ## 12. Git History
 
 ```
+34ddc2d Session 9c docs: elaborate with all implementation details + status
 0c5edf3 Fix naming + MinIO physical size: comdare-DB rename, S3 metrics endpoint
 a041c82 Complete MetricsTrace + ResultsExporter: 100ms sampling, Kafka dual output, CSV export
 70c113f WIP: MetricsTrace architecture + config fixes for 100ms Kafka sampling
@@ -782,4 +886,4 @@ fa9d890 Initial commit: LaTeX paper + experiment framework + kartografie
 | 8 | 2026-02-17 | Longhorn Metrics, MariaDB/ClickHouse Stubs, EDR + Throughput | b0bb5b6 |
 | **9** | **2026-02-17** | **Triple Pipeline, Cleanup-Only, MetricsTrace Arch** | **5ac1732, 5d23bbb, 70c113f** |
 | **9c** | **2026-02-17** | **MetricsTrace+Exporter KOMPLETT, MinIO Phys, Naming** | **a041c82, 0c5edf3** |
-| **9** | **2026-02-17** | **Triple Pipeline Fix, Cleanup-Only, 100ms MetricsTrace Architektur** | **5ac1732, 5d23bbb, 70c113f** |
+| **9d** | **2026-02-17** | **comdare-DB Connector, Redis doku.tex, Missing-DB-Analyse** | **(pending commit)** |

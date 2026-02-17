@@ -13,7 +13,8 @@
 //
 // Systems under test (doku.tex Chapter 5):
 //   PostgreSQL, CockroachDB, Redis, Kafka, MinIO,
-//   MariaDB (TODO: cluster install), ClickHouse (TODO: cluster install)
+//   MariaDB (TODO: cluster install), ClickHouse (TODO: cluster install),
+//   comdare-DB (TODO: cluster install)
 // =============================================================================
 
 #include <cstdlib>
@@ -32,6 +33,7 @@
 #include "connectors/minio_connector.hpp"
 #include "connectors/mariadb_connector.hpp"
 #include "connectors/clickhouse_connector.hpp"
+#include "connectors/comdare_connector.hpp"
 #include "experiment/schema_manager.hpp"
 #include "experiment/data_loader.hpp"
 #include "experiment/metrics_collector.hpp"
@@ -51,7 +53,7 @@ static void print_usage(const char* prog) {
         "  --results-dir PATH  Results output directory (default: results/)\n"
         "  --systems LIST      Comma-separated systems to test (default: all)\n"
         "                      Valid: postgresql,cockroachdb,redis,kafka,minio,\n"
-        "                             mariadb,clickhouse\n"
+        "                             mariadb,clickhouse,comdare-db\n"
         "  --grades LIST       Comma-separated grades (default: U0,U50,U90)\n"
         "  --lab-schema NAME   Lab schema name (default: dedup_lab)\n"
         "  --generate-data     Generate synthetic test datasets before running\n"
@@ -221,6 +223,9 @@ int main(int argc, char* argv[]) {
                 break;
             case dedup::DbSystem::CLICKHOUSE:
                 conn = std::make_shared<dedup::ClickHouseConnector>();
+                break;
+            case dedup::DbSystem::COMDARE_DB:
+                conn = std::make_shared<dedup::ComdareConnector>();
                 break;
         }
 

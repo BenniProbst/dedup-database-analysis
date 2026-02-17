@@ -196,6 +196,7 @@ The experiment focuses on the systems already integrated into the test cluster:
 \begin{itemize}
     \item \textbf{PostgreSQL} (relational DBMS).
     \item \textbf{MariaDB} (relational DBMS).
+    \item \textbf{Redis} (in-memory key-value store, deployed in cluster mode). Lab isolation uses a key prefix (\texttt{dedup:*}); physical storage is measured via Longhorn PVC. Redis is included because its append-only file (AOF) and RDB persistence modes exhibit fundamentally different storage behaviour under duplication compared to page-based relational engines.
     \item \textbf{Apache Kafka} (distributed log / streaming platform). Topic-level retention and compaction are controlled by \texttt{cleanup.policy} (e.g., \texttt{delete} vs.\ \texttt{compact})~\cite{KafkaTopicConfig2026}.
     \item \textbf{MinIO} (S3-compatible object storage)~\cite{MinIOGitHub2026}.
     \item \textbf{comdare-DB} (very recent / experimental system; treated as a black box in measurement and compared empirically).

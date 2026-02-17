@@ -114,6 +114,7 @@ namespace collectors {
     std::vector<MetricPoint> collect_minio(const DbConnection& conn);
     std::vector<MetricPoint> collect_mariadb(const DbConnection& conn);
     std::vector<MetricPoint> collect_clickhouse(const DbConnection& conn);
+    std::vector<MetricPoint> collect_comdare_db(const DbConnection& conn);
 
     // Returns the right collector for a DbSystem enum
     MetricCollectorFn for_system(DbSystem system);

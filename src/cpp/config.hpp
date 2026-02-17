@@ -39,7 +39,8 @@ enum class DbSystem {
     KAFKA,
     MINIO,
     MARIADB,
-    CLICKHOUSE
+    CLICKHOUSE,
+    COMDARE_DB
 };
 
 inline const char* db_system_str(DbSystem db) {
@@ -51,6 +52,7 @@ inline const char* db_system_str(DbSystem db) {
         case DbSystem::MINIO:       return "minio";
         case DbSystem::MARIADB:     return "mariadb";
         case DbSystem::CLICKHOUSE:  return "clickhouse";
+        case DbSystem::COMDARE_DB:  return "comdare-db";
     }
     return "??";
 }
@@ -174,6 +176,7 @@ inline DbSystem parse_db_system(const std::string& s) {
     if (s == "minio") return DbSystem::MINIO;
     if (s == "mariadb") return DbSystem::MARIADB;
     if (s == "clickhouse") return DbSystem::CLICKHOUSE;
+    if (s == "comdare-db") return DbSystem::COMDARE_DB;
     return DbSystem::POSTGRESQL;
 }
 

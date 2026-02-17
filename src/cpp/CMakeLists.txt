@@ -56,6 +56,7 @@ set(DEDUP_SOURCES
     connectors/minio_connector.cpp
     connectors/mariadb_connector.cpp
     connectors/clickhouse_connector.cpp
+    connectors/comdare_connector.cpp
     experiment/schema_manager.cpp
     experiment/data_loader.cpp
     experiment/metrics_collector.cpp

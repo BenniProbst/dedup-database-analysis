@@ -607,6 +607,32 @@ std::vector<MetricPoint> collect_clickhouse(const DbConnection& conn) {
     return pts;
 }
 
+// --- comdare-DB collector (HTTP REST: GET /api/v1/databases/{db}/stats) -----
+
+std::vector<MetricPoint> collect_comdare_db(const DbConnection& conn) {
+    std::vector<MetricPoint> pts;
+    std::string base = "http://" + conn.host + ":" + std::to_string(conn.port);
+    std::string db = conn.lab_schema.empty() ? "dedup_lab" : conn.lab_schema;
+
+    std::string resp = http_get(base + "/api/v1/databases/" + db + "/stats", 5);
+    if (!resp.empty()) {
+        try {
+            auto j = nlohmann::json::parse(resp);
+            if (j.contains("logical_size_bytes"))
+                pts.push_back(mp("comdare-db", "logical_size_bytes",
+                    j["logical_size_bytes"].get<double>(), "bytes"));
+            if (j.contains("object_count"))
+                pts.push_back(mp("comdare-db", "object_count",
+                    j["object_count"].get<double>(), "count"));
+            if (j.contains("compaction_pending"))
+                pts.push_back(mp("comdare-db", "compaction_pending",
+                    j["compaction_pending"].get<double>(), "count"));
+        } catch (...) {}
+    }
+
+    return pts;
+}
+
 // --- Factory ----------------------------------------------------------------
 
 MetricCollectorFn for_system(DbSystem system) {
@@ -618,6 +644,7 @@ MetricCollectorFn for_system(DbSystem system) {
         case DbSystem::MINIO:       return collect_minio;
         case DbSystem::MARIADB:     return collect_mariadb;
         case DbSystem::CLICKHOUSE:  return collect_clickhouse;
+        case DbSystem::COMDARE_DB:  return collect_comdare_db;
     }
     return collect_postgresql;
 }
