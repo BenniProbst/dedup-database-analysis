@@ -1172,6 +1172,93 @@ Datei/Objekt/Key/Message in Nanosekunden-Praezision mittels `ScopedTimer` RAII-P
 6. **comdare-DB Deploy** + API-Alignment
 7. **Experiment-Run**: Manueller Trigger Pipeline 3
 
+---
+
+## Session 9g: Pipeline-Kompletierung + Code-Fixes (2026-02-18)
+
+### Zusammenfassung
+
+Triple Pipeline komplett ueberarbeitet. Pipeline 3 (Experiment) hatte 5 Luecken,
+die alle geschlossen wurden. Zusaetzlich Docker Build Pipeline und diverse Code-Fixes.
+
+### Commits
+
+| Commit | Beschreibung |
+|--------|-------------|
+| `d4fbbe9` | Config-Fixes: MariaDB+ClickHouse in default_k8s_config(), Prometheus URL, Latenz-JSON float-Division, mean_us, Summary-Tabelle mit p50/p95/p99 |
+| `959e54a` | Dockerfile (Multi-stage: gcc:14-bookworm → debian:bookworm-slim) |
+| `42c5b09` | K8s Manifeste: MariaDB, ClickHouse, Monitoring, Experiment-Jobs |
+| `e4c0f60` | Doc-Archive (datierte .tex/.bib Snapshots + doku_de.tex) |
+| `0e2eed8` | **Pipeline-Kompletierung:** Config-Generierung, Auto-Cleanup, Docker Build |
+
+### Pipeline 3 Luecken (ALLE BEHOBEN)
+
+1. **Config-Generierung** (war: kein Config-File → keine DB-Passwoerter)
+   - `experiment:run` generiert jetzt `/tmp/dedup-config.json` aus CI-Variablen
+   - Passwoerter aus masked CI Variables: `DEDUP_PG_PASSWORD`, `DEDUP_CRDB_PASSWORD`, etc.
+   - Prometheus URL + Kafka Bootstrap korrekt durchgereicht
+
+2. **Auto-Cleanup** (war: nur manuell → Risiko verwaister Lab-Schemas)
+   - `after_script` in `experiment:run` fuehrt Cleanup IMMER durch (auch bei Fehler/Timeout)
+   - `experiment:cleanup` bleibt als manueller Fallback
+
+3. **Git-Credentials** (war: fehlend → ResultsExporter konnte nicht pushen)
+   - `CI_JOB_TOKEN` fuer Git-Push konfiguriert
+   - `git_export.remote_name` auf `origin` gesetzt (CI Token-Auth)
+
+4. **Docker Build** (war: Dockerfile existierte, aber kein CI-Job)
+   - `docker:build` Job mit Kaniko (K8s-kompatibel, kein Docker-in-Docker)
+   - Pusht nach `${CI_REGISTRY_IMAGE}/dedup-test:{SHA,latest}`
+   - Manuell, optional — Experiment baut weiterhin aus Source
+
+5. **Smoke-Test Robustheit** (war: python3 Abhaengigkeit + ls glob)
+   - `python3` → `awk` fuer Dup-Berechnung
+   - `ls *.dat | wc -l` → `find` fuer zuverlaessiges File-Counting
+
+### Code-Fixes (Commit d4fbbe9)
+
+- `config.hpp`: MariaDB + ClickHouse in `default_k8s_config()` hinzugefuegt
+- `config.hpp`: Prometheus URL Default auf `kube-prometheus-stack-prometheus` korrigiert
+- `config.example.json`: Prometheus URL synchronisiert
+- `data_loader.cpp`: `_us` Felder jetzt Double-Division statt Integer-Truncation; `mean_us` hinzugefuegt
+- `main.cpp`: Summary-Tabelle mit p50/p95/p99 Latenz-Spalten
+- `.gitignore`: `docs/*.zip` ausgeschlossen
+
+### Pipeline-Status (KOMPLETT)
+
+| Pipeline | Jobs | Trigger | Status |
+|----------|------|---------|--------|
+| 1 LaTeX | `latex:compile` | Auto (docs/**) | ✅ Komplett |
+| 2 C++ | `cpp:build` → `cpp:smoke-test` + `cpp:full-dry-test` | Auto (src/cpp/**) | ✅ Komplett |
+| 3 Experiment | `experiment:build` → `experiment:run` (+ after_script cleanup) → `experiment:cleanup` | Manuell | ✅ Komplett |
+| Docker | `docker:build` (Kaniko) | Manuell | ✅ Neu |
+
+### CI-Variablen (Settings > CI/CD > Variables, MASKED)
+
+| Variable | Beschreibung |
+|----------|-------------|
+| `DEDUP_PG_PASSWORD` | PostgreSQL dedup-lab Passwort |
+| `DEDUP_CRDB_PASSWORD` | CockroachDB dedup-lab Passwort |
+| `DEDUP_REDIS_PASSWORD` | Redis Passwort (leer in Cluster) |
+| `DEDUP_MARIADB_PASSWORD` | MariaDB dedup-lab Passwort |
+| `DEDUP_MINIO_PASSWORD` | MinIO dedup-lab Passwort |
+
+### Naechste Schritte (aktualisiert)
+
+#### SOFORT machbar
+1. **CI-Variablen** in GitLab setzen (Passwoerter fuer Lab-User)
+2. **doku.tex Phase 2**: Weitere DB-Sections
+3. **Test-Coverage**: Unit-Tests fuer Latenz-Statistik
+
+#### Wartet auf INFRA
+4. **MariaDB + ClickHouse Deploy** in K8s
+5. **Prometheus + Grafana Dashboard** importieren
+6. **K8s Runner** → Pipeline 2+3 live testen
+
+#### Wartet auf User
+7. **comdare-DB Deploy** + API-Alignment
+8. **Experiment-Run**: Manueller Trigger Pipeline 3
+
 ### 10. Kritische Dateipfade fuer Kontext-Einstieg
 
 | Was | Pfad |
