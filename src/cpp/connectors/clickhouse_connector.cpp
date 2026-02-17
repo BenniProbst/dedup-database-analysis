@@ -189,23 +189,100 @@ MeasureResult ClickHouseConnector::bulk_insert(const std::string& data_dir, DupG
 }
 
 MeasureResult ClickHouseConnector::perfile_insert(const std::string& data_dir, DupGrade grade) {
-    return bulk_insert(data_dir, grade);
+    MeasureResult result{};
+    const std::string dir = data_dir + "/" + dup_grade_str(grade);
+    LOG_INF("[clickhouse] Per-file insert from %s", dir.c_str());
+
+#ifdef DEDUP_DRY_RUN
+    LOG_INF("[clickhouse] DRY RUN: would per-file-insert files");
+    result.rows_affected = 42;
+    return result;
+#endif
+
+    Timer total_timer;
+    total_timer.start();
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        auto fsize = entry.file_size();
+        std::ifstream f(entry.path(), std::ios::binary);
+        std::vector<char> buf(fsize);
+        f.read(buf.data(), static_cast<std::streamsize>(fsize));
+
+        std::string sha256 = SHA256::hash_hex(buf.data(), fsize);
+
+        std::ostringstream hex_payload;
+        for (size_t i = 0; i < fsize; ++i) {
+            hex_payload << std::hex << std::setfill('0') << std::setw(2)
+                        << (static_cast<unsigned>(buf[i]) & 0xFF);
+        }
+
+        std::string sql = "INSERT INTO " + database_ + ".files "
+            "(mime, size_bytes, sha256, payload) VALUES "
+            "('application/octet-stream', " + std::to_string(fsize) +
+            ", unhex('" + sha256 + "'), unhex('" + hex_payload.str() + "'))";
+
+        int64_t insert_ns = 0;
+        {
+            ScopedTimer st(insert_ns);
+            http_exec(sql);
+        }
+        result.rows_affected++;
+        result.per_file_latencies_ns.push_back(insert_ns);
+        result.bytes_logical += fsize;
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[clickhouse] Per-file insert: %lld rows, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, total_timer.elapsed_ms());
+    return result;
 }
 
 MeasureResult ClickHouseConnector::perfile_delete() {
     MeasureResult result{};
-    LOG_INF("[clickhouse] Per-file delete (ALTER TABLE DELETE)");
+    LOG_INF("[clickhouse] Per-file delete (row-by-row lightweight delete)");
 
 #ifdef DEDUP_DRY_RUN
+    LOG_INF("[clickhouse] DRY RUN: would delete rows individually");
     return result;
 #endif
 
-    Timer timer;
-    timer.start();
-    // ClickHouse lightweight delete (marks rows, cleaned up by mutations)
-    http_exec("ALTER TABLE " + database_ + ".files DELETE WHERE 1=1");
-    timer.stop();
-    result.duration_ns = timer.elapsed_ns();
+    Timer total_timer;
+    total_timer.start();
+
+    // Fetch all IDs first
+    std::string ids_resp = http_query(
+        "SELECT toString(id) FROM " + database_ + ".files FORMAT TabSeparated");
+
+    std::vector<std::string> ids;
+    std::istringstream iss(ids_resp);
+    std::string line;
+    while (std::getline(iss, line)) {
+        // Trim whitespace
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r' || line.back() == ' '))
+            line.pop_back();
+        if (!line.empty()) ids.push_back(line);
+    }
+
+    LOG_INF("[clickhouse] Deleting %zu rows individually", ids.size());
+
+    for (const auto& id : ids) {
+        std::string sql = "ALTER TABLE " + database_ + ".files DELETE WHERE id = '" + id + "'";
+
+        int64_t del_ns = 0;
+        {
+            ScopedTimer st(del_ns);
+            http_exec(sql);
+        }
+        result.rows_affected++;
+        result.per_file_latencies_ns.push_back(del_ns);
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[clickhouse] Per-file delete: %lld rows, %lld ms",
+        result.rows_affected, total_timer.elapsed_ms());
     return result;
 }
 

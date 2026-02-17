@@ -176,23 +176,108 @@ MeasureResult RedisConnector::bulk_insert(const std::string& data_dir, DupGrade 
 }
 
 MeasureResult RedisConnector::perfile_insert(const std::string& data_dir, DupGrade grade) {
-    // Same as bulk for Redis (each SET is atomic)
-    return bulk_insert(data_dir, grade);
+    MeasureResult result{};
+    const std::string dir = data_dir + "/" + dup_grade_str(grade);
+    LOG_INF("[redis] Per-file insert from %s (with per-key latency)", dir.c_str());
+
+#ifdef DEDUP_DRY_RUN
+    LOG_INF("[redis] DRY RUN: would per-file-insert keys");
+    result.rows_affected = 42;
+    return result;
+#endif
+
+#ifdef HAS_HIREDIS
+    Timer total_timer;
+    total_timer.start();
+    auto* c = static_cast<redisContext*>(ctx_);
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        auto fsize = entry.file_size();
+        std::ifstream f(entry.path(), std::ios::binary);
+        std::vector<char> buf(fsize);
+        f.read(buf.data(), static_cast<std::streamsize>(fsize));
+
+        std::string key = std::string(KEY_PREFIX) + entry.path().filename().string();
+
+        int64_t set_ns = 0;
+        {
+            ScopedTimer st(set_ns);
+            auto* reply = static_cast<redisReply*>(
+                redisCommand(c, "SET %s %b", key.c_str(), buf.data(), fsize));
+            if (reply) {
+                result.rows_affected++;
+                freeReplyObject(reply);
+            }
+        }
+        result.per_file_latencies_ns.push_back(set_ns);
+        result.bytes_logical += fsize;
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[redis] Per-file insert: %lld keys, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, total_timer.elapsed_ms());
+#endif
+    return result;
 }
 
 MeasureResult RedisConnector::perfile_delete() {
     MeasureResult result{};
-    LOG_INF("[redis] Deleting all lab keys (prefix: %s*)", KEY_PREFIX);
+    LOG_INF("[redis] Deleting all lab keys individually (prefix: %s*)", KEY_PREFIX);
 #ifdef DEDUP_DRY_RUN
+    LOG_INF("[redis] DRY RUN: would delete lab keys individually");
     return result;
 #endif
 #ifdef HAS_HIREDIS
-    Timer timer;
-    timer.start();
-    int64_t deleted = delete_all_lab_keys();
-    timer.stop();
-    result.duration_ns = timer.elapsed_ns();
-    result.rows_affected = deleted;
+    if (!ctx_) return result;
+    auto* c = static_cast<redisContext*>(ctx_);
+
+    Timer total_timer;
+    total_timer.start();
+
+    // Collect all lab keys first
+    std::vector<std::string> all_keys;
+    std::string cursor = "0";
+    std::string pattern = std::string(KEY_PREFIX) + "*";
+
+    do {
+        auto* reply = static_cast<redisReply*>(
+            redisCommand(c, "SCAN %s MATCH %s COUNT 1000",
+                         cursor.c_str(), pattern.c_str()));
+        if (!reply || reply->type != REDIS_REPLY_ARRAY || reply->elements != 2) {
+            if (reply) freeReplyObject(reply);
+            break;
+        }
+        cursor = reply->element[0]->str;
+        auto* keys = reply->element[1];
+        for (size_t i = 0; i < keys->elements; i++) {
+            all_keys.emplace_back(keys->element[i]->str, keys->element[i]->len);
+        }
+        freeReplyObject(reply);
+    } while (cursor != "0");
+
+    LOG_INF("[redis] Deleting %zu keys individually", all_keys.size());
+
+    // Delete each key individually with latency tracking
+    for (const auto& key : all_keys) {
+        int64_t del_ns = 0;
+        {
+            ScopedTimer st(del_ns);
+            auto* reply = static_cast<redisReply*>(
+                redisCommand(c, "DEL %s", key.c_str()));
+            if (reply && reply->type == REDIS_REPLY_INTEGER && reply->integer > 0) {
+                result.rows_affected++;
+            }
+            if (reply) freeReplyObject(reply);
+        }
+        result.per_file_latencies_ns.push_back(del_ns);
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[redis] Per-key delete: %lld keys, %lld ms",
+        result.rows_affected, total_timer.elapsed_ms());
 #endif
     return result;
 }

@@ -281,8 +281,8 @@ MeasureResult PostgresConnector::perfile_insert(const std::string& data_dir, Dup
                 PQclear(res);
             }
         }
+        result.per_file_latencies_ns.push_back(insert_ns);
         result.bytes_logical += fsize;
-        // TODO: record per-file latency for histogram
     }
 
     total_timer.stop();
@@ -296,22 +296,53 @@ MeasureResult PostgresConnector::perfile_insert(const std::string& data_dir, Dup
 
 MeasureResult PostgresConnector::perfile_delete() {
     MeasureResult result{};
-    LOG_INF("[%s] Per-file delete from %s.files", system_name(), schema_.c_str());
+    LOG_INF("[%s] Per-file delete from %s.files (row-by-row)", system_name(), schema_.c_str());
 
 #ifdef DEDUP_DRY_RUN
-    LOG_INF("[%s] DRY RUN: would delete all from lab schema", system_name());
+    LOG_INF("[%s] DRY RUN: would delete all rows individually from lab schema", system_name());
     return result;
 #endif
 
-    Timer timer;
-    timer.start();
+    Timer total_timer;
+    total_timer.start();
 
-    char sql[256];
-    std::snprintf(sql, sizeof(sql), "DELETE FROM %s.files", schema_.c_str());
-    exec(sql);
+    // Fetch all row IDs first
+    char select_sql[256];
+    std::snprintf(select_sql, sizeof(select_sql),
+        "SELECT id::text FROM %s.files", schema_.c_str());
+    PGresult* ids_res = query(select_sql);
 
-    timer.stop();
-    result.duration_ns = timer.elapsed_ns();
+    if (ids_res) {
+        int nrows = PQntuples(ids_res);
+        LOG_INF("[%s] Deleting %d rows individually", system_name(), nrows);
+
+        char delete_sql[512];
+        std::snprintf(delete_sql, sizeof(delete_sql),
+            "DELETE FROM %s.files WHERE id = $1::uuid", schema_.c_str());
+
+        for (int i = 0; i < nrows; ++i) {
+            const char* id_val = PQgetvalue(ids_res, i, 0);
+            const char* values[1] = { id_val };
+
+            int64_t del_ns = 0;
+            {
+                ScopedTimer st(del_ns);
+                PGresult* del_res = PQexecParams(conn_, delete_sql, 1,
+                    nullptr, values, nullptr, nullptr, 0);
+                if (PQresultStatus(del_res) == PGRES_COMMAND_OK) {
+                    result.rows_affected++;
+                }
+                PQclear(del_res);
+            }
+            result.per_file_latencies_ns.push_back(del_ns);
+        }
+        PQclear(ids_res);
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[%s] Per-file delete: %lld rows, %lld ms",
+        system_name(), result.rows_affected, total_timer.elapsed_ms());
     return result;
 }
 

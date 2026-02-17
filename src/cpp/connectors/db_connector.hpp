@@ -4,16 +4,21 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <numeric>
 #include "../config.hpp"
 
 namespace dedup {
 
 // Result of a single measurement operation
 struct MeasureResult {
-    int64_t duration_ns;      // Wall-clock time in nanoseconds
-    int64_t rows_affected;    // Number of rows/records/objects affected
-    int64_t bytes_logical;    // Logical data size (as reported by DB)
-    std::string error;        // Empty on success
+    int64_t duration_ns = 0;      // Wall-clock time in nanoseconds
+    int64_t rows_affected = 0;    // Number of rows/records/objects affected
+    int64_t bytes_logical = 0;    // Logical data size (as reported by DB)
+    std::string error;            // Empty on success
+
+    // Per-file latency tracking for histogram analysis (doku.tex Stage 2/3)
+    std::vector<int64_t> per_file_latencies_ns;
 };
 
 // Abstract database connector interface

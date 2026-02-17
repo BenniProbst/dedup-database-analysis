@@ -23,11 +23,11 @@ stages:
   - experiment-cleanup
 
 variables:
-  PROMETHEUS_URL: http://prometheus.monitoring.svc.cluster.local:9090
+  PROMETHEUS_URL: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
   REPLICA_COUNT: "4"
   LAB_SCHEMA: dedup_lab
   DUP_GRADES: "U0,U50,U90"
-  SYSTEMS: "postgresql,cockroachdb,redis,kafka,minio"
+  SYSTEMS: "postgresql,cockroachdb,redis,kafka,minio,mariadb,clickhouse"
 
 # =============================================================================
 # PIPELINE 1: LaTeX Compilation (auto-triggered on document changes)

@@ -162,6 +162,48 @@ bool ComdareConnector::reset_lab_schema(const std::string& schema_name) {
     return drop_lab_schema(schema_name) && create_lab_schema(schema_name);
 }
 
+// POST with metadata headers (X-Filename, X-SHA256, X-Size-Bytes)
+std::string ComdareConnector::http_post_with_metadata(
+    const std::string& path, const char* data, size_t len,
+    const std::string& filename, const std::string& sha256, size_t size_bytes) {
+#ifdef DEDUP_DRY_RUN
+    LOG_DBG("[comdare-db] DRY RUN POST %s (%zu bytes, file=%s)", path.c_str(), len, filename.c_str());
+    return "{}";
+#endif
+    CURL* curl = curl_easy_init();
+    if (!curl) return "";
+
+    std::string url = endpoint_ + path;
+    std::string response;
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/octet-stream");
+    headers = curl_slist_append(headers, ("X-Filename: " + filename).c_str());
+    headers = curl_slist_append(headers, ("X-SHA256: " + sha256).c_str());
+    headers = curl_slist_append(headers, ("X-Size-Bytes: " + std::to_string(size_bytes)).c_str());
+    headers = curl_slist_append(headers, "X-MIME: application/octet-stream");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(len));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cd_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || http_code >= 400) {
+        LOG_ERR("[comdare-db] POST %s failed: curl=%d, http=%ld", path.c_str(), res, http_code);
+        return "";
+    }
+    return response;
+}
+
 MeasureResult ComdareConnector::bulk_insert(const std::string& data_dir, DupGrade grade) {
     MeasureResult result{};
     const std::string dir = data_dir + "/" + dup_grade_str(grade);
@@ -184,18 +226,11 @@ MeasureResult ComdareConnector::bulk_insert(const std::string& data_dir, DupGrad
         f.read(buf.data(), static_cast<std::streamsize>(fsize));
 
         std::string sha256 = SHA256::hash_hex(buf.data(), fsize);
-
-        // POST binary payload with metadata headers
-        nlohmann::json meta = {
-            {"filename", entry.path().filename().string()},
-            {"size_bytes", fsize},
-            {"sha256", sha256},
-            {"mime", "application/octet-stream"}
-        };
+        std::string filename = entry.path().filename().string();
 
         std::string path = "/api/v1/databases/" + database_ + "/ingest";
-        std::string resp = http_post(path, std::string(buf.data(), fsize),
-                                      "application/octet-stream");
+        std::string resp = http_post_with_metadata(path, buf.data(), fsize,
+                                                    filename, sha256, fsize);
         if (!resp.empty()) {
             result.rows_affected++;
         }
@@ -210,35 +245,128 @@ MeasureResult ComdareConnector::bulk_insert(const std::string& data_dir, DupGrad
 }
 
 MeasureResult ComdareConnector::perfile_insert(const std::string& data_dir, DupGrade grade) {
-    // comdare-DB: per-file insert uses same endpoint, measured individually
-    return bulk_insert(data_dir, grade);
+    MeasureResult result{};
+    const std::string dir = data_dir + "/" + dup_grade_str(grade);
+    LOG_INF("[comdare-db] Per-file insert from %s", dir.c_str());
+
+#ifdef DEDUP_DRY_RUN
+    LOG_INF("[comdare-db] DRY RUN: would per-file-insert files");
+    result.rows_affected = 42;
+    return result;
+#endif
+
+    Timer total_timer;
+    total_timer.start();
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        auto fsize = entry.file_size();
+        std::ifstream f(entry.path(), std::ios::binary);
+        std::vector<char> buf(fsize);
+        f.read(buf.data(), static_cast<std::streamsize>(fsize));
+
+        std::string sha256 = SHA256::hash_hex(buf.data(), fsize);
+        std::string filename = entry.path().filename().string();
+        std::string path = "/api/v1/databases/" + database_ + "/ingest";
+
+        int64_t insert_ns = 0;
+        {
+            ScopedTimer st(insert_ns);
+            std::string resp = http_post_with_metadata(path, buf.data(), fsize,
+                                                        filename, sha256, fsize);
+            if (!resp.empty()) {
+                result.rows_affected++;
+            }
+        }
+        result.per_file_latencies_ns.push_back(insert_ns);
+        result.bytes_logical += fsize;
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[comdare-db] Per-file insert: %lld rows, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, total_timer.elapsed_ms());
+    return result;
 }
 
 MeasureResult ComdareConnector::perfile_delete() {
     MeasureResult result{};
-    LOG_INF("[comdare-db] Per-file delete (DELETE all objects)");
+    LOG_INF("[comdare-db] Per-file delete (individual object deletion)");
 
 #ifdef DEDUP_DRY_RUN
+    LOG_INF("[comdare-db] DRY RUN: would delete objects individually");
     return result;
 #endif
 
-    Timer timer;
-    timer.start();
+    Timer total_timer;
+    total_timer.start();
 
-    // DELETE all objects in lab database
-    CURL* curl = curl_easy_init();
-    if (curl) {
-        std::string url = endpoint_ + "/api/v1/databases/" + database_ + "/objects";
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
-
-        curl_easy_perform(curl);
-        curl_easy_cleanup(curl);
+    // Get list of object IDs via stats endpoint
+    std::string list_resp = http_get("/api/v1/databases/" + database_ + "/objects");
+    if (list_resp.empty()) {
+        // Fallback: bulk delete without per-object latency
+        LOG_WRN("[comdare-db] Could not list objects -- falling back to bulk delete");
+        CURL* curl = curl_easy_init();
+        if (curl) {
+            std::string url = endpoint_ + "/api/v1/databases/" + database_ + "/objects";
+            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+            curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+            curl_easy_perform(curl);
+            curl_easy_cleanup(curl);
+        }
+        total_timer.stop();
+        result.duration_ns = total_timer.elapsed_ns();
+        return result;
     }
 
-    timer.stop();
-    result.duration_ns = timer.elapsed_ns();
+    // Parse object IDs from JSON array
+    std::vector<std::string> object_ids;
+    try {
+        auto j = nlohmann::json::parse(list_resp);
+        if (j.is_array()) {
+            for (const auto& item : j) {
+                if (item.is_string()) {
+                    object_ids.push_back(item.get<std::string>());
+                } else if (item.contains("id")) {
+                    object_ids.push_back(item["id"].get<std::string>());
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG_WRN("[comdare-db] Could not parse object list: %s", e.what());
+    }
+
+    LOG_INF("[comdare-db] Deleting %zu objects individually", object_ids.size());
+
+    for (const auto& obj_id : object_ids) {
+        int64_t del_ns = 0;
+        {
+            ScopedTimer st(del_ns);
+            CURL* curl = curl_easy_init();
+            if (curl) {
+                std::string url = endpoint_ + "/api/v1/databases/" + database_ + "/objects/" + obj_id;
+                curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+                curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+                CURLcode res = curl_easy_perform(curl);
+                long http_code = 0;
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+                curl_easy_cleanup(curl);
+
+                if (res == CURLE_OK && http_code < 400) {
+                    result.rows_affected++;
+                }
+            }
+        }
+        result.per_file_latencies_ns.push_back(del_ns);
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[comdare-db] Per-file delete: %lld objects, %lld ms",
+        result.rows_affected, total_timer.elapsed_ms());
     return result;
 }
 

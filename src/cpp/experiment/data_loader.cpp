@@ -9,7 +9,7 @@
 namespace dedup {
 
 nlohmann::json ExperimentResult::to_json() const {
-    return {
+    nlohmann::json j = {
         {"system", system},
         {"dup_grade", dup_grade},
         {"stage", stage},
@@ -29,6 +29,26 @@ nlohmann::json ExperimentResult::to_json() const {
         {"timestamp", timestamp},
         {"error", error}
     };
+
+    // Per-file latency stats (populated for perfile_insert / perfile_delete stages)
+    if (latency_count > 0) {
+        j["latency"] = {
+            {"count", latency_count},
+            {"min_ns", latency_min_ns},
+            {"max_ns", latency_max_ns},
+            {"p50_ns", latency_p50_ns},
+            {"p95_ns", latency_p95_ns},
+            {"p99_ns", latency_p99_ns},
+            {"mean_ns", latency_mean_ns},
+            {"min_us", latency_min_ns / 1000},
+            {"max_us", latency_max_ns / 1000},
+            {"p50_us", latency_p50_ns / 1000},
+            {"p95_us", latency_p95_ns / 1000},
+            {"p99_us", latency_p99_ns / 1000}
+        };
+    }
+
+    return j;
 }
 
 std::string DataLoader::current_timestamp() {
@@ -115,6 +135,28 @@ ExperimentResult DataLoader::run_stage(
     result.rows_affected = mr.rows_affected;
     result.bytes_logical = mr.bytes_logical;
     result.error = mr.error;
+
+    // Compute per-file latency statistics (percentiles, min, max, mean)
+    if (!mr.per_file_latencies_ns.empty()) {
+        auto& lats = mr.per_file_latencies_ns;
+        std::sort(lats.begin(), lats.end());
+        result.latency_count = static_cast<int64_t>(lats.size());
+        result.latency_min_ns = lats.front();
+        result.latency_max_ns = lats.back();
+        result.latency_mean_ns = static_cast<double>(
+            std::accumulate(lats.begin(), lats.end(), int64_t{0})) / static_cast<double>(lats.size());
+        auto pctl = [&](double p) -> int64_t {
+            size_t idx = static_cast<size_t>(p * static_cast<double>(lats.size() - 1));
+            return lats[idx];
+        };
+        result.latency_p50_ns = pctl(0.50);
+        result.latency_p95_ns = pctl(0.95);
+        result.latency_p99_ns = pctl(0.99);
+
+        LOG_INF("Latency stats: n=%lld, p50=%lld us, p95=%lld us, p99=%lld us, min=%lld us, max=%lld us",
+            result.latency_count, result.latency_p50_ns / 1000, result.latency_p95_ns / 1000,
+            result.latency_p99_ns / 1000, result.latency_min_ns / 1000, result.latency_max_ns / 1000);
+    }
 
     // Compute ingest throughput (doku.tex 5.4.1: bytes/s)
     if (result.duration_ns > 0 && result.bytes_logical > 0) {

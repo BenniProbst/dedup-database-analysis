@@ -41,6 +41,10 @@ private:
     std::string http_get(const std::string& path);
     std::string http_post(const std::string& path, const std::string& body,
                           const std::string& content_type = "application/json");
+    // POST with metadata headers (X-Filename, X-SHA256, X-Size-Bytes, X-MIME)
+    std::string http_post_with_metadata(const std::string& path, const char* data, size_t len,
+                                         const std::string& filename, const std::string& sha256,
+                                         size_t size_bytes);
 };
 
 } // namespace dedup

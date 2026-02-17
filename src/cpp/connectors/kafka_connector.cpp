@@ -227,7 +227,55 @@ MeasureResult KafkaConnector::bulk_insert(const std::string& data_dir, DupGrade 
 }
 
 MeasureResult KafkaConnector::perfile_insert(const std::string& data_dir, DupGrade grade) {
-    return bulk_insert(data_dir, grade);
+    MeasureResult result{};
+    const std::string dir = data_dir + "/" + dup_grade_str(grade);
+    const std::string topic = topic_prefix_ + "-" + dup_grade_str(grade);
+
+    LOG_INF("[kafka] Per-file produce to topic %s from %s", topic.c_str(), dir.c_str());
+
+#ifdef DEDUP_DRY_RUN
+    LOG_INF("[kafka] DRY RUN: would per-file produce messages to %s", topic.c_str());
+    result.rows_affected = 42;
+    return result;
+#endif
+
+#ifdef HAS_RDKAFKA
+    Timer total_timer;
+    total_timer.start();
+    auto* rk = static_cast<rd_kafka_t*>(producer_);
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        auto fsize = entry.file_size();
+        std::ifstream f(entry.path(), std::ios::binary);
+        std::vector<char> buf(fsize);
+        f.read(buf.data(), static_cast<std::streamsize>(fsize));
+
+        std::string key = entry.path().filename().string();
+
+        int64_t produce_ns = 0;
+        {
+            ScopedTimer st(produce_ns);
+            int err = rd_kafka_producev(rk,
+                RD_KAFKA_V_TOPIC(topic.c_str()),
+                RD_KAFKA_V_KEY(key.data(), key.size()),
+                RD_KAFKA_V_VALUE(buf.data(), fsize),
+                RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+                RD_KAFKA_V_END);
+            if (err == 0) result.rows_affected++;
+            rd_kafka_poll(rk, 0);
+        }
+        result.per_file_latencies_ns.push_back(produce_ns);
+        result.bytes_logical += fsize;
+    }
+
+    rd_kafka_flush(rk, 30000);
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[kafka] Per-file produce: %lld msgs, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, total_timer.elapsed_ms());
+#endif
+    return result;
 }
 
 MeasureResult KafkaConnector::perfile_delete() {

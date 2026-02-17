@@ -391,35 +391,82 @@ MeasureResult MinioConnector::bulk_insert(const std::string& data_dir, DupGrade 
 }
 
 MeasureResult MinioConnector::perfile_insert(const std::string& data_dir, DupGrade grade) {
-    return bulk_insert(data_dir, grade);
+    MeasureResult result{};
+    const std::string dir = data_dir + "/" + dup_grade_str(grade);
+    std::string grade_lower = dup_grade_str(grade);
+    std::transform(grade_lower.begin(), grade_lower.end(), grade_lower.begin(), ::tolower);
+    const std::string bucket = bucket_prefix_ + "-" + grade_lower;
+
+    LOG_INF("[minio] Per-file upload to bucket %s from %s", bucket.c_str(), dir.c_str());
+
+#ifdef DEDUP_DRY_RUN
+    LOG_INF("[minio] DRY RUN: would per-file upload to %s", bucket.c_str());
+    result.rows_affected = 42;
+    return result;
+#endif
+
+    Timer total_timer;
+    total_timer.start();
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        auto fsize = entry.file_size();
+        std::ifstream f(entry.path(), std::ios::binary);
+        std::vector<char> buf(fsize);
+        f.read(buf.data(), static_cast<std::streamsize>(fsize));
+
+        std::string key = entry.path().filename().string();
+
+        int64_t put_ns = 0;
+        {
+            ScopedTimer st(put_ns);
+            if (s3_put_object(bucket, key, buf.data(), fsize)) {
+                result.rows_affected++;
+            }
+        }
+        result.per_file_latencies_ns.push_back(put_ns);
+        result.bytes_logical += fsize;
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[minio] Per-file upload: %lld objects, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, total_timer.elapsed_ms());
+    return result;
 }
 
 MeasureResult MinioConnector::perfile_delete() {
     MeasureResult result{};
-    LOG_INF("[minio] Per-file delete across all lab buckets");
+    LOG_INF("[minio] Per-file delete across all lab buckets (with per-object latency)");
 
 #ifdef DEDUP_DRY_RUN
-    LOG_INF("[minio] DRY RUN: would delete all objects in lab buckets");
+    LOG_INF("[minio] DRY RUN: would delete all objects individually");
     return result;
 #endif
 
-    Timer timer;
-    timer.start();
+    Timer total_timer;
+    total_timer.start();
 
     const char* suffixes[] = {"u0", "u50", "u90"};
     for (const auto& suffix : suffixes) {
         std::string bucket = bucket_prefix_ + "-" + suffix;
         auto keys = s3_list_objects(bucket);
         for (const auto& key : keys) {
-            if (s3_delete_object(bucket, key)) {
-                result.rows_affected++;
+            int64_t del_ns = 0;
+            {
+                ScopedTimer st(del_ns);
+                if (s3_delete_object(bucket, key)) {
+                    result.rows_affected++;
+                }
             }
+            result.per_file_latencies_ns.push_back(del_ns);
         }
     }
 
-    timer.stop();
-    result.duration_ns = timer.elapsed_ns();
-    LOG_INF("[minio] Deleted %lld objects, %lld ms", result.rows_affected, timer.elapsed_ms());
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[minio] Per-file delete: %lld objects, %lld ms",
+        result.rows_affected, total_timer.elapsed_ms());
     return result;
 }
 

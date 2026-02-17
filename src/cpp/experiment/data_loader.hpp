@@ -31,6 +31,15 @@ struct ExperimentResult {
     std::string timestamp;
     std::string error;
 
+    // Per-file latency stats from perfile_insert / perfile_delete (doku.tex Stage 2/3)
+    int64_t latency_count = 0;
+    int64_t latency_min_ns = 0;
+    int64_t latency_max_ns = 0;
+    int64_t latency_p50_ns = 0;
+    int64_t latency_p95_ns = 0;
+    int64_t latency_p99_ns = 0;
+    double  latency_mean_ns = 0.0;
+
     nlohmann::json to_json() const;
 };
 
