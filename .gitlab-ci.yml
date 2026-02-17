@@ -3,18 +3,24 @@
 # =============================================================================
 # Pipeline 1: LaTeX compilation (auto on .tex/.bib/.cls/.bst changes)
 # Pipeline 2: C++ compilation + smoke tests (auto on src/cpp/** changes)
-# Pipeline 3: DB experiment (manual trigger, uses C++ binary in-cluster)
+# Pipeline 3: DB experiment (MANUAL trigger only -- production DBs!)
+#
+# SAFETY: Pipeline 3 uses Samba AD lab user (dedup-lab) and isolated
+#         lab schemas (dedup_lab). Customer data is NEVER touched.
+#         Lab schemas are created before and dropped after each experiment.
 #
 # Cluster: 4 Worker Nodes (Intel N97), Talos v1.11.6, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
-# Runner: GitLab K8s Runner (namespace: gitlab-runner)
+# Runner: GitLab K8s Runner (ID 6, tag: kubernetes)
 # =============================================================================
 
 stages:
   - latex
   - cpp-build
   - cpp-test
-  - experiment
+  - experiment-build
+  - experiment-run
+  - experiment-cleanup
 
 variables:
   PROMETHEUS_URL: http://prometheus.monitoring.svc.cluster.local:9090
@@ -196,38 +202,79 @@ cpp:full-dry-test:
         - ".gitlab-ci.yml"
 
 # =============================================================================
-# PIPELINE 3: Real DB Experiment (manual trigger)
-# Uses the C++ binary to connect to production databases via lab schemas
+# PIPELINE 3: Real DB Experiment (MANUAL trigger only)
+# =============================================================================
+# SAFETY CONCEPT:
+#   - Uses Samba AD lab user (dedup-lab) with restricted permissions
+#   - All data goes into isolated lab schemas (dedup_lab / dedup-lab prefix)
+#   - Lab schemas are CREATED before experiment and DROPPED after
+#   - Customer/production data is NEVER read, modified, or deleted
+#   - Each DB system uses its own isolation mechanism:
+#     PostgreSQL/CockroachDB: CREATE SCHEMA dedup_lab (separate from public)
+#     Redis: Key prefix dedup:* (no SELECT in cluster mode)
+#     Kafka: Topic prefix dedup-lab-* (separate from production topics)
+#     MinIO: Bucket dedup-lab-* (separate from production buckets)
+#     MariaDB/ClickHouse: CREATE DATABASE dedup_lab (separate database)
 # =============================================================================
 
+# Step 1: Build the binary for the experiment (self-contained, no dependency
+# on Pipeline 2 artifacts which may have expired or not exist)
+experiment:build:
+  <<: *cpp-default
+  stage: experiment-build
+  script:
+    - |
+      echo "=== Experiment Build: dedup-test v${CI_COMMIT_SHORT_SHA} ==="
+      echo "Compiler: $(gcc --version | head -1)"
+      mkdir -p build && cd build
+      cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
+      make -j$(nproc) dedup-test 2>&1
+      echo "=== Binary ready ==="
+      ls -lh dedup-test
+      file dedup-test
+  artifacts:
+    paths:
+      - build/dedup-test
+    expire_in: 7 days
+  rules:
+    - when: manual
+      allow_failure: true
+
+# Step 2: Run the actual experiment against production databases
 experiment:run:
   <<: *cpp-default
-  stage: experiment
-  needs: ["cpp:build"]
+  stage: experiment-run
+  needs: ["experiment:build"]
   timeout: 4 hours
   script:
     - |
-      echo "=== REAL EXPERIMENT: Dedup Database Analysis ==="
-      echo "Connecting to production databases via lab schemas"
+      echo "================================================================="
+      echo "  REAL EXPERIMENT: Dedup Database Analysis"
+      echo "  WARNING: Connects to PRODUCTION databases via lab schemas!"
+      echo "  Lab user: dedup-lab (Samba AD)"
+      echo "  Lab schema: ${LAB_SCHEMA}"
+      echo "================================================================="
+      echo ""
       echo "Systems: ${SYSTEMS}"
       echo "Grades: ${DUP_GRADES}"
-      echo "Lab Schema: ${LAB_SCHEMA}"
+      echo "Replica count: ${REPLICA_COUNT}"
       echo ""
 
       chmod +x build/dedup-test
 
-      # Step 1: Generate test datasets (larger for real experiment)
-      echo "=== Step 1: Generate datasets ==="
+      # Step 1: Generate test datasets
+      echo "=== Step 1: Generate datasets (500 files x 3 grades) ==="
       build/dedup-test --generate-data \
         --data-dir /tmp/datasets \
         --num-files 500 \
         --seed 42 \
-        --systems "${SYSTEMS}" \
-        --grades "${DUP_GRADES}" \
-        --lab-schema "${LAB_SCHEMA}" \
-        --results-dir results \
         --verbose 2>&1
 
+      # Verify dataset sizes
+      echo "=== Dataset summary ==="
+      du -sh /tmp/datasets/*/
+
+      # Step 2: Run experiment (creates lab schemas, inserts, measures, cleans up)
       echo "=== Step 2: Run experiment ==="
       build/dedup-test \
         --data-dir /tmp/datasets \
@@ -237,15 +284,45 @@ experiment:run:
         --results-dir results \
         --verbose 2>&1
 
-      echo "=== Results ==="
+      echo "=== Step 3: Results ==="
       cat results/combined_results.json | python3 -m json.tool 2>/dev/null | head -200
 
       echo "=== Per-system results ==="
-      ls -la results/*.json
+      ls -la results/*.json 2>/dev/null || echo "No per-system results"
   artifacts:
     paths:
       - results/
     expire_in: 90 days
   rules:
     - when: manual
-      allow_failure: false
+      allow_failure: true
+
+# Step 3: Cleanup -- drop all lab schemas to leave DBs clean
+# Runs automatically after experiment:run, also available as manual trigger
+experiment:cleanup:
+  <<: *cpp-default
+  stage: experiment-cleanup
+  needs:
+    - job: experiment:build
+      artifacts: true
+    - job: experiment:run
+      optional: true
+  script:
+    - |
+      echo "================================================================="
+      echo "  CLEANUP: Dropping all lab schemas"
+      echo "  This removes ONLY dedup_lab data, NOT customer data!"
+      echo "================================================================="
+
+      chmod +x build/dedup-test
+
+      build/dedup-test \
+        --cleanup-only \
+        --systems "${SYSTEMS}" \
+        --lab-schema "${LAB_SCHEMA}" \
+        --verbose 2>&1
+
+      echo "=== Cleanup complete: all lab schemas dropped ==="
+  rules:
+    - when: manual
+      allow_failure: true

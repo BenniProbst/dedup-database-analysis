@@ -56,6 +56,7 @@ static void print_usage(const char* prog) {
         "  --num-files N       Files per duplication grade (default: 100)\n"
         "  --file-size N       Fixed file size in bytes (default: variable 4K-1M)\n"
         "  --seed N            PRNG seed for reproducible data (default: 42)\n"
+        "  --cleanup-only      Only drop lab schemas, then exit (no experiment)\n"
         "  --dry-run           Simulate without actual DB operations\n"
         "  --verbose           Enable debug logging\n"
         "  --help              Show this help\n"
@@ -88,6 +89,7 @@ int main(int argc, char* argv[]) {
     std::string grades_filter;
     bool dry_run = false;
     bool generate_data = false;
+    bool cleanup_only = false;
     size_t num_files = 100;
     size_t file_size = 0;
     uint64_t seed = 42;
@@ -120,6 +122,8 @@ int main(int argc, char* argv[]) {
             file_size = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoull(argv[++i]);
+        } else if (std::strcmp(argv[i], "--cleanup-only") == 0) {
+            cleanup_only = true;
         } else if (std::strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (std::strcmp(argv[i], "--verbose") == 0) {
@@ -236,6 +240,24 @@ int main(int argc, char* argv[]) {
     }
 
     LOG_INF("Connected to %zu databases", entries.size());
+
+    // Cleanup-only mode: drop lab schemas and exit (used by CI cleanup job)
+    if (cleanup_only) {
+        LOG_INF("=== CLEANUP-ONLY MODE ===");
+        LOG_INF("Dropping lab schemas (%s) on all %zu connected databases...",
+            lab_schema.c_str(), entries.size());
+        LOG_WRN("This removes ONLY lab data (schema: %s). Customer data is NOT affected.",
+            lab_schema.c_str());
+
+        schema_mgr.drop_all_lab_schemas(lab_schema);
+
+        for (auto& entry : entries) {
+            entry.connector->disconnect();
+        }
+
+        LOG_INF("=== CLEANUP COMPLETE ===");
+        return 0;
+    }
 
     // Parse dup grades
     std::vector<dedup::DupGrade> grades = cfg.dup_grades;
