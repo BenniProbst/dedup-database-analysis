@@ -1,10 +1,11 @@
 # Session 9: Triple Pipeline + 100ms Monitoring-Architektur
-**Datum:** 2026-02-17, ~22:00–23:30 UTC
-**Commits:** `5ac1732`, `5d23bbb`, `70c113f`
+**Datum:** 2026-02-17 bis 2026-02-18 (Sessions 9, 9c, 9d, 9e)
+**Alle Commits:** `5ac1732`, `5d23bbb`, `70c113f`, `a041c82`, `0c5edf3`, `34ddc2d`, `c32865a`, `7d38491`, `f914058`, `a55d5db`
 **Vorherige Commits:** `b0bb5b6` (Longhorn metrics, MariaDB/ClickHouse stubs)
 **Branch:** `development`
 **GitLab Project ID:** 280
 **Remotes:** GitLab (HTTPS, sslVerify=false) + GitHub (HTTPS, PAT)
+**Letzter Commit:** `a55d5db` (Session 9e: Grafana + config + docs)
 
 ---
 
@@ -22,6 +23,10 @@
 10. [Vollstaendige Quelldatei-Uebersicht](#vollstaendige-quelldatei-uebersicht)
 11. [Offene Aufgaben (Priorisiert)](#offene-aufgaben-priorisiert)
 12. [Git History](#git-history)
+13. [Session 9c: MetricsTrace+Exporter KOMPLETT](#session-9c)
+14. [Session 9d: comdare-DB Connector](#session-9d)
+15. [Session 9e: Paper + Grafana + Compile Flag](#session-9e)
+16. [ELABORATE CONTEXT RECOVERY GUIDE](#context-recovery)
 
 ---
 
@@ -949,4 +954,186 @@ fa9d890 Initial commit: LaTeX paper + experiment framework + kartografie
 | **9** | **2026-02-17** | **Triple Pipeline, Cleanup-Only, MetricsTrace Arch** | **5ac1732, 5d23bbb, 70c113f** |
 | **9c** | **2026-02-17** | **MetricsTrace+Exporter KOMPLETT, MinIO Phys, Naming** | **a041c82, 0c5edf3** |
 | **9d** | **2026-02-17** | **comdare-DB Connector, Redis doku.tex, Compile Flag** | **c32865a, 7d38491** |
-| **9e** | **2026-02-18** | **Paper Sec 5.5+5.6, Grafana Dashboard, Bib-Check** | **f914058, (pending)** |
+| **9e** | **2026-02-18** | **Paper Sec 5.5+5.6, Grafana Dashboard, Bib-Check** | **f914058, a55d5db** |
+
+---
+
+## ELABORATE CONTEXT RECOVERY GUIDE
+<a name="context-recovery"></a>
+
+> **ZWECK:** Dieses Kapitel enthaelt ALLE Informationen, die ein neuer Kontext braucht um nahtlos weiterzuarbeiten.
+> Letzte Aktualisierung: 2026-02-18, Commit `a55d5db`.
+
+### 1. Projekt-Identitaet
+
+| Feld | Wert |
+|------|------|
+| **Projekt** | Deduplikation in Datenhaltungssystemen |
+| **Typ** | TU Dresden Belegarbeit (Betreuer: Dr. Alexander Krause) |
+| **Student** | Benjamin-Elias Probst (Matrikel 4510512) |
+| **Pfad lokal** | `C:\Users\benja\OneDrive\Desktop\Projekte\Research\archive\dedup-database-analysis\` |
+| **GitLab** | `comdare/research/dedup-database-analysis` (Project ID 280) |
+| **GitHub** | `BenniProbst/dedup-database-analysis` |
+| **Branch** | `development` (ALLE Arbeit hier, NICHT master) |
+| **Sprache** | C++20, LaTeX, CMake |
+| **Build** | `cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)` |
+| **SSL** | GitLab: `git -c http.sslVerify=false push gitlab development` (self-signed) |
+
+### 2. Vollstaendige Datei-Inventur (src/cpp/)
+
+```
+src/cpp/
+├── main.cpp                              # 375 Zeilen, CLI + Experiment-Orchestrierung
+├── config.hpp                            # 257 Zeilen, ALLE Configs (8 DbSystem enums)
+├── config.example.json                   # 120 Zeilen, K8s Cluster-Defaults + comdare-db
+├── CMakeLists.txt                        # 160 Zeilen, deps + ENABLE_COMDARE_DB option
+├── connectors/
+│   ├── db_connector.hpp                  # 51 Zeilen, Abstract Interface
+│   ├── postgres_connector.hpp/.cpp       # PG + CockroachDB (PG wire protocol)
+│   ├── redis_connector.hpp/.cpp          # Cluster-Mode, Key-Prefix dedup:*
+│   ├── kafka_connector.hpp/.cpp          # librdkafka, Topic-Prefix dedup-lab-*
+│   ├── minio_connector.hpp/.cpp          # S3 via libcurl, Bucket-Prefix dedup-lab-*
+│   ├── mariadb_connector.hpp/.cpp        # libmysqlclient, CREATE DATABASE
+│   ├── clickhouse_connector.hpp/.cpp     # HTTP API, MergeTree, OPTIMIZE FINAL
+│   └── comdare_connector.hpp/.cpp        # REST API, OPTIONAL (#ifdef HAS_COMDARE_DB)
+├── experiment/
+│   ├── data_loader.hpp/.cpp              # Stage-Orchestrierung, EDR, Longhorn+MinIO Messung
+│   ├── metrics_collector.hpp/.cpp        # Prometheus Queries, Longhorn, MinIO Phys Size
+│   ├── metrics_trace.hpp/.cpp            # 100ms Sampling, 8 Collectors, Kafka Producer
+│   ├── results_exporter.hpp/.cpp         # Kafka→CSV→git push Pipeline
+│   ├── schema_manager.hpp/.cpp           # Lab-Schema Lifecycle (create/reset/drop)
+│   └── dataset_generator.hpp/.cpp        # xoshiro256**, U0/U50/U90, 3 Payload-Typen
+└── utils/
+    ├── logger.hpp                        # LOG_INF/WRN/ERR/DBG Makros
+    ├── timer.hpp                         # nanosecond Timer
+    └── sha256.hpp                        # Software SHA-256 (NIST FIPS 180-4)
+```
+
+### 3. Architektur-Entscheidungen (UNVERAENDERLICH)
+
+| Entscheidung | Begruendung | Referenz |
+|-------------|------------|---------|
+| C++20, kein Python | Intel N97 (Alder Lake-N), Praezisions-Messung | Session 4 |
+| Lab-Schema-Isolation | Produktionsdaten NIEMALS anfassen | Session 5, doku.tex 5.6 |
+| 100ms (10 Hz) Sampling | Fein genug fuer Stage-Transitionen, akzeptabler Overhead | Session 9, doku.tex 5.5 |
+| Kafka Dual-Role | Kafka = DB under test UND Metrics-Log | Session 9c |
+| Export-before-Cleanup | Daten muessen in GitLab sein BEVOR Lab-Schemas gedroppt werden | Session 9c |
+| MinIO = Direct Disk | Kein Longhorn PVC, physische Groesse via Prometheus-Endpoint | Session 9c |
+| comdare-DB = Optional | Compile-Flag, wird wahrscheinlich nicht rechtzeitig fertig | Session 9d |
+| connection-per-query | MetricsTrace Collectors: oeffnen/schliessen pro 100ms Zyklus | Session 9c |
+| CockroachDB via libpq | PG Wire Protocol, sslmode=require (nicht verify-full) | Session 5 |
+
+### 4. DbSystem Enum → Connector → K8s Status
+
+| Enum | Connector Klasse | K8s Service | Port | PVC | Status |
+|------|-----------------|-------------|------|-----|--------|
+| `POSTGRESQL` | PostgresConnector(PG) | postgres-lb.databases | 5432 | data-postgres-ha-0 | ✅ 4/4 |
+| `COCKROACHDB` | PostgresConnector(CRDB) | cockroachdb-public.cockroach-operator-system | 26257 | datadir-cockroachdb-0 | ✅ 4/4 |
+| `REDIS` | RedisConnector | redis-cluster.redis | 6379 | data-redis-cluster-0 | ✅ 4+4/4 |
+| `KAFKA` | KafkaConnector | kafka-cluster-kafka-bootstrap.kafka | 9092 | data-kafka-cluster-broker-0 | ✅ 7/7 |
+| `MINIO` | MinioConnector | minio-lb.minio | 9000 | NONE (Direct Disk) | ✅ 4/4 |
+| `MARIADB` | MariaDBConnector | mariadb.databases | 3306 | TBD | ❌ NOT DEPLOYED |
+| `CLICKHOUSE` | ClickHouseConnector | clickhouse.databases | 8123 | TBD | ❌ NOT DEPLOYED |
+| `COMDARE_DB` | ComdareConnector | comdare-db.databases | 8080 | TBD | ❌ NOT DEPLOYED |
+
+### 5. CMake Compile-Flags
+
+| Flag | Default | Effekt |
+|------|---------|--------|
+| `DEDUP_DRY_RUN` | OFF (ON in smoke-test) | Simuliert ALLE DB-Ops, kein Netzwerk |
+| `HAS_HIREDIS` | auto-detect | Redis Connector via hiredis statt raw TCP |
+| `HAS_RDKAFKA` | auto-detect | Kafka Connector + MetricsTrace Kafka Producer |
+| `HAS_MYSQL` | auto-detect | MariaDB Connector via libmysqlclient |
+| `ENABLE_COMDARE_DB` | OFF | comdare-DB Connector, Collector, Factory |
+
+### 6. doku.tex Kapitelstruktur (nach Session 9e)
+
+| Kap | Titel | Zeilen | Status |
+|-----|-------|--------|--------|
+| Abstract | Deduplication overview | 1 Absatz | ✅ |
+| 1 | Introduction and Motivation | 1 Section | ✅ |
+| 2 | Terminology and Differentiation | 1 Section | ✅ |
+| 3 | Historical Development | 5 Abschnitte (LBFS→FastCDC) | ✅ |
+| 4 | Taxonomy of Deduplication Techniques | 5 Dimensionen | ✅ |
+| 5.1 | Testbed and storage configuration | Longhorn, N=4, Prometheus | ✅ |
+| 5.2 | Systems under test | 8 Systeme (PG, MariaDB, Redis, Kafka, MinIO, comdare-DB, ClickHouse, CockroachDB) | ✅ |
+| 5.3 | Data sets and payload types | Images, Video, Text, UUID, JSON | ✅ |
+| 5.4 | Workload definition (Stages 1-3) | U0/U50/U90, Bulk/Perfile/Delete+Maintenance | ✅ |
+| **5.5** | **Measurement infrastructure** | **10 Hz Sampling, Kafka Dual-Topic, EDR** | **✅ NEU** |
+| **5.6** | **Automation and reproducibility** | **Triple CI, DRY_RUN, Lab-Isolation** | **✅ NEU** |
+| 6 | Initial Evaluation and Research Goal | Bewertung + Forschungsziel | ✅ |
+
+### 7. Bibliographie (26 Zitate, ALLE verifiziert)
+
+Alle `\cite{}` in doku.tex haben korrespondierende BibTeX-Eintraege in doku.bib. Zusaetzlich enthaelt doku.bib ~20 weitere Eintraege fuer Phase 2 (DuckDB, Cassandra, MongoDB, etc.) die noch nicht zitiert sind.
+
+### 8. CI Pipeline (.gitlab-ci.yml)
+
+```
+Pipeline 1 (LaTeX, AUTO bei docs/** Aenderungen):
+  latex:compile → PDF + Log Artifact (30 Tage)
+
+Pipeline 2 (C++, AUTO bei src/cpp/** Aenderungen):
+  cpp:build → cpp:smoke-test → cpp:full-dry-test
+  Image: gcc:14-bookworm
+  Deps: libpq, libcurl, hiredis, rdkafka, nlohmann-json, libmariadb
+
+Pipeline 3 (Experiment, NUR MANUELL):
+  experiment:build → experiment:run (4h Timeout) → experiment:cleanup
+  SYSTEMS Variable: "postgresql,cockroachdb,redis,kafka,minio"
+  (MariaDB/ClickHouse werden hinzugefuegt wenn deployed)
+```
+
+### 9. NAECHSTE SCHRITTE (Priorisiert, fuer neuen Kontext)
+
+#### SOFORT machbar (kein INFRA-Blocker)
+1. **doku.tex Phase 2**: DuckDB, Cassandra, MongoDB Sections hinzufuegen (BibTeX-Eintraege vorhanden)
+2. **Code-Review**: postgres_connector.cpp, kafka_connector.cpp auf Korrektheit pruefen
+3. **Test-Coverage**: Unit-Tests fuer SHA-256, Dataset-Generator, EDR-Berechnung
+
+#### Wartet auf INFRA-Agent
+4. **MariaDB Deploy** → SYSTEMS Variable erweitern → Testen
+5. **ClickHouse Deploy** → SYSTEMS Variable erweitern → Testen
+6. **Prometheus + Grafana** → Dashboard importieren aus `docs/grafana/dedup-experiment-dashboard.json`
+7. **K8s Runner Fix** → Pipeline 2+3 testen
+
+#### Wartet auf User-Entscheidung
+8. **comdare-DB**: Deploy + API-Endpoints alignen (User sagte: "wird es wahrscheinlich nicht schaffen")
+9. **Experiment ausfuehren**: Manueller Trigger Pipeline 3 (nach INFRA-Arbeit)
+
+### 10. Kritische Dateipfade fuer Kontext-Einstieg
+
+| Was | Pfad |
+|-----|------|
+| Session-Doku | `sessions/20260217-session-9-triple-pipeline-monitoring.md` (DIESE DATEI) |
+| LaTeX Paper | `docs/doku.tex` (~360 Zeilen) |
+| Bibliographie | `docs/doku.bib` (~545 Zeilen, 46 Eintraege) |
+| C++ Einstiegspunkt | `src/cpp/main.cpp` |
+| Konfiguration | `src/cpp/config.hpp` (ALLE Structs, Enums, Parser) |
+| CI Pipeline | `.gitlab-ci.yml` |
+| Grafana Dashboard | `docs/grafana/dedup-experiment-dashboard.json` |
+| .gitignore | `results/` und `datasets/` sind gitignored |
+
+### 11. Git-Befehle fuer Wiederaufnahme
+
+```bash
+# Projekt-Verzeichnis
+cd "C:\Users\benja\OneDrive\Desktop\Projekte\Research\archive\dedup-database-analysis"
+
+# Status pruefen
+git log --oneline -10
+git status
+
+# Push (GitLab braucht SSL-Override)
+git push github development
+git -c http.sslVerify=false push gitlab development
+
+# Build (lokal, DRY_RUN)
+mkdir -p build && cd build
+cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc) dedup-smoke-test
+
+# Build mit comdare-DB
+cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release -DENABLE_COMDARE_DB=ON
+make -j$(nproc) dedup-test
+```
