@@ -609,6 +609,7 @@ std::vector<MetricPoint> collect_clickhouse(const DbConnection& conn) {
 
 // --- comdare-DB collector (HTTP REST: GET /api/v1/databases/{db}/stats) -----
 
+#ifdef HAS_COMDARE_DB
 std::vector<MetricPoint> collect_comdare_db(const DbConnection& conn) {
     std::vector<MetricPoint> pts;
     std::string base = "http://" + conn.host + ":" + std::to_string(conn.port);
@@ -632,6 +633,7 @@ std::vector<MetricPoint> collect_comdare_db(const DbConnection& conn) {
 
     return pts;
 }
+#endif
 
 // --- Factory ----------------------------------------------------------------
 
@@ -644,7 +646,12 @@ MetricCollectorFn for_system(DbSystem system) {
         case DbSystem::MINIO:       return collect_minio;
         case DbSystem::MARIADB:     return collect_mariadb;
         case DbSystem::CLICKHOUSE:  return collect_clickhouse;
-        case DbSystem::COMDARE_DB:  return collect_comdare_db;
+        case DbSystem::COMDARE_DB:
+#ifdef HAS_COMDARE_DB
+            return collect_comdare_db;
+#else
+            return collect_postgresql;  // fallback, won't be called (skipped in main)
+#endif
     }
     return collect_postgresql;
 }

@@ -56,7 +56,6 @@ set(DEDUP_SOURCES
     connectors/minio_connector.cpp
     connectors/mariadb_connector.cpp
     connectors/clickhouse_connector.cpp
-    connectors/comdare_connector.cpp
     experiment/schema_manager.cpp
     experiment/data_loader.cpp
     experiment/metrics_collector.cpp
@@ -133,12 +132,25 @@ endif()
 
 message(STATUS "ClickHouse connector uses HTTP API via libcurl (no extra deps)")
 
+# Optional: comdare-DB (experimental, disabled by default)
+# Enable with: cmake -DENABLE_COMDARE_DB=ON ..
+option(ENABLE_COMDARE_DB "Enable comdare-DB connector (experimental)" OFF)
+if(ENABLE_COMDARE_DB)
+    list(APPEND DEDUP_SOURCES connectors/comdare_connector.cpp)
+    message(STATUS "comdare-DB connector ENABLED (experimental)")
+else()
+    message(STATUS "comdare-DB connector disabled (use -DENABLE_COMDARE_DB=ON to enable)")
+endif()
+
 # =============================================================================
 # Main executable
 # =============================================================================
 
 add_executable(dedup-test ${DEDUP_SOURCES})
 configure_dedup_target(dedup-test)
+if(ENABLE_COMDARE_DB)
+    target_compile_definitions(dedup-test PRIVATE HAS_COMDARE_DB=1)
+endif()
 
 # =============================================================================
 # Dry-run smoke test target
@@ -147,5 +159,8 @@ configure_dedup_target(dedup-test)
 add_executable(dedup-smoke-test ${DEDUP_SOURCES})
 target_compile_definitions(dedup-smoke-test PRIVATE DEDUP_DRY_RUN=1)
 configure_dedup_target(dedup-smoke-test)
+if(ENABLE_COMDARE_DB)
+    target_compile_definitions(dedup-smoke-test PRIVATE HAS_COMDARE_DB=1)
+endif()
 
 install(TARGETS dedup-test dedup-smoke-test RUNTIME DESTINATION bin)

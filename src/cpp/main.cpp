@@ -33,7 +33,9 @@
 #include "connectors/minio_connector.hpp"
 #include "connectors/mariadb_connector.hpp"
 #include "connectors/clickhouse_connector.hpp"
+#ifdef HAS_COMDARE_DB
 #include "connectors/comdare_connector.hpp"
+#endif
 #include "experiment/schema_manager.hpp"
 #include "experiment/data_loader.hpp"
 #include "experiment/metrics_collector.hpp"
@@ -225,7 +227,12 @@ int main(int argc, char* argv[]) {
                 conn = std::make_shared<dedup::ClickHouseConnector>();
                 break;
             case dedup::DbSystem::COMDARE_DB:
+#ifdef HAS_COMDARE_DB
                 conn = std::make_shared<dedup::ComdareConnector>();
+#else
+                LOG_WRN("comdare-DB support not compiled in (HAS_COMDARE_DB=0) -- skipping");
+                continue;
+#endif
                 break;
         }
 
