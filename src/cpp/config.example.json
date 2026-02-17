@@ -15,7 +15,7 @@
             "password": "",
             "database": "postgres",
             "lab_schema": "dedup_lab",
-            "pvc_name": "data-postgres-postgresql-0",
+            "pvc_name": "data-postgres-ha-0",
             "k8s_namespace": "databases"
         },
         {
@@ -31,9 +31,9 @@
         },
         {
             "system": "redis",
-            "host": "redis-standalone.redis.svc.cluster.local",
+            "host": "redis-cluster.redis.svc.cluster.local",
             "port": 6379,
-            "pvc_name": "redis-data-redis-node-0",
+            "pvc_name": "data-redis-cluster-0",
             "k8s_namespace": "redis"
         },
         {
@@ -41,7 +41,7 @@
             "host": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local",
             "port": 9092,
             "lab_schema": "dedup-lab",
-            "pvc_name": "data-kafka-cluster-kafka-0",
+            "pvc_name": "data-kafka-cluster-broker-0",
             "k8s_namespace": "kafka"
         },
         {
@@ -81,12 +81,21 @@
     "dup_grades": ["U0", "U50", "U90"],
 
     "prometheus": {
-        "url": "http://prometheus.monitoring.svc.cluster.local:9090"
+        "url": "http://prometheus.monitoring.svc.cluster.local:9090",
+        "_comment": "TODO: Prometheus not yet deployed -- needs kube-prometheus-stack"
     },
 
     "grafana": {
         "url": "",
         "api_key": "",
-        "dashboard_uid": ""
+        "dashboard_uid": "",
+        "_comment": "TODO: Grafana not yet deployed -- needs kube-prometheus-stack"
+    },
+
+    "metrics_trace": {
+        "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092",
+        "kafka_topic": "dedup-lab-metrics",
+        "sample_interval_ms": 100,
+        "_comment": "100ms sampling for ALL DB metrics, persisted to Kafka + Grafana"
     }
 }
