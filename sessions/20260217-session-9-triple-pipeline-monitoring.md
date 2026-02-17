@@ -607,7 +607,7 @@ dedup-database-analysis/
 | 9 | CODE | Grafana Dashboard JSON | Vorkonfiguriertes Dashboard mit Panels fuer alle 7 DB-Systeme |
 | 10 | CODE | MinIO Size ohne Longhorn | Alternative Messmethode via `mc admin info` oder S3 ListBuckets API |
 | 11 | DOC | doku.tex Phase 2 | DuckDB, Cassandra, MongoDB Sektionen ergaenzen |
-| 12 | DOC | Naming | Redcomponent-DB → comdare-DB in doku.tex |
+| 12 | DOC | ~~Naming~~ | ~~Redcomponent-DB → comdare-DB in doku.tex~~ **DONE (Session 9c)** |
 
 ### P3: SPAETER (erweiterte Datenbank-Systeme)
 

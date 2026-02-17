@@ -24,6 +24,12 @@ public:
                      const std::string& db_system, const std::string& dup_grade,
                      const std::string& stage);
 
+    // Query MinIO physical bucket size via MinIO Prometheus endpoint
+    // Used when MinIO has no Longhorn PVC (Direct Disk)
+    // Returns total bytes for all buckets matching prefix, or -1 on error
+    int64_t get_minio_physical_size(const std::string& minio_endpoint,
+                                     const std::string& bucket_prefix = "dedup-lab");
+
     // Calculate EDR: EDR = B_logical / (B_phys / N)
     static double calculate_edr(int64_t logical_bytes, int64_t phys_delta_bytes, int replica_count) {
         if (phys_delta_bytes <= 0 || replica_count <= 0) return 0.0;

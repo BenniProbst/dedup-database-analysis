@@ -80,10 +80,15 @@ ExperimentResult DataLoader::run_stage(
     result.logical_size_before = connector.get_logical_size_bytes();
 
     // Physical size: Longhorn actual_size_bytes via Prometheus (doku.tex 5.1)
+    // MinIO special case: Direct Disk, no Longhorn PVC -- use MinIO metrics endpoint
     if (!volume_name.empty()) {
         result.phys_size_before = metrics_.get_longhorn_actual_size(volume_name);
         LOG_INF("Longhorn BEFORE: %lld bytes (volume %s)",
             result.phys_size_before, volume_name.c_str());
+    } else if (connector.system() == DbSystem::MINIO) {
+        std::string minio_url = "http://" + db_conn.host + ":" + std::to_string(db_conn.port);
+        result.phys_size_before = metrics_.get_minio_physical_size(minio_url, db_conn.lab_schema);
+        LOG_INF("MinIO BEFORE: %lld bytes (via Prometheus endpoint)", result.phys_size_before);
     } else {
         // Fallback: use connector logical size as proxy
         result.phys_size_before = result.logical_size_before;
@@ -128,6 +133,10 @@ ExperimentResult DataLoader::run_stage(
         result.phys_size_after = metrics_.get_longhorn_actual_size(volume_name);
         LOG_INF("Longhorn AFTER: %lld bytes (volume %s)",
             result.phys_size_after, volume_name.c_str());
+    } else if (connector.system() == DbSystem::MINIO) {
+        std::string minio_url = "http://" + db_conn.host + ":" + std::to_string(db_conn.port);
+        result.phys_size_after = metrics_.get_minio_physical_size(minio_url, db_conn.lab_schema);
+        LOG_INF("MinIO AFTER: %lld bytes (via Prometheus endpoint)", result.phys_size_after);
     } else {
         result.phys_size_after = result.logical_size_after;
     }
