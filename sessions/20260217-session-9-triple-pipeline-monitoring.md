@@ -649,9 +649,112 @@ P0.1 (Runner)     P0.2 (Prometheus)    P0.3 (MariaDB)    P0.4 (ClickHouse)
 
 ---
 
+## Session 9c: Continuation (~23:30+ UTC)
+
+### Implementiert in Session 9c
+
+#### 1. MetricsTrace.cpp KOMPLETT (~400 Zeilen)
+- **7 DB-Collectors implementiert:**
+  - PostgreSQL: pg_database_size, pg_stat_database (7 Metriken), pg_stat_bgwriter (3), pg_stat_wal
+  - CockroachDB: crdb_internal.kv_store_status (6 Metriken) + HTTP /_status/vars
+  - Redis: INFO ALL Parser (7 Metriken: used_memory, rss, hits/misses, ops/sec, clients)
+  - Kafka: JMX Exporter Port 9404 (4 Metriken: bytes_in/out, under_replicated, log_size)
+  - MinIO: /minio/v2/metrics/cluster Prometheus endpoint (4 Metriken: bucket_usage, s3_requests, rx/tx)
+  - MariaDB: SHOW GLOBAL STATUS (7 Metriken: innodb_pool, data_written, threads, bytes, com_*)
+  - ClickHouse: system.metrics + system.events via HTTP API (5 Metriken)
+- **Kafka Producer:** librdkafka mit 10ms Buffer, async produce, non-blocking poll
+- **Background Thread:** 100ms sleep mit praeziser Kompensation (elapsed-aware)
+- **Dry-Run:** Alle Metriken werden geloggt aber nicht gesendet
+- **Commit:** `a041c82`
+
+#### 2. ResultsExporter KOMPLETT (~300 Zeilen)
+- **Kafka Consumer:** Liest ALLE Nachrichten von metrics/events Topics (auto.offset.reset=earliest)
+- **CSV-Writer:** Separate CSVs fuer Metriken und Events mit korrektem Escaping
+- **Git Pipeline:** `git add results/ → git commit → git push gitlab development`
+- **export_all():** Vollstaendiger Pipeline-Aufruf (consume → CSV → git push)
+- **Commit:** `a041c82`
+
+#### 3. main.cpp Integration
+- MetricsTrace register_system() + start() vor Experiment-Loop
+- ExperimentEvents: experiment_start/end, system_start/end
+- ResultsExporter::export_all() NACH Experiment, VOR Cleanup
+- **Export-before-Cleanup Garantie:** Daten persistent in GitLab bevor Lab-Schemas gedroppt werden
+- **Commit:** `a041c82`
+
+#### 4. doku.tex Naming Fix
+- 2x "Redcomponent-DB" → "comdare-DB" (Zeile 201, 204)
+- Aeltere Dokumentversionen (20260108, 20260127, 20260216) = historische Snapshots, NICHT geaendert
+- **Commit:** `0c5edf3`
+
+#### 5. MinIO Physical Size Measurement
+- **Problem:** MinIO = Direct Disk, kein Longhorn PVC → Longhorn-Metriken funktionieren NICHT
+- **Loesung:** `MetricsCollector::get_minio_physical_size()` via MinIO Prometheus Endpoint
+- Parsed `minio_bucket_usage_total_bytes{bucket="dedup-lab-*"}` Prometheus-Format
+- `data_loader.cpp` BEFORE/AFTER: Erkennt MinIO-System und nutzt Prometheus statt Longhorn
+- **Commit:** `0c5edf3`
+
+#### 6. CMakeLists.txt + Config
+- 2 neue Source-Dateien: metrics_trace.cpp, results_exporter.cpp
+- config.example.json: events_topic + git_export Sektion
+- **Commit:** `a041c82`
+
+### Session 9c Commits
+
+```
+0c5edf3 Fix naming + MinIO physical size: comdare-DB rename, S3 metrics endpoint
+a041c82 Complete MetricsTrace + ResultsExporter: 100ms sampling, Kafka dual output, CSV export
+```
+
+### Dateien geaendert/erstellt in Session 9c
+
+| Datei | Aktion | Zeilen |
+|-------|--------|--------|
+| `experiment/metrics_trace.cpp` | NEU | ~400 |
+| `experiment/results_exporter.hpp` | NEU | ~55 |
+| `experiment/results_exporter.cpp` | NEU | ~250 |
+| `experiment/metrics_trace.hpp` | Erweitert | +6 (now_ms() inline) |
+| `experiment/metrics_collector.hpp` | Erweitert | +4 (get_minio_physical_size) |
+| `experiment/metrics_collector.cpp` | Erweitert | +50 (MinIO Prometheus parser) |
+| `experiment/data_loader.cpp` | Erweitert | +10 (MinIO BEFORE/AFTER) |
+| `main.cpp` | Erweitert | +47 (MetricsTrace + Exporter Integration) |
+| `CMakeLists.txt` | Erweitert | +2 |
+| `config.example.json` | Erweitert | +10 |
+| `docs/doku.tex` | Fix | 2 Ersetzungen |
+| Session-Doku | Erweitert | +200 |
+
+### Verbleibende Aufgaben nach Session 9c
+
+#### DONE (Session 9 + 9c)
+- [x] CI Triple Pipeline (7 Jobs, 6 Stages)
+- [x] --cleanup-only Modus
+- [x] PVC-Namen korrigiert (4 Fehler)
+- [x] MetricsTrace Header (Interface)
+- [x] MetricsTrace Implementation (7 Collectors + Kafka Producer + Background Thread)
+- [x] ResultsExporter (Kafka→CSV→git push)
+- [x] main.cpp Integration (register/start/stop + export-before-cleanup)
+- [x] CMakeLists.txt Update
+- [x] config.example.json (events_topic + git_export)
+- [x] doku.tex Naming (Redcomponent-DB → comdare-DB)
+- [x] MinIO Physical Size via Prometheus Endpoint
+
+#### OFFEN (naechste Session)
+
+| Prioritaet | Typ | Aufgabe | Abhaengigkeit |
+|-----------|-----|---------|---------------|
+| P0 | INFRA | K8s Runner neustart | kubectl rollout restart |
+| P0 | INFRA | Prometheus + Grafana deployen | kube-prometheus-stack |
+| P0 | INFRA | MariaDB in Cluster deployen | StatefulSet, 4 Replicas |
+| P0 | INFRA | ClickHouse in Cluster deployen | StatefulSet, 4 Replicas |
+| P2 | CODE | Grafana Dashboard JSON Template | Prometheus muss deployed sein |
+| P2 | DOC | doku.tex Phase 2 (DuckDB, Cassandra, MongoDB) | Kein Blocker |
+
+---
+
 ## 12. Git History
 
 ```
+0c5edf3 Fix naming + MinIO physical size: comdare-DB rename, S3 metrics endpoint
+a041c82 Complete MetricsTrace + ResultsExporter: 100ms sampling, Kafka dual output, CSV export
 70c113f WIP: MetricsTrace architecture + config fixes for 100ms Kafka sampling
 5d23bbb Session 9 docs + fix PVC names from cluster scan + metrics trace config
 5ac1732 Triple pipeline: fix tag matching, add cleanup-only mode, safety docs
@@ -677,4 +780,6 @@ fa9d890 Initial commit: LaTeX paper + experiment framework + kartografie
 | 5 | 2026-02-16 | Redis Cluster Fix, CockroachDB TLS, Lab-Schema Isolation | e29c9d4, c2fc814 |
 | 6-7 | 2026-02-16 | Kafka + MinIO Connector, Session-Docs | 38b6824 |
 | 8 | 2026-02-17 | Longhorn Metrics, MariaDB/ClickHouse Stubs, EDR + Throughput | b0bb5b6 |
+| **9** | **2026-02-17** | **Triple Pipeline, Cleanup-Only, MetricsTrace Arch** | **5ac1732, 5d23bbb, 70c113f** |
+| **9c** | **2026-02-17** | **MetricsTrace+Exporter KOMPLETT, MinIO Phys, Naming** | **a041c82, 0c5edf3** |
 | **9** | **2026-02-17** | **Triple Pipeline Fix, Cleanup-Only, 100ms MetricsTrace Architektur** | **5ac1732, 5d23bbb, 70c113f** |
