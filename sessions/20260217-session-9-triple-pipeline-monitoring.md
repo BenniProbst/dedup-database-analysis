@@ -874,6 +874,68 @@ fa9d890 Initial commit: LaTeX paper + experiment framework + kartografie
 
 ---
 
+## Session 9e: Paper Methodology + Grafana Dashboard + Compile Flag
+
+**Datum:** 2026-02-18, Kontext-Fortsetzung
+**Branch:** `development`
+
+### Zusammenfassung Session 9e
+
+1. **doku.tex erweitert** (+41 Zeilen):
+   - Section 5.5 "Measurement infrastructure": 10 Hz Sampling, Kafka Dual-Topic, Longhorn/MinIO Messung, EDR-Formel, Pushgateway
+   - Section 5.6 "Automation and reproducibility": Triple CI Pipeline, Lab-Schema-Isolation, DRY_RUN Validierung
+   - Paper-Methodik beschreibt jetzt vollstaendig das C++ Experiment-Framework
+
+2. **comdare-DB Compile Flag** (aus Kontext-Uebergang):
+   - `cmake -DENABLE_COMDARE_DB=ON` aktiviert den 8. Connector
+   - Alle Code-Pfade mit `#ifdef HAS_COMDARE_DB` geschuetzt
+   - Default-Build = 7 Systeme (ohne comdare-DB)
+
+3. **Grafana Dashboard Template** erstellt:
+   - `results/grafana-dashboard.json` (10 Panels, 3 Template-Variablen)
+   - Panels: EDR, Throughput, Physical Delta, Duration, Longhorn Volumes, DB Sizes, PG/Redis Details, Events Timeline
+   - Ready-to-import sobald Prometheus+Grafana deployed sind
+
+4. **Bibliographie-Check**: Alle 26 \cite{} in doku.tex haben korrespondierende .bib Eintraege
+
+5. **config.example.json**: comdare-db Eintrag hinzugefuegt (als OPTIONAL markiert)
+
+### Dateien geaendert/erstellt in Session 9e
+
+| Datei | Aktion | Zeilen |
+|-------|--------|--------|
+| `docs/doku.tex` | Erweitert | +41 (Sec 5.5 + 5.6) |
+| `config.example.json` | Erweitert | +9 (comdare-db entry) |
+| `results/grafana-dashboard.json` | NEU | ~280 |
+| `results/.gitkeep` | NEU | 0 |
+| Session-Doku | Erweitert | +80 |
+
+### Verbleibende Aufgaben nach Session 9e
+
+| Prioritaet | Typ | Aufgabe | Abhaengigkeit |
+|-----------|-----|---------|---------------|
+| P0 | INFRA | K8s Runner neustart | kubectl rollout restart |
+| P0 | INFRA | Prometheus + Grafana deployen | kube-prometheus-stack |
+| P0 | INFRA | MariaDB in Cluster deployen | StatefulSet, 4 Replicas |
+| P0 | INFRA | ClickHouse in Cluster deployen | StatefulSet, 4 Replicas |
+| P0 | INFRA | comdare-DB in Cluster deployen | StatefulSet, Longhorn PVC |
+| P1 | CODE | Grafana Dashboard importieren | Grafana muss deployed sein |
+| P1 | CODE | comdare-DB API Endpunkte alignen | comdare-DB muss deployed sein |
+| P2 | DOC | doku.tex Phase 2 (DuckDB, Cassandra, MongoDB) | Kein Blocker |
+
+### Projekt-Vollstaendigkeit nach Session 9e
+
+| Komponente | Status | Detail |
+|-----------|--------|--------|
+| LaTeX Paper (doku.tex) | **95%** | Kap 1-5+6 komplett, Sec 5.5/5.6 NEU, P2: DuckDB/Cassandra/MongoDB |
+| C++ Framework | **95%** | 8 Connectors, MetricsTrace, Exporter, DatasetGen, SchemaManager |
+| CI Pipeline | **100%** | Triple Pipeline, DRY_RUN, Cleanup-Only |
+| Grafana Dashboard | **100%** | Template ready, wartet auf Prometheus/Grafana Deploy |
+| K8s Integration | **60%** | 5/8 DBs deployed, PVCs konfiguriert, Runner-Problem offen |
+| Bibliographie | **100%** | 26 Zitate, alle verifiziert |
+
+---
+
 ## Session-Historie (Kurzreferenz)
 
 | Session | Datum | Schwerpunkt | Commits |
@@ -886,4 +948,5 @@ fa9d890 Initial commit: LaTeX paper + experiment framework + kartografie
 | 8 | 2026-02-17 | Longhorn Metrics, MariaDB/ClickHouse Stubs, EDR + Throughput | b0bb5b6 |
 | **9** | **2026-02-17** | **Triple Pipeline, Cleanup-Only, MetricsTrace Arch** | **5ac1732, 5d23bbb, 70c113f** |
 | **9c** | **2026-02-17** | **MetricsTrace+Exporter KOMPLETT, MinIO Phys, Naming** | **a041c82, 0c5edf3** |
-| **9d** | **2026-02-17** | **comdare-DB Connector, Redis doku.tex, Missing-DB-Analyse** | **(pending commit)** |
+| **9d** | **2026-02-17** | **comdare-DB Connector, Redis doku.tex, Compile Flag** | **c32865a, 7d38491** |
+| **9e** | **2026-02-18** | **Paper Sec 5.5+5.6, Grafana Dashboard, Bib-Check** | **f914058, (pending)** |

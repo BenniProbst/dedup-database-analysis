@@ -1,0 +1,326 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Dedup Database Analysis - TU Dresden Research\nMeasures physical storage behavior across database systems under controlled duplication workloads.",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Effective Deduplication Ratio (EDR) by System",
+      "description": "EDR = B_logical / (B_phys / N). Values > 1 indicate storage-level deduplication or compression.",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "dedup_edr{job=\"dedup-test\"}",
+          "legendFormat": "{{db_system}} / {{dup_grade}} / {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "thresholds": {
+            "steps": [
+              {"color": "red", "value": 0},
+              {"color": "yellow", "value": 1},
+              {"color": "green", "value": 1.5}
+            ]
+          },
+          "unit": "none",
+          "displayName": "${__field.labels.db_system} ${__field.labels.dup_grade}"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always",
+        "groupWidth": 0.7,
+        "barWidth": 0.9
+      }
+    },
+    {
+      "title": "Ingest Throughput (MB/s)",
+      "description": "Bytes written per second during bulk_insert and perfile_insert stages.",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "dedup_throughput_bps{job=\"dedup-test\"} / 1048576",
+          "legendFormat": "{{db_system}} / {{dup_grade}} / {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MBs",
+          "color": {"mode": "palette-classic"}
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always"
+      }
+    },
+    {
+      "title": "Physical Storage Delta (bytes)",
+      "description": "Longhorn actual_size_bytes change per stage. Shows how much physical storage each operation consumed.",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "dedup_phys_delta_bytes{job=\"dedup-test\"}",
+          "legendFormat": "{{db_system}} / {{dup_grade}} / {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "color": {"mode": "palette-classic"}
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always"
+      }
+    },
+    {
+      "title": "Stage Duration (ms)",
+      "description": "Wall-clock time per experiment stage.",
+      "type": "barchart",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "dedup_duration_ms{job=\"dedup-test\"}",
+          "legendFormat": "{{db_system}} / {{dup_grade}} / {{stage}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {"mode": "palette-classic"}
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "always"
+      }
+    },
+    {
+      "title": "EDR: U0 vs U50 vs U90 (Grouped by System)",
+      "description": "Compares EDR across duplication levels for each system. Sub-linear growth in physical storage = deduplication working.",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "dedup_edr{job=\"dedup-test\",stage=\"bulk_insert\"}",
+          "legendFormat": "{{db_system}} ({{dup_grade}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "always",
+            "stacking": {"mode": "none"}
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "right"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Longhorn Volume Sizes (Live)",
+      "description": "Physical storage per Longhorn volume (from Prometheus). Updated in real-time during experiments.",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 26},
+      "targets": [
+        {
+          "expr": "longhorn_volume_actual_size_bytes{volume=~\"pvc-.*\"}",
+          "legendFormat": "{{volume}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Database Logical Sizes (from 100ms Sampling)",
+      "description": "Logical size as reported by each DB system, sampled at 10 Hz via MetricsTrace.",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 26},
+      "targets": [
+        {
+          "expr": "dedup_metrics_logical_size_bytes{job=\"dedup-test\"}",
+          "legendFormat": "{{db_system}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom"}
+      }
+    },
+    {
+      "title": "PostgreSQL: pg_stat (100ms Sampling)",
+      "description": "PostgreSQL-specific metrics from 100ms MetricsTrace: tup_inserted, tup_deleted, heap_blks_read/hit.",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 34},
+      "targets": [
+        {
+          "expr": "dedup_metrics_pg_database_size{job=\"dedup-test\"}",
+          "legendFormat": "pg_database_size"
+        },
+        {
+          "expr": "dedup_metrics_tup_inserted{job=\"dedup-test\"}",
+          "legendFormat": "tup_inserted"
+        },
+        {
+          "expr": "dedup_metrics_heap_blks_hit{job=\"dedup-test\"}",
+          "legendFormat": "heap_blks_hit"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      }
+    },
+    {
+      "title": "Redis: Memory + Keys (100ms Sampling)",
+      "description": "Redis used_memory, connected_clients, db_keys from 100ms MetricsTrace.",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 34},
+      "targets": [
+        {
+          "expr": "dedup_metrics_used_memory{job=\"dedup-test\"}",
+          "legendFormat": "used_memory"
+        },
+        {
+          "expr": "dedup_metrics_db_keys{job=\"dedup-test\"}",
+          "legendFormat": "db_keys"
+        },
+        {
+          "expr": "dedup_metrics_aof_current_size{job=\"dedup-test\"}",
+          "legendFormat": "aof_current_size"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 5
+          }
+        }
+      }
+    },
+    {
+      "title": "Experiment Events Timeline",
+      "description": "Experiment lifecycle events from dedup-lab-events Kafka topic.",
+      "type": "logs",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 42},
+      "targets": [],
+      "options": {
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["dedup", "research", "tu-dresden", "experiment"],
+  "templating": {
+    "list": [
+      {
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": "Prometheus",
+        "definition": "label_values(dedup_edr, db_system)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "system",
+        "query": "label_values(dedup_edr, db_system)",
+        "refresh": 2,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": "Prometheus",
+        "definition": "label_values(dedup_edr, dup_grade)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "grade",
+        "query": "label_values(dedup_edr, dup_grade)",
+        "refresh": 2,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {"selected": true, "text": "All", "value": "$__all"},
+        "datasource": "Prometheus",
+        "definition": "label_values(dedup_edr, stage)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "stage",
+        "query": "label_values(dedup_edr, stage)",
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Dedup Database Analysis - TU Dresden Research",
+  "uid": "dedup-experiment-v1",
+  "version": 1
+}

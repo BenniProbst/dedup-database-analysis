@@ -75,6 +75,15 @@
             "pvc_name": "",
             "k8s_namespace": "databases",
             "_comment": "TODO: ClickHouse not yet deployed in K8s cluster"
+        },
+        {
+            "system": "comdare-db",
+            "host": "comdare-db.databases.svc.cluster.local",
+            "port": 8080,
+            "lab_schema": "dedup_lab",
+            "pvc_name": "",
+            "k8s_namespace": "databases",
+            "_comment": "OPTIONAL: Requires cmake -DENABLE_COMDARE_DB=ON. Not yet deployed."
         }
     ],
 
