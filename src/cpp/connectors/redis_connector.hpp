@@ -3,7 +3,8 @@
 
 namespace dedup {
 
-// Redis connector -- uses DB 15 for lab isolation (production = DB 0)
+// Redis connector -- uses key-prefix for lab isolation (cluster mode, no SELECT)
+// All lab keys use prefix "dedup:" -- production keys have NO such prefix.
 class RedisConnector : public DbConnector {
 public:
     ~RedisConnector() override { disconnect(); }
@@ -27,7 +28,8 @@ public:
     [[nodiscard]] const char* system_name() const override { return "redis"; }
 
 private:
-    static constexpr int LAB_DB = 15;  // Redis DB 15 for lab (0 = production!)
+    static constexpr const char* KEY_PREFIX = "dedup:";
+    int64_t delete_all_lab_keys();  // SCAN + DEL for dedup:* keys
     void* ctx_ = nullptr;  // redisContext* or raw socket
     bool connected_ = false;
 };

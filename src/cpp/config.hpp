@@ -119,7 +119,7 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
          cfg.lab_user, "", "dedup_lab", "dedup_lab"},
 
         {DbSystem::REDIS, "redis-standalone.redis.svc.cluster.local", 6379,
-         "", "", "", ""},  // Redis: uses DB 15 for lab
+         "", "", "", ""},  // Redis: cluster mode, key-prefix "dedup:*" for lab
 
         {DbSystem::KAFKA, "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local", 9092,
          "", "", "", "dedup-lab"},  // Kafka: topic prefix dedup-lab-*
