@@ -367,16 +367,24 @@ int main(int argc, char* argv[]) {
     LOG_INF("Total runs: %zu", all_results.size());
     LOG_INF("Results: %s", combined_path.c_str());
 
-    // Print summary table (doku.tex metrics: duration, logical bytes, physical delta, EDR, throughput)
-    std::printf("\n%-13s %-4s %-15s %10s %12s %12s %7s %10s\n",
-        "System", "Dup", "Stage", "Time(ms)", "Logical(B)", "PhysDelta", "EDR", "MB/s");
-    std::printf("%.95s\n",
-        "-----------------------------------------------------------------------------------------------");
+    // Print summary table (doku.tex metrics: duration, logical bytes, physical delta, EDR, throughput, latency)
+    std::printf("\n%-13s %-4s %-15s %10s %12s %12s %7s %10s %10s %10s %10s\n",
+        "System", "Dup", "Stage", "Time(ms)", "Logical(B)", "PhysDelta", "EDR", "MB/s",
+        "p50(us)", "p95(us)", "p99(us)");
+    std::printf("%.135s\n",
+        "---------------------------------------------------------------------------------------------------------------------------------------");
     for (const auto& r : all_results) {
-        std::printf("%-13s %-4s %-15s %10lld %12lld %12lld %7.3f %10.1f\n",
+        std::printf("%-13s %-4s %-15s %10lld %12lld %12lld %7.3f %10.1f",
             r.system.c_str(), r.dup_grade.c_str(), r.stage.c_str(),
             r.duration_ns / 1000000, r.bytes_logical, r.phys_delta,
             r.edr, r.throughput_bytes_per_sec / (1024.0 * 1024.0));
+        if (r.latency_count > 0) {
+            std::printf(" %10lld %10lld %10lld",
+                r.latency_p50_ns / 1000, r.latency_p95_ns / 1000, r.latency_p99_ns / 1000);
+        } else {
+            std::printf(" %10s %10s %10s", "-", "-", "-");
+        }
+        std::printf("\n");
     }
 
     return 0;

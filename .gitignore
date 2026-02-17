@@ -40,6 +40,9 @@ docs/*.fls
 docs/*.fdb_latexmk
 docs/*.out
 
+# Doc archive zips (redundant with tracked .tex/.bib)
+docs/*.zip
+
 # Kubernetes secrets (never commit)
 k8s/secrets/
 *.secret.yaml

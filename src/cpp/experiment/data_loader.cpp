@@ -40,11 +40,12 @@ nlohmann::json ExperimentResult::to_json() const {
             {"p95_ns", latency_p95_ns},
             {"p99_ns", latency_p99_ns},
             {"mean_ns", latency_mean_ns},
-            {"min_us", latency_min_ns / 1000},
-            {"max_us", latency_max_ns / 1000},
-            {"p50_us", latency_p50_ns / 1000},
-            {"p95_us", latency_p95_ns / 1000},
-            {"p99_us", latency_p99_ns / 1000}
+            {"mean_us", latency_mean_ns / 1000.0},
+            {"min_us", latency_min_ns / 1000.0},
+            {"max_us", latency_max_ns / 1000.0},
+            {"p50_us", latency_p50_ns / 1000.0},
+            {"p95_us", latency_p95_ns / 1000.0},
+            {"p99_us", latency_p99_ns / 1000.0}
         };
     }
 

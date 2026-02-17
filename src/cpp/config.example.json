@@ -90,8 +90,8 @@
     "dup_grades": ["U0", "U50", "U90"],
 
     "prometheus": {
-        "url": "http://prometheus.monitoring.svc.cluster.local:9090",
-        "_comment": "TODO: Prometheus not yet deployed -- needs kube-prometheus-stack"
+        "url": "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090",
+        "_comment": "kube-prometheus-stack in monitoring namespace"
     },
 
     "grafana": {

@@ -72,7 +72,7 @@ struct DbConnection {
 
 // Prometheus endpoint for Longhorn metrics
 struct PrometheusConfig {
-    std::string url = "http://prometheus.monitoring.svc.cluster.local:9090";
+    std::string url = "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090";
 };
 
 // Grafana push endpoint
@@ -163,6 +163,14 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
         {DbSystem::MINIO, "minio-lb.minio.svc.cluster.local", 9000,
          cfg.lab_user, "", "", "dedup-lab",
          "", "minio"},  // MinIO = Direct Disk, NO Longhorn PVC!
+
+        {DbSystem::MARIADB, "mariadb.databases.svc.cluster.local", 3306,
+         cfg.lab_user, "", "dedup_lab", "dedup_lab",
+         "", "databases"},
+
+        {DbSystem::CLICKHOUSE, "clickhouse.databases.svc.cluster.local", 8123,
+         "", "", "", "dedup_lab",
+         "", "databases"},
     };
 
     return cfg;
