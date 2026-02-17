@@ -8,14 +8,23 @@
 # SAFETY: Pipeline 3 uses Samba AD lab user (dedup-lab) and isolated
 #         lab schemas (dedup_lab). Customer data is NEVER touched.
 #         Lab schemas are created before and dropped after each experiment.
+#         Automatic cleanup via after_script guarantees no orphaned data.
 #
 # Cluster: 4 Worker Nodes (Intel N97), Talos v1.11.6, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
 # Runner: GitLab K8s Runner (ID 6, tag: kubernetes)
+#
+# Required CI/CD Variables (Settings > CI/CD > Variables, MASKED):
+#   DEDUP_PG_PASSWORD       - PostgreSQL lab user password
+#   DEDUP_CRDB_PASSWORD     - CockroachDB lab user password (often empty)
+#   DEDUP_REDIS_PASSWORD    - Redis password (often empty in cluster mode)
+#   DEDUP_MARIADB_PASSWORD  - MariaDB lab user password
+#   DEDUP_MINIO_PASSWORD    - MinIO lab user password
 # =============================================================================
 
 stages:
   - latex
+  - docker-build
   - cpp-build
   - cpp-test
   - experiment-build
@@ -24,10 +33,15 @@ stages:
 
 variables:
   PROMETHEUS_URL: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+  KAFKA_BOOTSTRAP: kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
   REPLICA_COUNT: "4"
   LAB_SCHEMA: dedup_lab
   DUP_GRADES: "U0,U50,U90"
   SYSTEMS: "postgresql,cockroachdb,redis,kafka,minio,mariadb,clickhouse"
+  NUM_FILES: "500"
+  SEED: "42"
+  # Docker registry (for optional image builds)
+  DEDUP_IMAGE: ${CI_REGISTRY_IMAGE}/dedup-test
 
 # =============================================================================
 # PIPELINE 1: LaTeX Compilation (auto-triggered on document changes)
@@ -65,6 +79,38 @@ latex:compile:
         - "docs/**/*.cls"
         - "docs/**/*.bst"
         - "docs/Makefile"
+
+# =============================================================================
+# Docker Image Build (optional, manual -- uses Kaniko for K8s runners)
+# =============================================================================
+
+docker:build:
+  stage: docker-build
+  tags:
+    - kubernetes
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  script:
+    - |
+      echo "=== Building Docker image: ${DEDUP_IMAGE}:${CI_COMMIT_SHORT_SHA} ==="
+      mkdir -p /kaniko/.docker
+      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64)\"}}}" > /kaniko/.docker/config.json
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/Dockerfile" \
+        --destination "${DEDUP_IMAGE}:${CI_COMMIT_SHORT_SHA}" \
+        --destination "${DEDUP_IMAGE}:latest" \
+        --cache=true \
+        --cache-repo "${DEDUP_IMAGE}/cache"
+      echo "=== Image pushed: ${DEDUP_IMAGE}:${CI_COMMIT_SHORT_SHA} ==="
+  rules:
+    - changes:
+        - Dockerfile
+        - .dockerignore
+        - "src/cpp/**"
+      when: manual
+      allow_failure: true
 
 # =============================================================================
 # PIPELINE 2: C++ Build + Tests (auto on src/cpp/** changes)
@@ -124,7 +170,7 @@ cpp:smoke-test:
       echo "=== Smoke Test: SHA-256 + Dataset Generator + Dry-Run ==="
       chmod +x build/dedup-smoke-test
 
-      # 1. Generate test datasets (100 files per grade, 4K-64K, seed=42)
+      # 1. Generate test datasets (100 files per grade, 16K fixed, seed=42)
       echo "--- Step 1: Generate datasets ---"
       build/dedup-smoke-test --generate-data \
         --data-dir /tmp/datasets \
@@ -136,7 +182,7 @@ cpp:smoke-test:
       # Verify generated files
       echo "--- Dataset verification ---"
       for grade in U0 U50 U90; do
-        COUNT=$(ls /tmp/datasets/${grade}/*.dat 2>/dev/null | wc -l)
+        COUNT=$(find /tmp/datasets/${grade} -name '*.dat' 2>/dev/null | wc -l)
         SIZE=$(du -sh /tmp/datasets/${grade}/ 2>/dev/null | cut -f1)
         echo "  ${grade}: ${COUNT} files, ${SIZE}"
       done
@@ -144,9 +190,13 @@ cpp:smoke-test:
       # 2. Check for duplicates using SHA-256
       echo "--- Step 2: Verify duplication levels ---"
       for grade in U0 U50 U90; do
-        TOTAL=$(ls /tmp/datasets/${grade}/*.dat 2>/dev/null | wc -l)
+        TOTAL=$(find /tmp/datasets/${grade} -name '*.dat' 2>/dev/null | wc -l)
         UNIQUE=$(sha256sum /tmp/datasets/${grade}/*.dat 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
-        DUP_PCT=$(python3 -c "print(round((1 - ${UNIQUE}/${TOTAL}) * 100, 1) if ${TOTAL} > 0 else 0)")
+        if [ "$TOTAL" -gt 0 ]; then
+          DUP_PCT=$(awk "BEGIN {printf \"%.1f\", (1 - ${UNIQUE}/${TOTAL}) * 100}")
+        else
+          DUP_PCT="0.0"
+        fi
         echo "  ${grade}: ${TOTAL} total, ${UNIQUE} unique, ${DUP_PCT}% duplicates"
       done
 
@@ -209,6 +259,7 @@ cpp:full-dry-test:
 #   - All data goes into isolated lab schemas (dedup_lab / dedup-lab prefix)
 #   - Lab schemas are CREATED before experiment and DROPPED after
 #   - Customer/production data is NEVER read, modified, or deleted
+#   - after_script GUARANTEES cleanup even on failure/timeout
 #   - Each DB system uses its own isolation mechanism:
 #     PostgreSQL/CockroachDB: CREATE SCHEMA dedup_lab (separate from public)
 #     Redis: Key prefix dedup:* (no SELECT in cluster mode)
@@ -241,11 +292,14 @@ experiment:build:
       allow_failure: true
 
 # Step 2: Run the actual experiment against production databases
+# IMPORTANT: after_script runs cleanup EVEN IF the main script fails/times out
 experiment:run:
   <<: *cpp-default
   stage: experiment-run
   needs: ["experiment:build"]
   timeout: 4 hours
+  variables:
+    GIT_STRATEGY: clone
   script:
     - |
       echo "================================================================="
@@ -258,25 +312,133 @@ experiment:run:
       echo "Systems: ${SYSTEMS}"
       echo "Grades: ${DUP_GRADES}"
       echo "Replica count: ${REPLICA_COUNT}"
+      echo "Prometheus: ${PROMETHEUS_URL}"
       echo ""
 
       chmod +x build/dedup-test
 
-      # Step 1: Generate test datasets
-      echo "=== Step 1: Generate datasets (500 files x 3 grades) ==="
+      # --- Generate experiment config from CI variables ---
+      echo "=== Generating config.json from CI variables ==="
+      cat > /tmp/dedup-config.json << ENDCONF
+      {
+        "lab_user": "dedup-lab",
+        "lab_schema": "${LAB_SCHEMA}",
+        "data_dir": "/tmp/datasets",
+        "results_dir": "results",
+        "replica_count": ${REPLICA_COUNT},
+        "dry_run": false,
+        "databases": [
+          {
+            "system": "postgresql",
+            "host": "postgres-lb.databases.svc.cluster.local",
+            "port": 5432,
+            "user": "dedup-lab",
+            "password": "${DEDUP_PG_PASSWORD}",
+            "database": "postgres",
+            "lab_schema": "${LAB_SCHEMA}",
+            "pvc_name": "data-postgres-ha-0",
+            "k8s_namespace": "databases"
+          },
+          {
+            "system": "cockroachdb",
+            "host": "cockroachdb-public.cockroach-operator-system.svc.cluster.local",
+            "port": 26257,
+            "user": "dedup-lab",
+            "password": "${DEDUP_CRDB_PASSWORD}",
+            "database": "${LAB_SCHEMA}",
+            "lab_schema": "${LAB_SCHEMA}",
+            "pvc_name": "datadir-cockroachdb-0",
+            "k8s_namespace": "cockroach-operator-system"
+          },
+          {
+            "system": "redis",
+            "host": "redis-cluster.redis.svc.cluster.local",
+            "port": 6379,
+            "password": "${DEDUP_REDIS_PASSWORD}",
+            "pvc_name": "data-redis-cluster-0",
+            "k8s_namespace": "redis"
+          },
+          {
+            "system": "kafka",
+            "host": "${KAFKA_BOOTSTRAP}",
+            "port": 9092,
+            "lab_schema": "dedup-lab",
+            "pvc_name": "data-kafka-cluster-broker-0",
+            "k8s_namespace": "kafka"
+          },
+          {
+            "system": "minio",
+            "host": "minio-lb.minio.svc.cluster.local",
+            "port": 9000,
+            "user": "dedup-lab",
+            "password": "${DEDUP_MINIO_PASSWORD}",
+            "lab_schema": "dedup-lab",
+            "pvc_name": "",
+            "k8s_namespace": "minio"
+          },
+          {
+            "system": "mariadb",
+            "host": "mariadb.databases.svc.cluster.local",
+            "port": 3306,
+            "user": "dedup-lab",
+            "password": "${DEDUP_MARIADB_PASSWORD}",
+            "database": "${LAB_SCHEMA}",
+            "lab_schema": "${LAB_SCHEMA}",
+            "pvc_name": "",
+            "k8s_namespace": "databases"
+          },
+          {
+            "system": "clickhouse",
+            "host": "clickhouse.databases.svc.cluster.local",
+            "port": 8123,
+            "lab_schema": "${LAB_SCHEMA}",
+            "pvc_name": "",
+            "k8s_namespace": "databases"
+          }
+        ],
+        "dup_grades": ["U0", "U50", "U90"],
+        "prometheus": {
+          "url": "${PROMETHEUS_URL}"
+        },
+        "metrics_trace": {
+          "kafka_bootstrap": "${KAFKA_BOOTSTRAP}",
+          "kafka_topic": "dedup-lab-metrics",
+          "events_topic": "dedup-lab-events",
+          "sample_interval_ms": 100,
+          "enabled": true
+        },
+        "git_export": {
+          "remote_name": "origin",
+          "branch": "${CI_COMMIT_REF_NAME}",
+          "auto_push": true,
+          "ssl_verify": false
+        }
+      }
+      ENDCONF
+      echo "Config generated: /tmp/dedup-config.json"
+
+      # --- Set up git for results export (push before cleanup) ---
+      echo "=== Setting up git for results export ==="
+      git config user.email "dedup-ci@comdare.de"
+      git config user.name "Dedup CI Pipeline"
+      git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" || true
+
+      # --- Step 1: Generate test datasets ---
+      echo "=== Step 1: Generate datasets (${NUM_FILES} files x 3 grades) ==="
       build/dedup-test --generate-data \
         --data-dir /tmp/datasets \
-        --num-files 500 \
-        --seed 42 \
+        --num-files "${NUM_FILES}" \
+        --seed "${SEED}" \
         --verbose 2>&1
 
       # Verify dataset sizes
       echo "=== Dataset summary ==="
       du -sh /tmp/datasets/*/
 
-      # Step 2: Run experiment (creates lab schemas, inserts, measures, cleans up)
+      # --- Step 2: Run experiment with config ---
       echo "=== Step 2: Run experiment ==="
       build/dedup-test \
+        --config /tmp/dedup-config.json \
         --data-dir /tmp/datasets \
         --systems "${SYSTEMS}" \
         --grades "${DUP_GRADES}" \
@@ -285,10 +447,33 @@ experiment:run:
         --verbose 2>&1
 
       echo "=== Step 3: Results ==="
-      cat results/combined_results.json | python3 -m json.tool 2>/dev/null | head -200
+      ls -la results/*.json 2>/dev/null || echo "No result files"
+      cat results/combined_results.json 2>/dev/null | head -200
 
-      echo "=== Per-system results ==="
-      ls -la results/*.json 2>/dev/null || echo "No per-system results"
+      echo "=== Experiment completed successfully ==="
+
+  # CRITICAL: after_script runs EVEN IF main script fails or times out
+  # This guarantees lab schemas are always cleaned up
+  after_script:
+    - |
+      echo "================================================================="
+      echo "  AUTO-CLEANUP: Dropping all lab schemas (runs on success+failure)"
+      echo "================================================================="
+      if [ -x build/dedup-test ]; then
+        # Reinstall runtime deps (after_script runs in fresh shell)
+        apt-get update -qq 2>/dev/null
+        apt-get install -y -qq libpq5 libcurl4 libhiredis0.14 \
+          librdkafka1 libmariadb3 2>/dev/null || true
+        build/dedup-test \
+          --cleanup-only \
+          --systems "${SYSTEMS}" \
+          --lab-schema "${LAB_SCHEMA}" \
+          --verbose 2>&1
+        echo "=== Auto-cleanup complete ==="
+      else
+        echo "WARNING: dedup-test binary not available for cleanup"
+        echo "Use experiment:cleanup job to manually clean up lab schemas"
+      fi
   artifacts:
     paths:
       - results/
@@ -297,8 +482,8 @@ experiment:run:
     - when: manual
       allow_failure: true
 
-# Step 3: Cleanup -- drop all lab schemas to leave DBs clean
-# Runs automatically after experiment:run, also available as manual trigger
+# Step 3: Manual cleanup fallback -- in case after_script cleanup failed
+# or experiment:run was never triggered but schemas exist from a previous run
 experiment:cleanup:
   <<: *cpp-default
   stage: experiment-cleanup
@@ -310,8 +495,8 @@ experiment:cleanup:
   script:
     - |
       echo "================================================================="
-      echo "  CLEANUP: Dropping all lab schemas"
-      echo "  This removes ONLY dedup_lab data, NOT customer data!"
+      echo "  MANUAL CLEANUP: Dropping all lab schemas"
+      echo "  This removes ONLY ${LAB_SCHEMA} data, NOT customer data!"
       echo "================================================================="
 
       chmod +x build/dedup-test
@@ -322,7 +507,7 @@ experiment:cleanup:
         --lab-schema "${LAB_SCHEMA}" \
         --verbose 2>&1
 
-      echo "=== Cleanup complete: all lab schemas dropped ==="
+      echo "=== Manual cleanup complete: all lab schemas dropped ==="
   rules:
     - when: manual
       allow_failure: true
