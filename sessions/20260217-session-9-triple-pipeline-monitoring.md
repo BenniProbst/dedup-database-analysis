@@ -1080,8 +1080,8 @@ Pipeline 2 (C++, AUTO bei src/cpp/** Aenderungen):
 
 Pipeline 3 (Experiment, NUR MANUELL):
   experiment:build → experiment:run (4h Timeout) → experiment:cleanup
-  SYSTEMS Variable: "postgresql,cockroachdb,redis,kafka,minio"
-  (MariaDB/ClickHouse werden hinzugefuegt wenn deployed)
+  SYSTEMS Variable: "postgresql,cockroachdb,redis,kafka,minio,mariadb,clickhouse"
+  (seit Session 9f, Commit 5c0d5b1)
 ```
 
 ### 9. NAECHSTE SCHRITTE (Priorisiert, fuer neuen Kontext)
@@ -1100,6 +1100,77 @@ Pipeline 3 (Experiment, NUR MANUELL):
 #### Wartet auf User-Entscheidung
 8. **comdare-DB**: Deploy + API-Endpoints alignen (User sagte: "wird es wahrscheinlich nicht schaffen")
 9. **Experiment ausfuehren**: Manueller Trigger Pipeline 3 (nach INFRA-Arbeit)
+
+---
+
+## Session 9f: Per-File Latency Tracking (2026-02-18)
+
+### Zusammenfassung
+
+Komplette Implementierung von Per-File-Latenz-Tracking ueber alle 8 Datenbank-Connectors.
+Jede `perfile_insert` und `perfile_delete` Operation misst jetzt individuelle Latenz pro
+Datei/Objekt/Key/Message in Nanosekunden-Praezision mittels `ScopedTimer` RAII-Pattern.
+
+**Commit:** `5c0d5b1` — pushed to GitHub + GitLab
+**Diff:** 12 files, +677/-79 lines
+
+### Aenderungen im Detail
+
+#### 1. Core Infrastructure
+- **`db_connector.hpp`**: `MeasureResult.per_file_latencies_ns` (vector<int64_t>) hinzugefuegt, alle Felder auf 0 initialisiert
+- **`data_loader.hpp`**: Latenz-Statistik-Felder in `ExperimentResult` (count, min, max, p50, p95, p99, mean)
+- **`data_loader.cpp`**: Percentil-Berechnung aus sortiertem Vektor + JSON-Serialisierung mit `"latency"` Objekt (ns + us)
+
+#### 2. SQL-basierte Connectors (Row-by-Row Delete)
+- **`postgres_connector.cpp`**: `perfile_insert` pushed jetzt Latenzen; `perfile_delete` komplett umgeschrieben: SELECT ids → DELETE WHERE id = $1::uuid pro Zeile mit ScopedTimer
+- **`mariadb_connector.cpp`**: `perfile_insert` vollstaendig neu (war `return bulk_insert()`); `perfile_delete` neu: SELECT id → prepared DELETE per Row mit ScopedTimer
+- **`clickhouse_connector.cpp`**: `perfile_insert` neu mit Hex-Encoding pro Datei; `perfile_delete` neu: SELECT ids via TabSeparated → ALTER TABLE DELETE per Row
+
+#### 3. Key-Value / Message Connectors
+- **`redis_connector.cpp`**: `perfile_insert` neu (individuelles SET pro Key mit ScopedTimer statt bulk); `perfile_delete` neu (SCAN → per-Key DEL mit ScopedTimer)
+- **`kafka_connector.cpp`**: `perfile_insert` neu (individuelles rd_kafka_producev pro Message mit ScopedTimer, flush am Ende)
+- **`minio_connector.cpp`**: `perfile_insert` neu (individuelles s3_put_object mit ScopedTimer); `perfile_delete` ScopedTimer um jedes s3_delete_object
+
+#### 4. comdare-DB Connector
+- **`comdare_connector.hpp`**: `http_post_with_metadata()` Methode deklariert
+- **`comdare_connector.cpp`**: `http_post_with_metadata()` implementiert (X-Filename, X-SHA256, X-Size-Bytes, X-MIME Headers); `bulk_insert` nutzt jetzt Metadata-Headers; `perfile_insert`/`perfile_delete` komplett neu mit ScopedTimer
+
+#### 5. CI Pipeline
+- **`.gitlab-ci.yml`**: Prometheus URL korrigiert (`kube-prometheus-stack-prometheus.monitoring.svc`); SYSTEMS um `mariadb,clickhouse` erweitert
+
+### Bugfix
+- **comdare-DB Metadata-Bug behoben**: `bulk_insert` berechnete vorher ein `nlohmann::json meta` Objekt, sendete aber nur den rohen Binary-Payload ohne Metadata-Headers. Jetzt werden X-Filename, X-SHA256, X-Size-Bytes, X-MIME korrekt als HTTP-Headers mitgesendet.
+
+### Latenz-Statistik Format (JSON Output)
+
+```json
+{
+  "latency": {
+    "count": 150,
+    "min_ns": 45000, "min_us": 45.0,
+    "max_ns": 2300000, "max_us": 2300.0,
+    "p50_ns": 120000, "p50_us": 120.0,
+    "p95_ns": 890000, "p95_us": 890.0,
+    "p99_ns": 1850000, "p99_us": 1850.0,
+    "mean_ns": 185000.5, "mean_us": 185.0
+  }
+}
+```
+
+### Naechste Schritte (aktualisiert)
+
+#### SOFORT machbar
+1. **doku.tex Phase 2**: Weitere DB-Sections (DuckDB, Cassandra, MongoDB)
+2. **Test-Coverage**: Unit-Tests fuer Latenz-Statistik-Berechnung
+3. **Config**: MariaDB/ClickHouse Connection-Strings in config.example erweitern
+
+#### Wartet auf INFRA
+4. **K8s Runner Fix** → CI Pipeline 2+3 testen
+5. **Prometheus + Grafana Dashboard** importieren
+
+#### Wartet auf User
+6. **comdare-DB Deploy** + API-Alignment
+7. **Experiment-Run**: Manueller Trigger Pipeline 3
 
 ### 10. Kritische Dateipfade fuer Kontext-Einstieg
 
