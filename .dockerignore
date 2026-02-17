@@ -1,0 +1,16 @@
+# Docker build context exclusions
+.git/
+.gitignore
+.dockerignore
+docs/
+sessions/
+results/
+datasets/
+k8s/
+scripts/
+*.md
+LICENSE
+.gitlab-ci.yml
+.vscode/
+.idea/
+build/
