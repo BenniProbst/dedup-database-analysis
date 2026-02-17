@@ -293,6 +293,47 @@ The deletion stage measures whether and how quickly a system can reclaim space o
 \paragraph{Primary outputs.}
 The experiment produces (i) ingest throughput per system and data type, (ii) physical storage growth curves over duplication level (U0/U50/U90), and (iii) post-delete reclamation behavior. Together, these measurements provide an empirical answer to whether deduplication is a \emph{database feature}, a \emph{storage-layer feature}, or largely \emph{absent} in the tested configurations.
 
+\section{Measurement infrastructure}
+\label{sec:measurement-infra}
+
+To capture fine-grained storage dynamics during experiments, a dedicated metrics sampling system operates alongside the workload driver.
+
+\paragraph{High-frequency metrics sampling.}
+A background thread polls each system under test at 10\,Hz (every 100\,ms), recording database-specific metrics via native interfaces. For SQL databases, this includes \texttt{pg\_stat\_user\_tables}, \texttt{pg\_database\_size()}, and equivalent queries for CockroachDB and MariaDB. For Redis, \texttt{INFO ALL} provides memory usage, keyspace statistics, and AOF/RDB status. Kafka metrics are read from JMX exporters (broker-level \texttt{bytes-in-total}, \texttt{messages-in-total}, topic partition sizes). MinIO metrics are scraped from its built-in Prometheus endpoint at \texttt{/minio/v2/metrics/cluster}. ClickHouse provides its metrics via SQL queries against \texttt{system.metrics} and \texttt{system.events}. Each sample produces a JSON record with a millisecond timestamp, the system name, metric name, numeric value, and unit.
+
+\paragraph{Dual-topic Kafka logging.}
+All metric samples are published to the Kafka topic \texttt{dedup-lab-metrics} with \texttt{system:metric\_name} as the message key, enabling per-system compaction and ordered replay. A separate topic \texttt{dedup-lab-events} records experiment lifecycle events (\texttt{experiment\_start}, \texttt{system\_start}, \texttt{system\_end}, \texttt{experiment\_end}) with structured JSON payloads. Both topics use the same Kafka cluster that is also a system under test, taking advantage of Kafka's dual role as infrastructure and measurement target. After each experiment run, a consumer reads both topics from offset zero and exports the data to CSV files before the lab schemas (including the Kafka topics) are cleaned up. This export-before-cleanup guarantee ensures that no measurement data is lost.
+
+\paragraph{Physical size measurement.}
+For systems with Longhorn-backed PersistentVolumeClaims, the physical storage footprint is measured via the Prometheus metric \texttt{longhorn\_volume\_actual\_size\_bytes}. The mapping from PVC to Longhorn volume name is resolved via the \texttt{kube\_persistentvolumeclaim\_info} metric. MinIO operates on direct disk (no Longhorn PVC) and therefore provides its physical size through its own Prometheus endpoint, where \texttt{minio\_bucket\_usage\_total\_bytes} is summed over all lab-prefixed buckets. A 15-second settling delay is inserted between workload completion and the ``after'' physical size measurement, to account for asynchronous Longhorn replication and metric propagation.
+
+\paragraph{Derived metrics.}
+From the raw measurements, two key metrics are computed per stage:
+\begin{enumerate}[nosep]
+    \item \emph{Ingest throughput} $= B_\text{logical} / T_\text{stage}$ (bytes per second).
+    \item \emph{Effective Deduplication Ratio} $\mathrm{EDR} = B_\text{logical} / (B_\text{phys} / N)$, where $B_\text{phys}$ is the physical storage delta and $N=4$ is the replica count. An $\mathrm{EDR} > 1$ indicates that the storage layer stores less physical data than the logical payload would suggest, implying some form of deduplication or compression at the block level.
+\end{enumerate}
+All per-stage results are additionally pushed to a Prometheus Pushgateway for real-time visualization in Grafana dashboards.
+
+\section{Automation and reproducibility}
+\label{sec:automation}
+
+The experiment framework is implemented in C++20 and built with CMake\@. Reproducibility is ensured through three layers of automation.
+
+\paragraph{Triple CI pipeline.}
+A GitLab CI/CD configuration defines three independent pipelines:
+\begin{enumerate}[nosep]
+    \item A \emph{documentation pipeline} compiles the \LaTeX\ paper on every change to the \texttt{docs/} directory.
+    \item A \emph{build-and-test pipeline} compiles the C++ framework and runs smoke tests using a dry-run mode that simulates all database operations without network access. The smoke test verifies SHA-256 hashing, dataset generation with correct duplication ratios, and the full experiment lifecycle.
+    \item An \emph{experiment pipeline} (manual trigger only) builds the binary, executes the full experiment against production databases, and performs a cleanup stage that drops all lab schemas regardless of experiment success or failure.
+\end{enumerate}
+
+\paragraph{Lab schema isolation.}
+All database operations are confined to dedicated lab schemas (\texttt{dedup\_lab} for SQL databases, key prefix \texttt{dedup:} for Redis, topic prefix \texttt{dedup-lab-} for Kafka, bucket prefix \texttt{dedup-lab-} for MinIO). Production data is never read or modified. Lab schemas are created at experiment start and unconditionally dropped at experiment end (or via the \texttt{-{}-cleanup-only} mode).
+
+\paragraph{Dry-run validation.}
+When compiled with the \texttt{DEDUP\_DRY\_RUN} preprocessor flag, all connectors simulate their operations: database connections return success without network access, queries return synthetic results, and the metrics sampling thread produces zero-valued data points. This allows the full experiment pipeline to be validated on CI runners that have no access to the production cluster.
+
 
 \chapter{Initial Evaluation and Research Goal}
 \label{ch:bewertung}
