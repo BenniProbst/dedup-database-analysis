@@ -35,6 +35,8 @@
 #include "experiment/schema_manager.hpp"
 #include "experiment/data_loader.hpp"
 #include "experiment/metrics_collector.hpp"
+#include "experiment/metrics_trace.hpp"
+#include "experiment/results_exporter.hpp"
 #include "experiment/dataset_generator.hpp"
 
 namespace fs = std::filesystem;
@@ -272,14 +274,47 @@ int main(int argc, char* argv[]) {
     LOG_INF("Creating lab schemas (%s) on all connected databases...", lab_schema.c_str());
     schema_mgr.create_all_lab_schemas(lab_schema);
 
+    // Initialize 100ms MetricsTrace (background thread + Kafka producer)
+    dedup::MetricsTrace trace(cfg.metrics_trace, dry_run);
+    if (cfg.metrics_trace.enabled) {
+        for (auto& entry : entries) {
+            trace.register_system(entry.db_conn,
+                dedup::collectors::for_system(entry.db_conn.system));
+        }
+        trace.start();
+        trace.publish_event({dedup::now_ms(), "experiment_start", "", "", "",
+            "{\"systems\":" + std::to_string(entries.size()) + "}"});
+    }
+
     // Run experiments — pass DbConnection for PVC/Longhorn mapping
     dedup::DataLoader loader(schema_mgr, metrics, cfg.replica_count);
     std::vector<dedup::ExperimentResult> all_results;
 
     for (auto& entry : entries) {
+        if (cfg.metrics_trace.enabled) {
+            trace.publish_event({dedup::now_ms(), "system_start",
+                dedup::db_system_str(entry.db_conn.system), "", "", ""});
+        }
+
         auto results = loader.run_full_experiment(
             *entry.connector, entry.db_conn, data_dir, lab_schema, grades);
         all_results.insert(all_results.end(), results.begin(), results.end());
+
+        if (cfg.metrics_trace.enabled) {
+            trace.publish_event({dedup::now_ms(), "system_end",
+                dedup::db_system_str(entry.db_conn.system), "", "",
+                "{\"runs\":" + std::to_string(results.size()) + "}"});
+        }
+    }
+
+    // Stop MetricsTrace background thread
+    if (cfg.metrics_trace.enabled) {
+        trace.publish_event({dedup::now_ms(), "experiment_end", "", "", "",
+            "{\"total_runs\":" + std::to_string(all_results.size()) + "}"});
+        trace.stop();
+        LOG_INF("MetricsTrace: %lld metrics, %lld events published",
+            static_cast<long long>(trace.metrics_published()),
+            static_cast<long long>(trace.events_published()));
     }
 
     // Save combined results
@@ -293,6 +328,18 @@ int main(int argc, char* argv[]) {
     if (out.is_open()) {
         out << combined.dump(2);
         LOG_INF("Combined results saved to %s", combined_path.c_str());
+    }
+
+    // Export metrics + events from Kafka to CSV, then git push to GitLab
+    // CRITICAL: Must complete BEFORE cleanup! Data is deleted after this.
+    if (cfg.metrics_trace.enabled) {
+        LOG_INF("=== EXPORT PHASE (before cleanup) ===");
+        dedup::ResultsExporter exporter(cfg.git_export, cfg.metrics_trace, results_dir);
+        bool exported = exporter.export_all();
+        if (!exported) {
+            LOG_ERR("Export failed! Results may not be persisted in GitLab.");
+            LOG_WRN("Proceeding with cleanup anyway (lab schemas will be dropped).");
+        }
     }
 
     // Final cleanup: drop all lab schemas

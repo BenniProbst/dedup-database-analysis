@@ -1,267 +1,659 @@
 # Session 9: Triple Pipeline + 100ms Monitoring-Architektur
-**Datum:** 2026-02-17, ~22:00 UTC
-**Commit:** `5ac1732` (Triple pipeline fix)
+**Datum:** 2026-02-17, ~22:00–23:30 UTC
+**Commits:** `5ac1732`, `5d23bbb`, `70c113f`
 **Vorherige Commits:** `b0bb5b6` (Longhorn metrics, MariaDB/ClickHouse stubs)
+**Branch:** `development`
+**GitLab Project ID:** 280
+**Remotes:** GitLab (HTTPS, sslVerify=false) + GitHub (HTTPS, PAT)
 
 ---
 
-## Was wurde gemacht
+## Inhaltsverzeichnis
 
-### 1. CI Triple Pipeline GEFIXT
-- **Problem:** Pipeline #1304 hing in `created` Status
-- **Root Cause 1:** Runner Tag Mismatch — K8s Runner (ID 6) hatte keinen `kubernetes` Tag
-  - **Fix:** Tag via API hinzugefuegt: `PUT /api/v4/runners/6 {"tag_list":["kubernetes"]}`
-- **Root Cause 2:** `experiment:run` mit `allow_failure: false` blockierte Pipeline
-  - **Fix:** Alle Experiment-Jobs auf `allow_failure: true`
-- **Root Cause 3:** Doppelte YAML `<<:` Merge-Keys (invalid YAML)
-  - **Fix:** Explizite `rules:` pro Job statt doppelter Anchor-Merge
-- **Pipeline-Struktur (7 Jobs in 6 Stages):**
-
-```
-Pipeline 1 (LaTeX, auto):
-  latex:compile → docs/doku.pdf Artifact
-
-Pipeline 2 (C++, auto):
-  cpp:build → build/dedup-test + build/dedup-smoke-test
-  cpp:smoke-test → SHA-256 + Dataset Verification
-  cpp:full-dry-test → All Systems x All Grades (dry-run)
-
-Pipeline 3 (Experiment, MANUELL):
-  experiment:build → Binary kompilieren
-  experiment:run → ECHTES Experiment gegen Produktions-DBs
-  experiment:cleanup → Lab-Schemas droppen (Kundendaten UNBERUEHRT)
-```
-
-### 2. --cleanup-only Modus in main.cpp
-- Neuer CLI-Flag `--cleanup-only`
-- Verbindet zu allen DBs, droppt Lab-Schemas, disconnectet, exit
-- Wird von `experiment:cleanup` CI-Job verwendet
-- **Sicherheit:** Nur `dedup_lab` Schemas werden gedroppt, NIEMALS Produktionsdaten
-
-### 3. CI YAML Validierung
-- GitLab `/api/v4/projects/280/ci/lint` = `valid: true`
-- Beide Remotes (GitLab + GitHub) auf `5ac1732` synchron
-
-### 4. Pipeline Runner Problem (OFFEN!)
-- K8s Runner (ID 6) zeigt `contacted_at: 2026-02-17T21:36:24Z` — 35+ Minuten alt
-- Runner Status = `online` laut API, aber Jobs werden NICHT abgeholt
-- Pipeline #1305 steht auf `created` — Jobs warten auf Runner
-- **Vermutung:** K8s Runner Pod muss neugestartet werden
-- **TODO:** `kubectl rollout restart deployment gitlab-runner -n gitlab-runner`
+1. [Zusammenfassung](#zusammenfassung)
+2. [CI Triple Pipeline](#ci-triple-pipeline)
+3. [Cleanup-Only Modus](#cleanup-only-modus)
+4. [Cluster-Reconnaissance](#cluster-reconnaissance)
+5. [Monitoring-Architektur (100ms)](#monitoring-architektur-100ms)
+6. [MetricsTrace Implementation](#metricstrace-implementation)
+7. [Experiment-Workflow](#experiment-workflow)
+8. [Schema-Isolation](#schema-isolation)
+9. [Umgebungsregeln](#umgebungsregeln)
+10. [Vollstaendige Quelldatei-Uebersicht](#vollstaendige-quelldatei-uebersicht)
+11. [Offene Aufgaben (Priorisiert)](#offene-aufgaben-priorisiert)
+12. [Git History](#git-history)
 
 ---
 
-## Cluster-Zustand (READ-ONLY Reconnaissance)
+## 1. Zusammenfassung
 
-### Datenbanken im Cluster
+Session 9 umfasst drei grosse Arbeitspakete:
 
-| System | Namespace | Pods | PVC | StorageClass | Service |
-|--------|-----------|------|-----|-------------|---------|
-| PostgreSQL HA | databases | 4/4 | 50Gi x4 = 200Gi | longhorn-database | postgres-lb:5432 |
-| CockroachDB | cockroach-operator-system | 4/4 | 125Gi x4 = 500Gi | longhorn-database | cockroachdb-public:26257 |
-| Redis Cluster | redis | 4/4 | 25Gi x4 = 100Gi | longhorn-database | redis-cluster:6379 |
-| Kafka (Strimzi) | kafka | 4B+4C=8 | 50Gi x4 + 10Gi x4 = 240Gi | longhorn-database | kafka-bootstrap:9092 |
-| MinIO | minio | 4/4 | Direct Disk (KEIN Longhorn!) | - | minio-lb:9000 (LB 10.0.90.55) |
-| Samba AD | samba-ad | 4/4 | - | - | samba-ad-lb:389/636 (LB 10.0.30.5) |
-| Redis GitLab | gitlab | 4/4 | 5Gi x4 = 20Gi | longhorn-database | (intern) |
+1. **CI Triple Pipeline** komplett implementiert und validiert (.gitlab-ci.yml)
+2. **Cluster-Zustand** per READ-ONLY Reconnaissance erfasst (alle DBs, PVCs, Namespaces)
+3. **100ms Monitoring-Architektur** entworfen und teilweise implementiert (Header fertig, .cpp fehlt)
+
+### Commits dieser Session
+
+| Commit | Beschreibung | Dateien |
+|--------|-------------|---------|
+| `5ac1732` | Triple pipeline: fix tag matching, add cleanup-only mode, safety docs | .gitlab-ci.yml, main.cpp |
+| `5d23bbb` | Session 9 docs + fix PVC names from cluster scan + metrics trace config | config.hpp, config.example.json, session docs |
+| `70c113f` | WIP: MetricsTrace architecture + config fixes for 100ms Kafka sampling | experiment/metrics_trace.hpp, config.hpp |
+
+---
+
+## 2. CI Triple Pipeline
+
+### Problem
+Pipeline #1304 hing im `created` Status — Jobs wurden nicht vom K8s Runner abgeholt.
+
+### Root Causes und Fixes
+
+| # | Root Cause | Fix |
+|---|-----------|-----|
+| 1 | K8s Runner (ID 6) hatte KEINEN `kubernetes` Tag, aber CI nutzte `tags: [kubernetes]` | `PUT /api/v4/runners/6 {"tag_list":["kubernetes"]}` |
+| 2 | `experiment:run` mit `allow_failure: false` blockierte gesamte Pipeline | Alle Experiment-Jobs auf `allow_failure: true` |
+| 3 | Doppelte YAML `<<:` Merge-Keys (invalid YAML, zweiter ueberschreibt ersten) | Explizite `rules:` pro Job statt doppelter Anchor-Merge |
+
+### Pipeline-Architektur (7 Jobs in 6 Stages)
+
+```
+Pipeline 1 (LaTeX, AUTOMATISCH bei docs/** Aenderungen):
+  ┌─────────────┐
+  │ latex:compile│ → docs/doku.pdf + doku.log Artifact (30 Tage)
+  └─────────────┘    Image: texlive:latest, 3x pdflatex + bibtex
+
+Pipeline 2 (C++, AUTOMATISCH bei src/cpp/** Aenderungen):
+  ┌─────────┐     ┌────────────────┐     ┌──────────────────┐
+  │ cpp:build│ → │ cpp:smoke-test │ → │ cpp:full-dry-test│
+  └─────────┘     └────────────────┘     └──────────────────┘
+  Image: gcc:14-bookworm
+  Build: dedup-test + dedup-smoke-test (DEDUP_DRY_RUN=1)
+  Smoke: 100 Files/Grade @ 16KB, SHA-256 Duplicate Ratio Verification
+  Dry-Test: Alle Systeme x Alle Grades (Simulation, kein DB-Zugriff)
+
+Pipeline 3 (Experiment, NUR MANUELL — Produktions-DBs!):
+  ┌──────────────────┐     ┌─────────────────┐     ┌──────────────────────┐
+  │ experiment:build │ → │ experiment:run  │ → │ experiment:cleanup │
+  └──────────────────┘     └─────────────────┘     └──────────────────────┘
+  experiment:build  = Eigener Binary-Build (unabhaengig von Pipeline 2)
+  experiment:run    = ECHTES Experiment: 500 Files x 3 Grades, 4h Timeout,
+                      Results Artifact 90 Tage, NUR nach manuellem Trigger!
+  experiment:cleanup = --cleanup-only: Droppt alle Lab-Schemas
+                       optional: true (laeuft auch wenn experiment:run fehlschlaegt)
+```
+
+### Sicherheitskonzept pro Job
+
+- `experiment:build` — Kompiliert nur, kein DB-Zugriff
+- `experiment:run` — `when: manual` + `allow_failure: true` = blockiert Pipeline NICHT
+- `experiment:cleanup` — `needs: [{job: experiment:run, optional: true}]` = laeuft IMMER
+- Alle 3 Jobs dokumentieren im YAML-Kommentar das Sicherheitsmodell
+
+### CI Validierung
+- GitLab Lint API: `POST /api/v4/projects/280/ci/lint` = `valid: true`
+- Beide Remotes (GitLab + GitHub) synchron auf `5ac1732`
+
+### Pipeline Runner Problem (OFFEN!)
+- K8s Runner (ID 6): `contacted_at: 2026-02-17T21:36:24Z` — ueber 35 Minuten alt
+- Status = `online` laut API, aber Jobs werden NICHT abgeholt
+- Pipeline #1305 steht auf `created`
+- **INFRA-Aufgabe:** `kubectl rollout restart deployment gitlab-runner -n gitlab-runner`
+
+---
+
+## 3. Cleanup-Only Modus
+
+### Implementierung in `main.cpp`
+
+Neuer CLI-Flag `--cleanup-only` (Zeile 59, 92, 125-126, 244-260):
+
+```
+Ablauf:
+1. Verbinde zu allen konfigurierten Datenbanken
+2. Droppe Lab-Schemas (dedup_lab) auf ALLEN Systemen
+3. Disconnecte alle
+4. Exit mit Code 0
+```
+
+**Sicherheit:**
+- NUR `dedup_lab` Schemas/Databases/Keys/Topics/Buckets werden gedroppt
+- Produktionsdaten werden NIEMALS beruehrt
+- Wird von CI-Job `experiment:cleanup` automatisch nach Experiment verwendet
+- LOG_WRN gibt explizite Warnung aus: "Customer data is NOT affected"
+
+---
+
+## 4. Cluster-Reconnaissance
+
+### Datenbanken im Cluster (LIVE, READ-ONLY)
+
+| System | Namespace | Pods | PVC Groesse | StorageClass | K8s Service | Port |
+|--------|-----------|------|-------------|-------------|-------------|------|
+| PostgreSQL HA | databases | 4/4 | 50Gi x4 = 200Gi | longhorn-database | postgres-lb | 5432 |
+| CockroachDB | cockroach-operator-system | 4/4 | 125Gi x4 = 500Gi | longhorn-database | cockroachdb-public | 26257 |
+| Redis Cluster | redis | 4/4 | 25Gi x4 = 100Gi | longhorn-database | redis-cluster | 6379 |
+| Kafka (Strimzi) | kafka | 4B+4C=8 | 50Gi x4 + 10Gi x4 = 240Gi | longhorn-database | kafka-bootstrap | 9092 |
+| MinIO | minio | 4/4 | Direct Disk | - (kein Longhorn!) | minio-lb | 9000 |
+| Samba AD | samba-ad | 4/4 | - | - | samba-ad-lb | 389/636 |
+| Redis (GitLab intern) | gitlab | 4/4 | 5Gi x4 = 20Gi | longhorn-database | (intern) | 6379 |
 
 **TOTAL Longhorn Database PVCs:** 24 PVCs, ~1.060 Gi
 
-### NICHT im Cluster (MUSS noch deployed werden)
+### NICHT im Cluster (muss noch deployed werden)
 
-| System | Prioritaet | Connector | Cluster-Deploy |
-|--------|-----------|-----------|---------------|
-| MariaDB | HOCH (doku.tex 5.2) | FERTIG (mariadb_connector.*) | TODO: StatefulSet, 4 Replicas |
-| ClickHouse | HOCH (doku.tex 5.2) | FERTIG (clickhouse_connector.*) | TODO: StatefulSet, 4 Replicas |
-| Prometheus | KRITISCH (Metriken!) | MetricsCollector nutzt es | TODO: kube-prometheus-stack |
-| Grafana | KRITISCH (Dashboard!) | MetricsCollector pusht | TODO: mit kube-prometheus-stack |
+| System | Prioritaet | C++ Connector | Cluster-Deploy | Geschaetzter Storage |
+|--------|-----------|---------------|---------------|---------------------|
+| MariaDB | HOCH (doku.tex 5.2) | FERTIG (mariadb_connector.cpp/hpp) | TODO: StatefulSet, 4 Replicas | 50Gi x4 = 200Gi |
+| ClickHouse | HOCH (doku.tex 5.2) | FERTIG (clickhouse_connector.cpp/hpp) | TODO: StatefulSet, 4 Replicas | 50Gi x4 = 200Gi |
+| Prometheus | KRITISCH | MetricsCollector nutzt es | TODO: kube-prometheus-stack | ~10Gi |
+| Grafana | KRITISCH | MetricsCollector pusht Daten | TODO: mit kube-prometheus-stack | ~5Gi |
 
-### StorageClasses
+### PVC-Namen Mapping (KORRIGIERT aus Cluster-Scan)
 
-| Name | Provisioner | ReclaimPolicy | Notiz |
-|------|-------------|---------------|-------|
+Die `config.example.json` und `default_k8s_config()` hatten falsche PVC-Namen.
+In dieser Session korrigiert:
+
+| System | VORHER (FALSCH) | NACHHER (KORREKT) | Namespace |
+|--------|----------------|-------------------|-----------|
+| PostgreSQL | data-postgres-postgresql-0 | **data-postgres-ha-0** | databases |
+| Redis Host | redis-standalone | **redis-cluster.redis.svc.cluster.local** | redis |
+| Redis PVC | redis-data-redis-node-0 | **data-redis-cluster-0** | redis |
+| Kafka PVC | data-kafka-cluster-kafka-0 | **data-kafka-cluster-broker-0** | kafka |
+| MinIO PVC | (hatte Wert) | **""** (Direct Disk, KEIN PVC!) | minio |
+
+### StorageClasses im Cluster
+
+| Name | Provisioner | ReclaimPolicy | Verwendung |
+|------|-------------|---------------|------------|
 | longhorn (default) | driver.longhorn.io | Delete | Standard-Workloads |
-| longhorn-database | driver.longhorn.io | Retain | ALLE Datenbanken |
+| longhorn-database | driver.longhorn.io | **Retain** | ALLE Datenbanken (PG, CRDB, Redis, Kafka) |
 | longhorn-data | driver.longhorn.io | Retain | User Data |
 | longhorn-backup | driver.longhorn.io | Retain | Backups |
 | longhorn-opnsense | driver.longhorn.io | Retain | OPNsense VMs |
 
 ---
 
-## Monitoring-Architektur (100ms Sampling)
+## 5. Monitoring-Architektur (100ms Sampling)
 
-### Anforderung (User)
-- **JEDE Datenbank-Metrik JEDER Datenbank** alle 100ms (10 Hz)
-- **Persistent Trace auf Kafka** (Topic: `dedup-lab-metrics`)
-- **Live-Dashboard auf Grafana** (Echtzeit-Visualisierung)
-- Datenbanken manuell vorbereiten, automatisch mit Testdaten bespielen
+### Anforderungen (User-Anweisung)
 
-### Metriken pro System
+1. **JEDE Datenbank-Metrik JEDER Datenbank** alle 100ms (10 Hz) samplen
+2. **Persistent Trace auf Kafka** — Topic `dedup-lab-metrics`
+3. **Experiment-Events auf Kafka** — Topic `dedup-lab-events`
+4. **Live-Dashboard auf Grafana** (Echtzeit-Visualisierung)
+5. **Export VOR Cleanup** — Messwerte als CSV committen+pushen, DANN erst Daten loeschen
+6. **Kafka = Doppelrolle** — DB unter Test UND Messdaten-Log
 
-| DB | Metriken | Quelle | Abfrage-Methode |
-|----|----------|--------|----------------|
-| PostgreSQL | pg_stat_user_tables, pg_database_size, pg_stat_bgwriter, pg_stat_wal, xact_commit/rollback, tup_inserted/updated/deleted, blks_hit/read | SQL `pg_stat_*` | libpq query |
-| CockroachDB | ranges, replicas, leaseholders, capacity, queries/sec, latency_p99, livebytes | SQL `crdb_internal.kv_store_status` + HTTP /_status/vars | libpq + libcurl |
-| Redis | used_memory, used_memory_rss, keyspace_hits/misses, instantaneous_ops_per_sec, total_connections_received | `INFO ALL` command | hiredis |
-| Kafka | UnderReplicatedPartitions, BytesInPerSec, BytesOutPerSec, LogEndOffset, LogSize | JMX via Admin API / metrics endpoint | librdkafka + libcurl |
-| MinIO | bucket_usage_total_bytes, s3_requests_total, s3_rx/tx_bytes_total | Prometheus endpoint :9000/minio/v2/metrics/cluster | libcurl |
-| MariaDB | Innodb_buffer_pool_reads, Innodb_data_written, Threads_connected, Bytes_received/sent, Com_insert/delete | `SHOW GLOBAL STATUS` | libmysqlclient |
-| ClickHouse | system.metrics (Query, Merge, ReplicatedFetch), system.events, system.asynchronous_metrics | SQL via HTTP API | libcurl |
+### Metriken pro Datenbank-System
 
-### Datenfluss
+#### PostgreSQL (libpq, SQL)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| pg_database_size | `pg_database_size('dedup_lab')` | bytes |
+| xact_commit | pg_stat_database | count |
+| xact_rollback | pg_stat_database | count |
+| tup_inserted | pg_stat_database | count |
+| tup_updated | pg_stat_database | count |
+| tup_deleted | pg_stat_database | count |
+| blks_hit | pg_stat_database | count |
+| blks_read | pg_stat_database | count |
+| buffers_checkpoint | pg_stat_bgwriter | count |
+| wal_bytes | pg_stat_wal | bytes |
+
+#### CockroachDB (libpq + libcurl)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| ranges | crdb_internal.kv_store_status | count |
+| replicas | crdb_internal.kv_store_status | count |
+| leaseholders | crdb_internal.kv_store_status | count |
+| livebytes | crdb_internal.kv_store_status | bytes |
+| keybytes | crdb_internal.kv_store_status | bytes |
+| queries_per_sec | /_status/vars | rate |
+| latency_p99 | /_status/vars | ms |
+
+#### Redis (hiredis, INFO ALL)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| used_memory | INFO memory | bytes |
+| used_memory_rss | INFO memory | bytes |
+| keyspace_hits | INFO stats | count |
+| keyspace_misses | INFO stats | count |
+| instantaneous_ops_per_sec | INFO stats | rate |
+| total_connections_received | INFO stats | count |
+| connected_clients | INFO clients | count |
+
+#### Kafka (librdkafka + libcurl)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| UnderReplicatedPartitions | JMX / Admin API | count |
+| BytesInPerSec | JMX / Admin API | bytes/s |
+| BytesOutPerSec | JMX / Admin API | bytes/s |
+| LogEndOffset | Admin API | offset |
+| LogSize | Metrics endpoint | bytes |
+
+#### MinIO (libcurl, Prometheus endpoint)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| bucket_usage_total_bytes | :9000/minio/v2/metrics/cluster | bytes |
+| s3_requests_total | :9000/minio/v2/metrics/cluster | count |
+| s3_rx_bytes_total | :9000/minio/v2/metrics/cluster | bytes |
+| s3_tx_bytes_total | :9000/minio/v2/metrics/cluster | bytes |
+
+#### MariaDB (libmysqlclient, SHOW GLOBAL STATUS)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| Innodb_buffer_pool_reads | SHOW GLOBAL STATUS | count |
+| Innodb_data_written | SHOW GLOBAL STATUS | bytes |
+| Threads_connected | SHOW GLOBAL STATUS | count |
+| Bytes_received | SHOW GLOBAL STATUS | bytes |
+| Bytes_sent | SHOW GLOBAL STATUS | bytes |
+| Com_insert | SHOW GLOBAL STATUS | count |
+| Com_delete | SHOW GLOBAL STATUS | count |
+
+#### ClickHouse (libcurl, HTTP API SQL)
+| Metrik | Quelle | Einheit |
+|--------|--------|---------|
+| Query | system.metrics | count |
+| Merge | system.metrics | count |
+| ReplicatedFetch | system.metrics | count |
+| InsertedRows | system.events | count |
+| InsertedBytes | system.events | bytes |
+| CompressedReadBufferBytes | system.asynchronous_metrics | bytes |
+
+### Datenfluss-Diagramm
 
 ```
-C++ dedup-test (10 Hz Sampling Thread)
-  |
-  ├──→ Kafka Topic: dedup-lab-metrics (JSON, persistent trace)
-  │      Format: {"ts": 1708210800123, "system": "postgresql", "metric": "pg_database_size", "value": 123456789}
-  │
-  └──→ Prometheus Pushgateway (oder direkt Prometheus Remote Write)
-         └──→ Grafana Dashboard (Live-Visualisierung)
+┌─────────────────────────────────────────────────┐
+│ C++ dedup-test Binary (K8s Runner Pod)          │
+│                                                  │
+│  ┌──────────────────────┐                       │
+│  │ Main Experiment Loop │                       │
+│  │ (bulk_insert,        │                       │
+│  │  perfile_insert,     │ publish_event()       │
+│  │  perfile_delete,     │──────────┐            │
+│  │  maintenance)        │          │            │
+│  └──────────────────────┘          │            │
+│                                     │            │
+│  ┌──────────────────────┐          │            │
+│  │ MetricsTrace Thread  │          │            │
+│  │ (100ms sampling)     │          │            │
+│  │                      │          │            │
+│  │ for each DB system:  │          │            │
+│  │   collect_*() →      │          │            │
+│  │   MetricPoint JSON   │          │            │
+│  └──────────┬───────────┘          │            │
+│             │                      │            │
+│             ▼                      ▼            │
+│  ┌──────────────────────────────────────┐       │
+│  │ Kafka Producer (librdkafka)          │       │
+│  │                                       │       │
+│  │ Topic: dedup-lab-metrics (100ms)     │       │
+│  │ Topic: dedup-lab-events  (stages)    │       │
+│  └──────────────────┬───────────────────┘       │
+│                      │                           │
+│  ┌──────────────────┐│  ┌────────────────────┐  │
+│  │ Prometheus Push   ││  │ ResultsExporter    │  │
+│  │ (Pushgateway)     ││  │ Kafka→CSV→git push │  │
+│  └──────────┬────────┘│  └────────┬───────────┘  │
+└─────────────┼─────────┼──────────┼───────────────┘
+              │         │          │
+              ▼         ▼          ▼
+    ┌─────────────┐  ┌──────┐  ┌──────────────────┐
+    │  Grafana     │  │Kafka │  │ GitLab Repo      │
+    │  Dashboard   │  │Broker│  │ results/*.csv    │
+    │  (Live)      │  │      │  │ auto-commit+push │
+    └─────────────┘  └──────┘  └──────────────────┘
 ```
 
-### C++ Implementation TODO
-- **Background Metrics Thread** — std::thread mit 100ms sleep loop
-- **Metric Snapshot** — Atomic struct pro DB-System
-- **Kafka Producer** — librdkafka async produce to `dedup-lab-metrics`
-- **Prometheus Push** — libcurl POST to Pushgateway
+### Kafka Topic-Schema
+
+**`dedup-lab-metrics`** (100ms, partitioned by system):
+```json
+{
+  "ts": 1708210800123,
+  "system": "postgresql",
+  "metric": "pg_database_size",
+  "value": 123456789,
+  "unit": "bytes"
+}
+```
+
+**`dedup-lab-events`** (experiment lifecycle):
+```json
+{
+  "ts": 1708210800000,
+  "event_type": "stage_start",
+  "system": "postgresql",
+  "dup_grade": "U50",
+  "stage": "bulk_insert",
+  "detail": "{\"num_files\": 500, \"data_dir\": \"/tmp/datasets/U50\"}"
+}
+```
 
 ---
 
-## Schema-Isolation Status (Session 5 Stand)
+## 6. MetricsTrace Implementation
 
-| Datenbank | Lab-Schema | Lab-User | Reset-Methode | Status |
-|-----------|-----------|----------|--------------|--------|
-| PostgreSQL | SCHEMA dedup_lab | dedup-lab (Samba AD) | DROP SCHEMA CASCADE + CREATE | DONE |
-| CockroachDB | DATABASE dedup_lab | dedup_lab (TLS, Passwort) | DROP DATABASE + CREATE | DONE |
-| Redis | Key-Prefix `dedup:*` | (kein Auth) | SCAN + DEL (cluster-safe) | DONE |
-| Kafka | Topic-Prefix `dedup-lab-*` | (kein Auth) | kafka-topics --delete | DONE |
-| MinIO | Bucket-Prefix `dedup-lab-*` | dedup-lab (S3 Auth) | mc rb --force + mc mb | DONE |
-| MariaDB | DATABASE dedup_lab | (TODO: Samba AD) | DROP DATABASE + CREATE | NOT DEPLOYED |
-| ClickHouse | DATABASE dedup_lab | (TODO) | DROP DATABASE + CREATE | NOT DEPLOYED |
+### Fertig (Header)
 
-**SICHERHEIT:**
-- Lab-User `dedup-lab` hat NUR Zugriff auf Lab-Schemas
-- Produktionsdaten werden NIEMALS gelesen, geaendert oder geloescht
-- Lab-Schemas werden VOR und NACH jedem Experiment zurueckgesetzt
-- Samba AD Integration = anderer Agent (NICHT in diesem Scope!)
+**`experiment/metrics_trace.hpp`** — Interface komplett:
+
+| Klasse/Struct | Beschreibung | Status |
+|---------------|-------------|--------|
+| `MetricPoint` | Einzelner Metrik-Datenpunkt (JSON-serialisierbar) | FERTIG |
+| `ExperimentEvent` | Experiment-Lifecycle-Event (JSON-serialisierbar) | FERTIG |
+| `MetricsTrace` | Background-Thread-Klasse mit Kafka-Producer | FERTIG (Interface) |
+| `MetricCollectorFn` | `std::function<vector<MetricPoint>(const DbConnection&)>` | FERTIG |
+| `collectors::collect_*()` | 7 Built-in Collectors (PG, CRDB, Redis, Kafka, MinIO, MariaDB, CH) | Deklariert |
+| `collectors::for_system()` | Factory-Funktion: DbSystem → Collector | Deklariert |
+
+**`config.hpp`** — Erweitert um:
+- `MetricsTraceConfig` Struct (kafka_bootstrap, topics, interval, enabled)
+- `GitExportConfig` Struct (remote_name, branch, auto_push, ssl_verify)
+- JSON-Parsing fuer beide Config-Sektionen
+- Korrigierte PVC-Namen in `default_k8s_config()`
+
+### NICHT fertig (naechste Session)
+
+| Datei | Beschreibung | Geschaetzter Umfang |
+|-------|-------------|---------------------|
+| `experiment/metrics_trace.cpp` | Kafka-Producer Init, 100ms Sampling Loop, 7 DB-Collectors | ~400-500 Zeilen |
+| `experiment/results_exporter.hpp` | Interface fuer Kafka→CSV→git Export | ~50 Zeilen |
+| `experiment/results_exporter.cpp` | Kafka Consumer, CSV-Writer, git commit+push | ~250-300 Zeilen |
+| `main.cpp` Integration | MetricsTrace start/stop, Export, Cleanup-Reihenfolge | ~30-40 Zeilen Aenderung |
+| `CMakeLists.txt` | metrics_trace.cpp + results_exporter.cpp hinzufuegen | ~2 Zeilen |
 
 ---
 
-## Umgebungsregeln (aus Session-Lektuere, VERBINDLICH)
+## 7. Experiment-Workflow (ZIEL)
 
-### Fragile Cluster-Regeln
-1. **MinIO = Direct Disk** — KEIN Longhorn PVC → Longhorn-Metriken funktionieren NICHT
-2. **Redis = Cluster Mode** — kein SELECT, Key-Prefix `dedup:*` Isolation
-3. **CockroachDB = TLS** — sslmode=verify-full, Zertifikate in K8s Secrets
-4. **Longhorn thin-provisioned** — physischer Speicher waechst, schrumpft NICHT automatisch
-5. **Cluster_NFS Daten NIE LOESCHEN** — nur in tmp/ Ordner entpacken
-6. **Samba AD = ANDERER AGENT** — nicht in meinem Scope!
-7. **Cluster-Ordner = NUR LESEN** — zweiter Agent aktiv
-8. **Pipeline 3 (Experiment) = NUR MANUELL** — Produktions-DBs!
+### Aktueller Workflow (main.cpp, Stand Session 9)
+
+```
+1. SHA-256 Self-Test
+2. Optional: generate_all() Datasets
+3. Load ExperimentConfig (JSON oder K8s defaults)
+4. Connect all DBs
+5. IF --cleanup-only: drop schemas → exit(0)
+6. create_all_lab_schemas()
+7. run_full_experiment() per Connector
+8. Save results/combined_results.json
+9. drop_all_lab_schemas()
+10. Disconnect, print summary table
+```
+
+### Ziel-Workflow (nach MetricsTrace Integration)
+
+```
+ 1. SHA-256 Self-Test
+ 2. Optional: generate_all() Datasets
+ 3. Load ExperimentConfig (JSON oder K8s defaults)
+ 4. Connect all DBs
+ 5. IF --cleanup-only: drop schemas + delete metrics topics → exit(0)
+ 6. create_all_lab_schemas()
+ 7. Create Kafka metrics/events Topics
+ 8. MetricsTrace::register_system() fuer jede DB
+ 9. MetricsTrace::start() — 100ms Background Thread startet
+10. MetricsTrace::publish_event({experiment_start})
+11. FOR EACH connector, dup_grade, stage:
+      a. MetricsTrace::publish_event({stage_start})
+      b. run_stage(connector, stage, grade)
+      c. MetricsTrace::publish_event({stage_end})
+12. MetricsTrace::publish_event({experiment_end})
+13. MetricsTrace::stop() — Background Thread stoppt
+14. ResultsExporter::export_metrics(Kafka → CSV/JSON)
+15. ResultsExporter::export_events(Kafka → CSV/JSON)
+16. Save results/combined_results.json
+17. Git: add results/ + commit + push to GitLab
+18. ERST DANN: drop_all_lab_schemas() + delete metrics topics
+19. Disconnect, print summary table
+```
+
+**KRITISCH:** Schritt 17 (git push) MUSS vor Schritt 18 (Cleanup) erfolgen!
+Messdaten muessen persistent in GitLab sein, bevor sie aus Kafka geloescht werden.
+
+---
+
+## 8. Schema-Isolation
+
+### Lab-Schema pro Datenbank
+
+| Datenbank | Isolation-Methode | Lab-Schema | Lab-User | Reset-Methode | Connector Status |
+|-----------|-------------------|------------|----------|--------------|-----------------|
+| PostgreSQL | `CREATE SCHEMA` | `dedup_lab` | dedup-lab (Samba AD) | DROP SCHEMA CASCADE + CREATE | DONE |
+| CockroachDB | `CREATE DATABASE` | `dedup_lab` | dedup_lab (TLS, Passwort) | DROP DATABASE + CREATE | DONE |
+| Redis | Key-Prefix | `dedup:*` | (kein Auth) | SCAN + DEL (cluster-safe) | DONE |
+| Kafka | Topic-Prefix | `dedup-lab-*` | (kein Auth) | kafka-topics --delete | DONE |
+| MinIO | Bucket-Prefix | `dedup-lab-*` | dedup-lab (S3 Auth) | mc rb --force + mc mb | DONE |
+| MariaDB | `CREATE DATABASE` | `dedup_lab` | TODO: Samba AD | DROP DATABASE + CREATE | **NOT DEPLOYED** |
+| ClickHouse | `CREATE DATABASE` | `dedup_lab` | TODO | DROP DATABASE + CREATE | **NOT DEPLOYED** |
+
+### Kafka Doppelrolle — Topic-Aufteilung
+
+| Topic | Zweck | Lebenszeit | Wird zurueckgesetzt |
+|-------|-------|-----------|---------------------|
+| `dedup-lab-u0` | Testdaten U0 Grade | Pro Experiment | JA (mit Lab-Schema) |
+| `dedup-lab-u50` | Testdaten U50 Grade | Pro Experiment | JA (mit Lab-Schema) |
+| `dedup-lab-u90` | Testdaten U90 Grade | Pro Experiment | JA (mit Lab-Schema) |
+| `dedup-lab-metrics` | 100ms DB-Metrik-Snapshots | Pro Experiment | JA (NACH Export!) |
+| `dedup-lab-events` | Experiment-Stage-Events | Pro Experiment | JA (NACH Export!) |
+
+**Alle 5 Topics laufen unter dem Lab-User und werden zusammen zurueckgesetzt.**
+
+### Sicherheitsgarantien
+
+1. Lab-User `dedup-lab` hat NUR Zugriff auf Lab-Schemas
+2. Produktionsdaten werden NIEMALS gelesen, geaendert oder geloescht
+3. Lab-Schemas werden VOR und NACH jedem Experiment zurueckgesetzt
+4. `--cleanup-only` Modus fuer CI-Job (Schritt 5 im Workflow)
+5. Samba AD Integration = **anderer Agent** (NICHT in diesem Scope!)
+
+---
+
+## 9. Umgebungsregeln
+
+### Fragile Cluster-Regeln (aus Session 1-8 Lektuere)
+
+| # | Regel | Auswirkung |
+|---|-------|-----------|
+| 1 | **MinIO = Direct Disk** — KEIN Longhorn PVC | Longhorn-Metriken nicht verfuegbar, S3 API fuer Size |
+| 2 | **Redis = Cluster Mode** — kein SELECT | Key-Prefix `dedup:*` statt DB-Nummer fuer Isolation |
+| 3 | **CockroachDB = TLS** — sslmode=verify-full | Zertifikate aus K8s Secrets, seit Session 5 |
+| 4 | **Longhorn thin-provisioned** | Physischer Speicher waechst, schrumpft NICHT nach Deletes |
+| 5 | **Cluster_NFS Daten NIE LOESCHEN** | Nur in tmp/ Ordner entpacken |
+| 6 | **Samba AD = ANDERER AGENT** | Nicht in meinem Scope! |
+| 7 | **Cluster-Ordner = NUR LESEN** | Zweiter Agent aktiv |
+| 8 | **Pipeline 3 = NUR MANUELL** | Arbeitet mit Produktions-DBs |
 
 ### Git-Regeln
+
 - **Pull = MERGE** (kein Rebase!)
 - **Branch = development** (mind. so fortgeschritten wie master)
 - **Push zu GitLab UND GitHub** (HTTPS, `http.sslVerify=false` fuer GitLab)
 
----
+### Hardware-Kontext
 
-## OFFENE AUFGABEN (Priorisiert)
-
-### P0 (BLOCKIERT — muss zuerst)
-1. **[INFRA] K8s Runner neustart** — Pipeline Jobs werden nicht abgeholt
-   - `kubectl rollout restart deployment gitlab-runner -n gitlab-runner`
-2. **[INFRA] Prometheus + Grafana deployen** — KEIN Monitoring-Stack im Cluster!
-   - kube-prometheus-stack (Helm) oder standalone
-   - Longhorn ServiceMonitor fuer `longhorn_volume_actual_size_bytes`
-   - Pushgateway fuer C++ Metric Push
-
-### P1 (HOCH — Experiment-Voraussetzungen)
-3. **[INFRA] MariaDB deployen** — StatefulSet, 4 Replicas, longhorn-database SC, 50Gi/Pod
-4. **[INFRA] ClickHouse deployen** — StatefulSet, 4 Replicas, longhorn-database SC, 50Gi/Pod
-5. **[CODE] 100ms Metrics Thread** — Background-Thread in C++ fuer Echtzeit-Sampling
-6. **[CODE] Kafka Metrics Producer** — JSON Trace an `dedup-lab-metrics` Topic
-7. **[CODE] Prometheus Push Integration** — MetricsCollector → Pushgateway
-8. **[CODE] config.example.json updaten** — Korrigierte PVC-Namen (data-postgres-ha-0, datadir-cockroachdb-0, etc.)
-
-### P2 (MITTEL — nach erstem erfolgreichen Dry-Run)
-9. **[CODE] Grafana Dashboard JSON** — Vorkonfiguriertes Dashboard fuer Experiment
-10. **[CODE] MinIO Size ohne Longhorn** — Alternative Messmethode (mc admin info / S3 API)
-11. **[DOC] doku.tex Phase 2** — DuckDB, Cassandra, MongoDB Sektionen ergaenzen
-12. **[DOC] Redcomponent-DB → comdare-DB** in doku.tex
-
-### P3 (SPAETER — erweiterte Systeme)
-13. **[INFRA+CODE] QuestDB deployen + Connector**
-14. **[INFRA+CODE] InfluxDB v3 deployen + Connector**
-15. **[INFRA+CODE] TimescaleDB deployen + Connector**
-16. **[INFRA+CODE] Cassandra/ScyllaDB deployen + Connector**
+- **K8s-Nodes:** 4x Intel N97 (Alder Lake-N, SSE4.2 + AVX2)
+- **C++ statt Python** — N97 zu schwach fuer Python-Overhead (Session 4 Entscheidung)
+- **C++20** mit CMake 3.20+, gcc:14-bookworm Docker Image
 
 ---
 
-## PVC-Namen Mapping (KORRIGIERT aus Cluster-Scan)
+## 10. Vollstaendige Quelldatei-Uebersicht
 
-Die config.example.json hatte teilweise falsche PVC-Namen. Hier die korrekten:
-
-| System | PVC Name | Namespace | Groesse |
-|--------|----------|-----------|---------|
-| PostgreSQL | data-postgres-ha-0 | databases | 50Gi |
-| CockroachDB | datadir-cockroachdb-0 | cockroach-operator-system | 125Gi |
-| Redis | data-redis-cluster-0 | redis | 25Gi |
-| Kafka | data-kafka-cluster-broker-0 | kafka | 50Gi |
-| MinIO | (Direct Disk — KEIN PVC!) | minio | - |
-
-**HINWEIS:** Fuer EDR-Berechnung wird pro System NUR ein PVC gemessen.
-Die Longhorn-Replikation (N=4) ist im PVC-Volume bereits enthalten.
-
----
-
-## Session 9b (Kontext-Ende, ~22:30 UTC): MetricsTrace Architektur
-
-### User-Anforderungen (Session 9b)
-1. **Kafka = Doppelrolle:** DB unter Test UND Messdaten-Log
-2. **100ms Sampling ALLER DB-Metriken** (pg_stat_*, crdb_internal, INFO ALL, system.*, etc.)
-3. **2 neue Kafka Topics:**
-   - `dedup-lab-metrics` — 100ms DB-Metrik-Snapshots
-   - `dedup-lab-events` — Experiment-Stage-Events (start/stop/error)
-4. **Beide Topics unter Lab-User** — werden MIT Testdaten zurueckgesetzt
-5. **Export VOR Cleanup:** Messwerte → CSV → git commit+push → GitLab → DANN ERST Cleanup
-6. **Grafana-Anbindung** fuer beide Topics (Live-Dashboard)
-7. **Samba AD = ANDERER AGENT** (nicht mein Scope!)
-
-### Was implementiert wurde (TEILWEISE)
-- `config.hpp`: MetricsTraceConfig + GitExportConfig Structs + JSON-Parsing
-- `config.hpp`: PVC-Namen korrigiert (data-postgres-ha-0, data-redis-cluster-0, etc.)
-- `experiment/metrics_trace.hpp`: MetricPoint, ExperimentEvent, MetricsTrace Klasse
-  - Background-Thread mit 100ms Sampling
-  - Kafka Producer fuer metrics + events Topics
-  - Built-in Collectors pro DB-System (PostgreSQL, CockroachDB, Redis, etc.)
-
-### NICHT FERTIG (naechste Session)
-- `experiment/metrics_trace.cpp` — Implementation fehlt KOMPLETT
-- `experiment/results_exporter.hpp/.cpp` — Export (Kafka→CSV→git) fehlt KOMPLETT
-- `main.cpp` Integration — MetricsTrace Start/Stop + Export + Cleanup Reihenfolge
-- `CMakeLists.txt` — Neue Source-Dateien eintragen
-- Grafana Dashboard JSON
-
-### Experiment-Workflow (ZIEL)
-```
-1. Connect to all DBs
-2. Create lab schemas
-3. Create Kafka metrics/events topics
-4. Start MetricsTrace background thread (100ms)
-5. Run experiment stages (bulk insert, per-file insert, per-file delete)
-6. Stop MetricsTrace thread
-7. Export: Kafka consume → CSV/JSON → results/
-8. Git: add + commit + push results to GitLab
-9. DANN ERST: Drop lab schemas + delete metrics topics
-```
-
----
-
-## Git History
+### Verzeichnisstruktur
 
 ```
+dedup-database-analysis/
+├── .gitlab-ci.yml              ← 7 Jobs, 6 Stages, Triple Pipeline
+├── .gitignore
+├── README.md
+├── credentials.env             ← Lab-Credentials (NICHT committen in Prod!)
+│
+├── docs/
+│   ├── doku.tex                ← Hauptdokument (LaTeX)
+│   ├── doku.bib                ← Bibliographie
+│   ├── Makefile                ← pdflatex + bibtex Build
+│   └── ...                     ← Hilfsklassen, Logos, aeltere Versionen
+│
+├── sessions/
+│   ├── 20260216-kartografie-doku-tex.md
+│   ├── 20260216-session-dedup-projekt-setup.md    ← Sessions 1-8
+│   └── 20260217-session-9-triple-pipeline-monitoring.md  ← DIESE Session
+│
+├── src/cpp/
+│   ├── CMakeLists.txt          ← Build-System (C++20, optionale Deps)
+│   ├── config.hpp              ← ExperimentConfig, alle Structs + JSON-Parsing
+│   ├── config.example.json     ← Beispiel-Config mit korrekten PVC-Namen
+│   ├── main.cpp                ← Hauptprogramm (324 Zeilen)
+│   │
+│   ├── connectors/
+│   │   ├── db_connector.hpp    ← Abstrakte Schnittstelle (DbConnector)
+│   │   ├── postgres_connector.cpp/hpp   ← PostgreSQL + CockroachDB (PG Wire)
+│   │   ├── redis_connector.cpp/hpp      ← Redis Cluster (hiredis)
+│   │   ├── kafka_connector.cpp/hpp      ← Kafka (librdkafka)
+│   │   ├── minio_connector.cpp/hpp      ← MinIO (libcurl, S3 API)
+│   │   ├── mariadb_connector.cpp/hpp    ← MariaDB (libmysqlclient) STUB
+│   │   └── clickhouse_connector.cpp/hpp ← ClickHouse (libcurl HTTP) STUB
+│   │
+│   ├── experiment/
+│   │   ├── schema_manager.cpp/hpp       ← Lab-Schema Create/Drop/Reset
+│   │   ├── data_loader.cpp/hpp          ← Experiment-Runner + EDR-Berechnung
+│   │   ├── dataset_generator.cpp/hpp    ← Synthetische Testdaten (U0/U50/U90)
+│   │   ├── metrics_collector.cpp/hpp    ← Longhorn Prometheus + Grafana Push
+│   │   ├── metrics_trace.hpp            ← 100ms Background Thread (Interface) WIP
+│   │   ├── metrics_trace.cpp            ← (FEHLT! Implementation TODO)
+│   │   ├── results_exporter.hpp         ← (FEHLT! Interface TODO)
+│   │   └── results_exporter.cpp         ← (FEHLT! Kafka→CSV→git TODO)
+│   │
+│   └── utils/
+│       ├── logger.hpp           ← LOG_INF/LOG_ERR/LOG_WRN/LOG_DBG Makros
+│       ├── sha256.hpp           ← FIPS 180-4 SHA-256 (Header-only)
+│       └── timer.hpp            ← High-precision Timer (chrono)
+│
+├── scripts/
+│   ├── generate_datasets.py     ← Python Legacy (wird durch C++ ersetzt)
+│   └── measure_longhorn.sh      ← Longhorn Metrics Shell-Script
+│
+├── src/cleanup/
+│   └── postgresql_maintenance.py ← Legacy Python Cleanup
+│
+├── src/loaders/
+│   └── postgresql_loader.py      ← Legacy Python Loader
+│
+├── src/reporters/
+│   ├── aggregate_results.py      ← Legacy Python Reporter
+│   ├── final_report.py
+│   └── generate_charts.py
+│
+└── k8s/
+    ├── base/                     ← (leer, TODO: K8s Manifeste)
+    └── jobs/                     ← (leer, TODO: CronJobs)
+```
+
+### Datei-Status Tabelle
+
+| Datei | Zeilen | Status | Letzte Aenderung |
+|-------|--------|--------|------------------|
+| `.gitlab-ci.yml` | ~329 | KOMPLETT | Session 9 (5ac1732) |
+| `main.cpp` | 324 | FUNKTIONAL, MetricsTrace-Integration fehlt | Session 9 (5ac1732) |
+| `config.hpp` | 257 | KOMPLETT (inkl. MetricsTrace + GitExport) | Session 9 (70c113f) |
+| `config.example.json` | 102 | KOMPLETT (PVC-Namen korrigiert) | Session 9 (5d23bbb) |
+| `db_connector.hpp` | ~55 | KOMPLETT (abstrakte Schnittstelle) | Session 4 |
+| `postgres_connector.cpp/hpp` | ~200+60 | KOMPLETT (PG + CRDB) | Session 5 |
+| `redis_connector.cpp/hpp` | ~150+40 | KOMPLETT (Cluster Mode) | Session 5 |
+| `kafka_connector.cpp/hpp` | ~180+50 | KOMPLETT (librdkafka) | Session 6 |
+| `minio_connector.cpp/hpp` | ~160+45 | KOMPLETT (S3 Auth) | Session 6 |
+| `mariadb_connector.cpp/hpp` | ~100+40 | **STUB** (DB nicht deployed) | Session 8 |
+| `clickhouse_connector.cpp/hpp` | ~100+40 | **STUB** (DB nicht deployed) | Session 8 |
+| `schema_manager.cpp/hpp` | ~60+30 | KOMPLETT | Session 5 |
+| `data_loader.cpp/hpp` | ~230+68 | KOMPLETT (EDR + Throughput) | Session 8 |
+| `dataset_generator.cpp/hpp` | ~280+75 | KOMPLETT (U0/U50/U90) | Session 7 |
+| `metrics_collector.cpp/hpp` | ~120+42 | KOMPLETT (Prometheus + Grafana) | Session 8 |
+| `metrics_trace.hpp` | 117 | KOMPLETT (Interface) | Session 9 (70c113f) |
+| `metrics_trace.cpp` | 0 | **FEHLT KOMPLETT** | - |
+| `results_exporter.hpp` | 0 | **FEHLT KOMPLETT** | - |
+| `results_exporter.cpp` | 0 | **FEHLT KOMPLETT** | - |
+| `CMakeLists.txt` | ~120 | Funktional, 2 neue Sources fehlen | Session 7 |
+
+---
+
+## 11. Offene Aufgaben (Priorisiert)
+
+### P0: BLOCKIERT (INFRA-Scope, muss zuerst)
+
+| # | Typ | Aufgabe | Beschreibung | Abhaengigkeit |
+|---|-----|---------|-------------|---------------|
+| 1 | INFRA | K8s Runner Neustart | Pipeline #1305 Jobs werden nicht abgeholt, Runner contacted_at veraltet | `kubectl rollout restart deployment gitlab-runner -n gitlab-runner` |
+| 2 | INFRA | Prometheus + Grafana | KEIN Monitoring-Stack im Cluster! Braucht: kube-prometheus-stack (Helm), Longhorn ServiceMonitor, Pushgateway | MariaDB+CH Deploy, Grafana Dashboard |
+| 3 | INFRA | MariaDB deployen | StatefulSet, 4 Replicas, longhorn-database SC, 50Gi/Pod, Samba AD Auth | Connector FERTIG, wartet auf Cluster |
+| 4 | INFRA | ClickHouse deployen | StatefulSet, 4 Replicas, longhorn-database SC, 50Gi/Pod | Connector FERTIG, wartet auf Cluster |
+
+### P1: HOCH (CODE-Scope, mein Arbeitsbereich)
+
+| # | Typ | Aufgabe | Beschreibung | Geschaetzter Umfang |
+|---|-----|---------|-------------|---------------------|
+| 5 | CODE | `metrics_trace.cpp` | Kafka Producer Init (librdkafka), 100ms Sampling Loop (std::thread + sleep_for), 7 DB Metric Collectors (PG, CRDB, Redis, Kafka, MinIO, MariaDB, ClickHouse) | ~400-500 Zeilen |
+| 6 | CODE | `results_exporter.hpp/.cpp` | Interface + Implementation: Kafka Consumer → CSV/JSON Table Export, git add+commit+push to GitLab, Signal Cleanup OK | ~300-350 Zeilen |
+| 7 | CODE | `main.cpp` Integration | MetricsTrace register+start/stop, ResultsExporter export+push, Cleanup NACH Export | ~30-40 Zeilen |
+| 8 | CODE | `CMakeLists.txt` Update | metrics_trace.cpp + results_exporter.cpp zu DEDUP_SOURCES | 2 Zeilen |
+
+### P2: MITTEL (nach erstem erfolgreichen Dry-Run)
+
+| # | Typ | Aufgabe | Beschreibung |
+|---|-----|---------|-------------|
+| 9 | CODE | Grafana Dashboard JSON | Vorkonfiguriertes Dashboard mit Panels fuer alle 7 DB-Systeme |
+| 10 | CODE | MinIO Size ohne Longhorn | Alternative Messmethode via `mc admin info` oder S3 ListBuckets API |
+| 11 | DOC | doku.tex Phase 2 | DuckDB, Cassandra, MongoDB Sektionen ergaenzen |
+| 12 | DOC | Naming | Redcomponent-DB → comdare-DB in doku.tex |
+
+### P3: SPAETER (erweiterte Datenbank-Systeme)
+
+| # | Typ | Aufgabe |
+|---|-----|---------|
+| 13 | INFRA+CODE | QuestDB deployen + Connector |
+| 14 | INFRA+CODE | InfluxDB v3 deployen + Connector |
+| 15 | INFRA+CODE | TimescaleDB deployen + Connector |
+| 16 | INFRA+CODE | Cassandra/ScyllaDB deployen + Connector |
+
+### Abhaengigkeits-Graph
+
+```
+P0.1 (Runner)     P0.2 (Prometheus)    P0.3 (MariaDB)    P0.4 (ClickHouse)
+     │                  │                    │                   │
+     │                  │                    └─────┬─────────────┘
+     │                  │                          │
+     │                  ▼                          ▼
+     │             P1.5 (metrics_trace.cpp)  Connector-Tests
+     │                  │                       gegen Live-DBs
+     │                  ▼
+     │             P1.6 (results_exporter)
+     │                  │
+     │                  ▼
+     │             P1.7 (main.cpp Integration)
+     │                  │
+     │                  ▼
+     ├────────→  P1.8 (CMakeLists.txt)
+     │                  │
+     ▼                  ▼
+  CI Pipeline ←── Build + Test (automatisch)
+                        │
+                        ▼
+                  Experiment (MANUELL)
+                        │
+                        ▼
+                  P2.9 (Grafana Dashboard)
+```
+
+---
+
+## 12. Git History
+
+```
+70c113f WIP: MetricsTrace architecture + config fixes for 100ms Kafka sampling
+5d23bbb Session 9 docs + fix PVC names from cluster scan + metrics trace config
 5ac1732 Triple pipeline: fix tag matching, add cleanup-only mode, safety docs
 b0bb5b6 Longhorn metrics integration, MariaDB/ClickHouse stubs, EDR + throughput fixes
 61a71c3 Complete C++ test framework: SHA-256, dataset generator, S3 auth, K8s CI
@@ -272,3 +664,17 @@ c2fc814 Lab isolation: Samba AD user, PG schema, CockroachDB database
 2cac967 Dual CI pipeline + session update: 3-pipeline architecture
 fa9d890 Initial commit: LaTeX paper + experiment framework + kartografie
 ```
+
+---
+
+## Session-Historie (Kurzreferenz)
+
+| Session | Datum | Schwerpunkt | Commits |
+|---------|-------|-------------|---------|
+| 1-2 | 2026-02-16 | Initiales Setup, LaTeX Import, Kartografie | fa9d890, 2cac967 |
+| 3 | 2026-02-16 | C++ Framework-Grundstruktur, CI Pipeline v1 | 39cb309 |
+| 4 | 2026-02-16 | SHA-256, Dataset Generator, S3 Auth, C++ statt Python Entscheidung | 61a71c3 |
+| 5 | 2026-02-16 | Redis Cluster Fix, CockroachDB TLS, Lab-Schema Isolation | e29c9d4, c2fc814 |
+| 6-7 | 2026-02-16 | Kafka + MinIO Connector, Session-Docs | 38b6824 |
+| 8 | 2026-02-17 | Longhorn Metrics, MariaDB/ClickHouse Stubs, EDR + Throughput | b0bb5b6 |
+| **9** | **2026-02-17** | **Triple Pipeline Fix, Cleanup-Only, 100ms MetricsTrace Architektur** | **5ac1732, 5d23bbb, 70c113f** |

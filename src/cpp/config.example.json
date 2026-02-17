@@ -95,7 +95,17 @@
     "metrics_trace": {
         "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092",
         "kafka_topic": "dedup-lab-metrics",
+        "events_topic": "dedup-lab-events",
         "sample_interval_ms": 100,
+        "enabled": true,
         "_comment": "100ms sampling for ALL DB metrics, persisted to Kafka + Grafana"
+    },
+
+    "git_export": {
+        "remote_name": "gitlab",
+        "branch": "development",
+        "auto_push": true,
+        "ssl_verify": false,
+        "_comment": "Export results to GitLab BEFORE cleanup. GitLab uses self-signed cert."
     }
 }
