@@ -1,0 +1,97 @@
+# =============================================================================
+# K8s Job: Dedup Experiment Runner
+#
+# Runs the full experiment pipeline:
+#   1. Generate synthetic datasets (U0/U50/U90, 500 files each)
+#   2. Run experiment (bulk_insert, perfile_insert, perfile_delete, maintenance)
+#   3. Export results to CSV via Kafka consumer
+#   4. Git push results to GitLab
+#   5. Cleanup lab schemas
+#
+# Usage:
+#   kubectl apply -f k8s/jobs/experiment-job.yaml
+#
+# Monitor:
+#   kubectl logs -f job/dedup-experiment -n databases
+#
+# SAFETY: Uses lab schemas only. Production data is NEVER touched.
+# =============================================================================
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dedup-experiment
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: dedup-experiment
+    app.kubernetes.io/component: runner
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 21600  # 6 hours max
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dedup-experiment
+        app.kubernetes.io/component: runner
+    spec:
+      serviceAccountName: dedup-experiment
+      restartPolicy: Never
+      containers:
+        - name: experiment
+          image: dedup-test:latest
+          imagePullPolicy: IfNotPresent
+          command: ["dedup-test"]
+          args:
+            - "--config"
+            - "/config/config.json"
+            - "--generate-data"
+            - "--data-dir"
+            - "/datasets"
+            - "--results-dir"
+            - "/results"
+            - "--num-files"
+            - "500"
+            - "--seed"
+            - "42"
+            - "--verbose"
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: PG_PASSWORD
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: MARIADB_PASSWORD
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: MINIO_SECRET_KEY
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: datasets
+              mountPath: /datasets
+            - name: results
+              mountPath: /results
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+      volumes:
+        - name: config
+          configMap:
+            name: dedup-experiment-config
+        - name: datasets
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: results
+          emptyDir:
+            sizeLimit: 1Gi

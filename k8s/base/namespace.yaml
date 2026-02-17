@@ -1,0 +1,17 @@
+# Namespace 'databases' already exists in cluster (PostgreSQL, CockroachDB, etc.)
+# Namespace 'monitoring' is needed for kube-prometheus-stack
+# This file documents the expected namespaces for the dedup experiment.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: dedup-experiment
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: databases
+  labels:
+    app.kubernetes.io/part-of: dedup-experiment

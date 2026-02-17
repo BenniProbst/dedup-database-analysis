@@ -1,0 +1,112 @@
+# Experiment configuration as K8s ConfigMap
+# Mirrors config.example.json for cluster deployment
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dedup-experiment-config
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: dedup-experiment
+    app.kubernetes.io/component: config
+data:
+  config.json: |
+    {
+      "lab_user": "dedup-lab",
+      "lab_schema": "dedup_lab",
+      "data_dir": "/datasets",
+      "results_dir": "/results",
+      "replica_count": 4,
+      "dry_run": false,
+
+      "databases": [
+        {
+          "system": "postgresql",
+          "host": "postgres-lb.databases.svc.cluster.local",
+          "port": 5432,
+          "user": "dedup-lab",
+          "database": "postgres",
+          "lab_schema": "dedup_lab",
+          "pvc_name": "data-postgres-ha-0",
+          "k8s_namespace": "databases"
+        },
+        {
+          "system": "cockroachdb",
+          "host": "cockroachdb-public.cockroach-operator-system.svc.cluster.local",
+          "port": 26257,
+          "user": "dedup-lab",
+          "database": "dedup_lab",
+          "lab_schema": "dedup_lab",
+          "pvc_name": "datadir-cockroachdb-0",
+          "k8s_namespace": "cockroach-operator-system"
+        },
+        {
+          "system": "redis",
+          "host": "redis-cluster.redis.svc.cluster.local",
+          "port": 6379,
+          "pvc_name": "data-redis-cluster-0",
+          "k8s_namespace": "redis"
+        },
+        {
+          "system": "kafka",
+          "host": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local",
+          "port": 9092,
+          "lab_schema": "dedup-lab",
+          "pvc_name": "data-kafka-cluster-broker-0",
+          "k8s_namespace": "kafka"
+        },
+        {
+          "system": "minio",
+          "host": "minio-lb.minio.svc.cluster.local",
+          "port": 9000,
+          "user": "dedup-lab",
+          "lab_schema": "dedup-lab",
+          "pvc_name": "",
+          "k8s_namespace": "minio"
+        },
+        {
+          "system": "mariadb",
+          "host": "mariadb.databases.svc.cluster.local",
+          "port": 3306,
+          "user": "dedup-lab",
+          "database": "dedup_lab",
+          "lab_schema": "dedup_lab",
+          "pvc_name": "data-mariadb-0",
+          "k8s_namespace": "databases"
+        },
+        {
+          "system": "clickhouse",
+          "host": "clickhouse.databases.svc.cluster.local",
+          "port": 8123,
+          "lab_schema": "dedup_lab",
+          "pvc_name": "data-clickhouse-0",
+          "k8s_namespace": "databases"
+        }
+      ],
+
+      "dup_grades": ["U0", "U50", "U90"],
+
+      "prometheus": {
+        "url": "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
+      },
+
+      "grafana": {
+        "url": "http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local:80",
+        "dashboard_uid": "dedup-experiment-v1"
+      },
+
+      "metrics_trace": {
+        "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092",
+        "kafka_topic": "dedup-lab-metrics",
+        "events_topic": "dedup-lab-events",
+        "sample_interval_ms": 100,
+        "enabled": true
+      },
+
+      "git_export": {
+        "remote_name": "gitlab",
+        "branch": "development",
+        "auto_push": true,
+        "ssl_verify": false
+      }
+    }

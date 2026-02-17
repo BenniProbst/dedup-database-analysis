@@ -1,0 +1,46 @@
+# ServiceAccount + RBAC for the dedup experiment runner
+# Needs read access to Longhorn volumes/PVCs for physical size measurement
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dedup-experiment
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: dedup-experiment
+    app.kubernetes.io/component: runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dedup-experiment-reader
+  labels:
+    app.kubernetes.io/name: dedup-experiment
+rules:
+  # Read PVCs to resolve Longhorn volume names
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["get", "list"]
+  # Read Longhorn volume CRDs for actual_size_bytes
+  - apiGroups: ["longhorn.io"]
+    resources: ["volumes", "replicas", "engines"]
+    verbs: ["get", "list"]
+  # Read pods for health checks
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dedup-experiment-reader
+  labels:
+    app.kubernetes.io/name: dedup-experiment
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dedup-experiment-reader
+subjects:
+  - kind: ServiceAccount
+    name: dedup-experiment
+    namespace: databases

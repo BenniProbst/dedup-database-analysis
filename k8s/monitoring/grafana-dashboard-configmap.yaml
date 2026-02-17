@@ -1,0 +1,20 @@
+# ConfigMap to pre-load the dedup Grafana dashboard
+# Source: results/grafana-dashboard.json
+# This is referenced by the Helm values (dashboardsConfigMaps.dedup)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dedup-grafana-dashboard
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: dedup-experiment
+    grafana_dashboard: "1"
+data:
+  dedup-experiment.json: |
+    {
+      "_comment": "Dashboard content from results/grafana-dashboard.json",
+      "_note": "Copy the content of results/grafana-dashboard.json here before applying",
+      "_instructions": "kubectl create configmap dedup-grafana-dashboard --from-file=dedup-experiment.json=results/grafana-dashboard.json -n monitoring"
+    }

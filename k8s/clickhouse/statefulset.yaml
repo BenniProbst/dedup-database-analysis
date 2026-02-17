@@ -1,0 +1,220 @@
+# =============================================================================
+# ClickHouse StatefulSet for Dedup Experiment
+# doku.tex Section 5.2: OLAP columnar DBMS with aggressive compression
+#
+# Architecture:
+#   1 replica (single-node for dedup measurement, not distributed)
+#   50Gi PVC with longhorn-database StorageClass (Replica 4, Retain)
+#   MergeTree engine with LZ4/ZSTD compression
+#
+# Lab isolation:
+#   Database: dedup_lab (CREATE DATABASE IF NOT EXISTS)
+#   Table: files(id UUID, mime String, size_bytes UInt64, sha256 FixedString(32),
+#                payload String, inserted_at DateTime)
+#   Engine: MergeTree() ORDER BY id
+#
+# Maintenance: OPTIMIZE TABLE files FINAL (force merge of all parts)
+# Size query: system.parts (bytes_on_disk)
+#
+# Ports:
+#   8123 = HTTP API (used by connector)
+#   9000 = Native TCP (clickhouse-client)
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/part-of: dedup-experiment
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000
+  selector:
+    app.kubernetes.io/name: clickhouse
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-headless
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: clickhouse
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000
+  selector:
+    app.kubernetes.io/name: clickhouse
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: clickhouse
+data:
+  # ClickHouse server configuration overrides
+  config.xml: |
+    <clickhouse>
+      <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+        <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+        <size>100M</size>
+        <count>3</count>
+      </logger>
+
+      <http_port>8123</http_port>
+      <tcp_port>9000</tcp_port>
+      <listen_host>0.0.0.0</listen_host>
+
+      <max_connections>128</max_connections>
+      <max_concurrent_queries>32</max_concurrent_queries>
+
+      <!-- MergeTree settings for dedup experiment -->
+      <merge_tree>
+        <!-- Default compression: LZ4 -->
+        <min_bytes_for_wide_part>0</min_bytes_for_wide_part>
+        <min_rows_for_wide_part>0</min_rows_for_wide_part>
+      </merge_tree>
+
+      <!-- Prometheus metrics endpoint for MetricsTrace -->
+      <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+      </prometheus>
+
+      <path>/var/lib/clickhouse/</path>
+      <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+      <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+    </clickhouse>
+
+  users.xml: |
+    <clickhouse>
+      <users>
+        <default>
+          <password></password>
+          <networks>
+            <ip>::/0</ip>
+          </networks>
+          <profile>default</profile>
+          <quota>default</quota>
+          <access_management>1</access_management>
+        </default>
+      </users>
+      <profiles>
+        <default>
+          <max_memory_usage>1000000000</max_memory_usage>
+          <max_execution_time>300</max_execution_time>
+        </default>
+      </profiles>
+      <quotas>
+        <default>
+          <interval>
+            <duration>3600</duration>
+            <queries>0</queries>
+            <errors>0</errors>
+            <result_rows>0</result_rows>
+            <read_rows>0</read_rows>
+            <execution_time>0</execution_time>
+          </interval>
+        </default>
+      </quotas>
+    </clickhouse>
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/part-of: dedup-experiment
+spec:
+  serviceName: clickhouse-headless
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clickhouse
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: clickhouse
+        app.kubernetes.io/part-of: dedup-experiment
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24.12
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+            - name: metrics
+              containerPort: 9363
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/custom.xml
+              subPath: config.xml
+            - name: config
+              mountPath: /etc/clickhouse-server/users.d/custom.xml
+              subPath: users.xml
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8123
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: config
+          configMap:
+            name: clickhouse-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: clickhouse
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn-database
+        resources:
+          requests:
+            storage: 50Gi

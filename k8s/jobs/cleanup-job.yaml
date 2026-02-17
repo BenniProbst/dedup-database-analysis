@@ -1,0 +1,68 @@
+# =============================================================================
+# K8s Job: Dedup Lab Schema Cleanup
+#
+# Drops all lab schemas on all configured databases.
+# Removes ONLY dedup_lab data. Customer/production data is NEVER touched.
+#
+# Usage:
+#   kubectl apply -f k8s/jobs/cleanup-job.yaml
+#
+# Verify:
+#   kubectl logs -f job/dedup-cleanup -n databases
+# =============================================================================
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dedup-cleanup
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: dedup-experiment
+    app.kubernetes.io/component: cleanup
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600  # 10 min max
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dedup-experiment
+        app.kubernetes.io/component: cleanup
+    spec:
+      serviceAccountName: dedup-experiment
+      restartPolicy: Never
+      containers:
+        - name: cleanup
+          image: dedup-test:latest
+          imagePullPolicy: IfNotPresent
+          command: ["dedup-test"]
+          args:
+            - "--config"
+            - "/config/config.json"
+            - "--cleanup-only"
+            - "--verbose"
+          env:
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: PG_PASSWORD
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: MARIADB_PASSWORD
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+      volumes:
+        - name: config
+          configMap:
+            name: dedup-experiment-config

@@ -1,0 +1,199 @@
+# =============================================================================
+# kube-prometheus-stack Helm Values for Dedup Experiment
+#
+# Install:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#     -n monitoring --create-namespace \
+#     -f k8s/monitoring/values.yaml
+#
+# Includes:
+#   - Prometheus with Longhorn scrape config (port 9500)
+#   - Prometheus with Kafka JMX scrape config (port 9404)
+#   - Prometheus with ClickHouse metrics (port 9363)
+#   - Pushgateway for C++ experiment metrics push
+#   - Grafana with dedup dashboard pre-loaded
+#   - AlertManager (minimal, research project)
+# =============================================================================
+
+# -- Prometheus --
+prometheus:
+  prometheusSpec:
+    # Retain experiment data for 30 days
+    retention: 30d
+    retentionSize: "10GB"
+
+    # Storage: 20Gi on longhorn (default SC, not longhorn-database)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+    # Scrape interval: 15s default, but Longhorn metrics can be slower
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+
+    # Additional scrape configs for dedup experiment
+    additionalScrapeConfigs:
+      # Longhorn Manager metrics (one per node)
+      - job_name: longhorn
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - longhorn-system
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: longhorn-manager
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:9500"
+
+      # Kafka JMX Exporter (Strimzi exposes on :9404)
+      - job_name: kafka-jmx
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - kafka
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_strimzi_io_kind]
+            regex: Kafka
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: "${1}:9404"
+
+      # ClickHouse Prometheus endpoint
+      - job_name: clickhouse
+        static_configs:
+          - targets: ["clickhouse.databases.svc.cluster.local:9363"]
+
+      # MinIO Prometheus endpoint
+      - job_name: minio
+        metrics_path: /minio/v2/metrics/cluster
+        static_configs:
+          - targets: ["minio-lb.minio.svc.cluster.local:9000"]
+
+      # Pushgateway (for C++ dedup-test to push metrics)
+      - job_name: pushgateway
+        honor_labels: true
+        static_configs:
+          - targets: ["kube-prometheus-stack-pushgateway.monitoring.svc.cluster.local:9091"]
+
+  # Resource limits (N97 is limited)
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+# -- Grafana --
+grafana:
+  enabled: true
+  adminPassword: "dedup-research-2026"
+
+  persistence:
+    enabled: true
+    storageClassName: longhorn
+    size: 5Gi
+
+  # Pre-load the dedup experiment dashboard
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: dedup
+          orgId: 1
+          folder: "Dedup Research"
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/dedup
+
+  dashboardsConfigMaps:
+    dedup: dedup-grafana-dashboard
+
+  # Datasources
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+          access: proxy
+          isDefault: true
+          editable: true
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# -- AlertManager (minimal for research) --
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "50m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+
+# -- Pushgateway (for C++ metrics push) --
+prometheus-pushgateway:
+  enabled: true
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "50m"
+    limits:
+      memory: "128Mi"
+      cpu: "200m"
+
+# -- Node Exporter --
+nodeExporter:
+  enabled: true
+
+# -- kube-state-metrics --
+kubeStateMetrics:
+  enabled: true
+
+# -- Disable unused components to save resources on N97 --
+kubeApiServer:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+coreDns:
+  enabled: false
+kubelet:
+  enabled: true

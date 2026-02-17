@@ -1,0 +1,176 @@
+# =============================================================================
+# MariaDB StatefulSet for Dedup Experiment
+# doku.tex Section 5.2: Relational DBMS under test
+#
+# Architecture:
+#   4 replicas (1 per Talos node) for Longhorn replica distribution
+#   50Gi PVC with longhorn-database StorageClass (Replica 4, Retain)
+#   InnoDB engine with ROW_FORMAT=COMPRESSED for dedup analysis
+#
+# Lab isolation:
+#   Database: dedup_lab (CREATE DATABASE IF NOT EXISTS)
+#   User: dedup-lab (Samba AD LDAP via PAM or native auth)
+#   Table: files(id, mime, size_bytes, sha256, payload, inserted_at)
+#
+# Maintenance: OPTIMIZE TABLE (InnoDB online defrag)
+# =============================================================================
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/part-of: dedup-experiment
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+  selector:
+    app.kubernetes.io/name: mariadb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-headless
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: mariadb
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+  selector:
+    app.kubernetes.io/name: mariadb
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mariadb-config
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: mariadb
+data:
+  my.cnf: |
+    [mysqld]
+    # InnoDB settings for dedup experiment
+    innodb_buffer_pool_size = 512M
+    innodb_log_file_size = 128M
+    innodb_file_per_table = ON
+    innodb_flush_log_at_trx_commit = 1
+
+    # Allow large BLOBs (test files up to 1MB)
+    max_allowed_packet = 64M
+    innodb_log_buffer_size = 16M
+
+    # Character set
+    character-set-server = utf8mb4
+    collation-server = utf8mb4_unicode_ci
+
+    # Performance Schema for metrics collection
+    performance_schema = ON
+
+    # Slow query log for analysis
+    slow_query_log = ON
+    long_query_time = 1
+
+  init-lab.sql: |
+    -- Lab schema initialization for dedup experiment
+    -- This runs on first boot only (initdb)
+    CREATE DATABASE IF NOT EXISTS dedup_lab;
+    CREATE USER IF NOT EXISTS 'dedup-lab'@'%' IDENTIFIED BY 'REPLACE_WITH_SECRET';
+    GRANT ALL PRIVILEGES ON dedup_lab.* TO 'dedup-lab'@'%';
+    FLUSH PRIVILEGES;
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb
+  namespace: databases
+  labels:
+    app.kubernetes.io/name: mariadb
+    app.kubernetes.io/part-of: dedup-experiment
+spec:
+  serviceName: mariadb-headless
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mariadb
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/part-of: dedup-experiment
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mariadb
+          image: mariadb:11.7
+          ports:
+            - name: mysql
+              containerPort: 3306
+          env:
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: MARIADB_ROOT_PASSWORD
+            - name: MARIADB_DATABASE
+              value: "dedup_lab"
+            - name: MARIADB_USER
+              value: "dedup-lab"
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: MARIADB_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: config
+              mountPath: /etc/mysql/conf.d/my.cnf
+              subPath: my.cnf
+            - name: config
+              mountPath: /docker-entrypoint-initdb.d/init-lab.sql
+              subPath: init-lab.sql
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+      volumes:
+        - name: config
+          configMap:
+            name: mariadb-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: mariadb
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: longhorn-database
+        resources:
+          requests:
+            storage: 50Gi
