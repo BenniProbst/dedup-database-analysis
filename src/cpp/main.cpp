@@ -10,6 +10,10 @@
 // Lab schemas are reset after EVERY run. Customer data is NEVER touched.
 //
 // Hardware: Intel N97 (Alder Lake-N) -- C++ for precision, not Python.
+//
+// Systems under test (doku.tex Chapter 5):
+//   PostgreSQL, CockroachDB, Redis, Kafka, MinIO,
+//   MariaDB (TODO: cluster install), ClickHouse (TODO: cluster install)
 // =============================================================================
 
 #include <cstdlib>
@@ -26,6 +30,8 @@
 #include "connectors/redis_connector.hpp"
 #include "connectors/kafka_connector.hpp"
 #include "connectors/minio_connector.hpp"
+#include "connectors/mariadb_connector.hpp"
+#include "connectors/clickhouse_connector.hpp"
 #include "experiment/schema_manager.hpp"
 #include "experiment/data_loader.hpp"
 #include "experiment/metrics_collector.hpp"
@@ -42,7 +48,8 @@ static void print_usage(const char* prog) {
         "  --data-dir PATH     Test data directory (default: /tmp/datasets)\n"
         "  --results-dir PATH  Results output directory (default: results/)\n"
         "  --systems LIST      Comma-separated systems to test (default: all)\n"
-        "                      Valid: postgresql,cockroachdb,redis,kafka,minio\n"
+        "                      Valid: postgresql,cockroachdb,redis,kafka,minio,\n"
+        "                             mariadb,clickhouse\n"
         "  --grades LIST       Comma-separated grades (default: U0,U50,U90)\n"
         "  --lab-schema NAME   Lab schema name (default: dedup_lab)\n"
         "  --generate-data     Generate synthetic test datasets before running\n"
@@ -168,12 +175,16 @@ int main(int argc, char* argv[]) {
     // Create results directory
     fs::create_directories(results_dir);
 
-    // Initialize metrics collector
+    // Initialize metrics collector (Prometheus for Longhorn, Grafana for push)
     dedup::MetricsCollector metrics(cfg.prometheus, cfg.grafana);
 
     // Create connectors for each configured database
     dedup::SchemaManager schema_mgr;
-    std::vector<std::shared_ptr<dedup::DbConnector>> connectors;
+    struct ConnectorEntry {
+        std::shared_ptr<dedup::DbConnector> connector;
+        dedup::DbConnection db_conn;
+    };
+    std::vector<ConnectorEntry> entries;
 
     for (const auto& db : cfg.databases) {
         // Apply systems filter if specified
@@ -199,25 +210,32 @@ int main(int argc, char* argv[]) {
             case dedup::DbSystem::MINIO:
                 conn = std::make_shared<dedup::MinioConnector>();
                 break;
+            case dedup::DbSystem::MARIADB:
+                conn = std::make_shared<dedup::MariaDBConnector>();
+                break;
+            case dedup::DbSystem::CLICKHOUSE:
+                conn = std::make_shared<dedup::ClickHouseConnector>();
+                break;
         }
 
-        LOG_INF("Connecting to %s at %s:%u...", dedup::db_system_str(db.system),
-            db.host.c_str(), db.port);
+        LOG_INF("Connecting to %s at %s:%u (PVC: %s)...",
+            dedup::db_system_str(db.system), db.host.c_str(), db.port,
+            db.pvc_name.empty() ? "none" : db.pvc_name.c_str());
 
         if (conn->connect(db)) {
-            connectors.push_back(conn);
+            entries.push_back({conn, db});
             schema_mgr.add_connector(conn);
         } else {
             LOG_ERR("Failed to connect to %s -- skipping", dedup::db_system_str(db.system));
         }
     }
 
-    if (connectors.empty()) {
+    if (entries.empty()) {
         LOG_ERR("No database connections established. Exiting.");
         return 1;
     }
 
-    LOG_INF("Connected to %zu databases", connectors.size());
+    LOG_INF("Connected to %zu databases", entries.size());
 
     // Parse dup grades
     std::vector<dedup::DupGrade> grades = cfg.dup_grades;
@@ -232,12 +250,13 @@ int main(int argc, char* argv[]) {
     LOG_INF("Creating lab schemas (%s) on all connected databases...", lab_schema.c_str());
     schema_mgr.create_all_lab_schemas(lab_schema);
 
-    // Run experiments
+    // Run experiments — pass DbConnection for PVC/Longhorn mapping
     dedup::DataLoader loader(schema_mgr, metrics, cfg.replica_count);
     std::vector<dedup::ExperimentResult> all_results;
 
-    for (auto& conn : connectors) {
-        auto results = loader.run_full_experiment(*conn, data_dir, lab_schema, grades);
+    for (auto& entry : entries) {
+        auto results = loader.run_full_experiment(
+            *entry.connector, entry.db_conn, data_dir, lab_schema, grades);
         all_results.insert(all_results.end(), results.begin(), results.end());
     }
 
@@ -259,22 +278,24 @@ int main(int argc, char* argv[]) {
     schema_mgr.drop_all_lab_schemas(lab_schema);
 
     // Disconnect all
-    for (auto& conn : connectors) {
-        conn->disconnect();
+    for (auto& entry : entries) {
+        entry.connector->disconnect();
     }
 
     LOG_INF("=== EXPERIMENT COMPLETE ===");
     LOG_INF("Total runs: %zu", all_results.size());
     LOG_INF("Results: %s", combined_path.c_str());
 
-    // Print summary table
-    std::printf("\n%-15s %-5s %-15s %12s %12s %8s\n",
-        "System", "Grade", "Stage", "Duration(ms)", "Logical(B)", "EDR");
-    std::printf("%.70s\n", "----------------------------------------------------------------------");
+    // Print summary table (doku.tex metrics: duration, logical bytes, physical delta, EDR, throughput)
+    std::printf("\n%-13s %-4s %-15s %10s %12s %12s %7s %10s\n",
+        "System", "Dup", "Stage", "Time(ms)", "Logical(B)", "PhysDelta", "EDR", "MB/s");
+    std::printf("%.95s\n",
+        "-----------------------------------------------------------------------------------------------");
     for (const auto& r : all_results) {
-        std::printf("%-15s %-5s %-15s %12lld %12lld %8.3f\n",
+        std::printf("%-13s %-4s %-15s %10lld %12lld %12lld %7.3f %10.1f\n",
             r.system.c_str(), r.dup_grade.c_str(), r.stage.c_str(),
-            r.duration_ns / 1000000, r.bytes_logical, r.edr);
+            r.duration_ns / 1000000, r.bytes_logical, r.phys_delta,
+            r.edr, r.throughput_bytes_per_sec / (1024.0 * 1024.0));
     }
 
     return 0;

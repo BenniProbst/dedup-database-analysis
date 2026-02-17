@@ -37,8 +37,9 @@ enum class DbSystem {
     COCKROACHDB,
     REDIS,
     KAFKA,
-    MINIO
-    // MariaDB, ClickHouse: TODO when deployed in cluster
+    MINIO,
+    MARIADB,
+    CLICKHOUSE
 };
 
 inline const char* db_system_str(DbSystem db) {
@@ -48,6 +49,8 @@ inline const char* db_system_str(DbSystem db) {
         case DbSystem::REDIS:       return "redis";
         case DbSystem::KAFKA:       return "kafka";
         case DbSystem::MINIO:       return "minio";
+        case DbSystem::MARIADB:     return "mariadb";
+        case DbSystem::CLICKHOUSE:  return "clickhouse";
     }
     return "??";
 }
@@ -61,6 +64,8 @@ struct DbConnection {
     std::string password;
     std::string database;     // Lab schema/database name
     std::string lab_schema;   // Schema prefix for isolation
+    std::string pvc_name;     // K8s PVC name for Longhorn volume mapping
+    std::string k8s_namespace; // K8s namespace where the PVC lives
 };
 
 // Prometheus endpoint for Longhorn metrics
@@ -114,19 +119,24 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
 
     cfg.databases = {
         {DbSystem::POSTGRESQL, "postgres-lb.databases.svc.cluster.local", 5432,
-         cfg.lab_user, "", "postgres", "dedup_lab"},
+         cfg.lab_user, "", "postgres", "dedup_lab",
+         "data-postgres-postgresql-0", "databases"},
 
         {DbSystem::COCKROACHDB, "cockroachdb-public.cockroach-operator-system.svc.cluster.local", 26257,
-         cfg.lab_user, "", "dedup_lab", "dedup_lab"},
+         cfg.lab_user, "", "dedup_lab", "dedup_lab",
+         "datadir-cockroachdb-0", "cockroach-operator-system"},
 
         {DbSystem::REDIS, "redis-standalone.redis.svc.cluster.local", 6379,
-         "", "", "", ""},  // Redis: cluster mode, key-prefix "dedup:*" for lab
+         "", "", "", "",
+         "redis-data-redis-node-0", "redis"},
 
         {DbSystem::KAFKA, "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local", 9092,
-         "", "", "", "dedup-lab"},  // Kafka: topic prefix dedup-lab-*
+         "", "", "", "dedup-lab",
+         "data-kafka-cluster-kafka-0", "kafka"},
 
         {DbSystem::MINIO, "minio-lb.minio.svc.cluster.local", 9000,
-         cfg.lab_user, "", "", "dedup-lab"},  // MinIO: bucket prefix dedup-lab-*
+         cfg.lab_user, "", "", "dedup-lab",
+         "export-minio-0", "minio"},
     };
 
     return cfg;
@@ -138,6 +148,8 @@ inline DbSystem parse_db_system(const std::string& s) {
     if (s == "redis") return DbSystem::REDIS;
     if (s == "kafka") return DbSystem::KAFKA;
     if (s == "minio") return DbSystem::MINIO;
+    if (s == "mariadb") return DbSystem::MARIADB;
+    if (s == "clickhouse") return DbSystem::CLICKHOUSE;
     return DbSystem::POSTGRESQL;
 }
 
@@ -179,6 +191,8 @@ inline ExperimentConfig ExperimentConfig::from_json(const std::string& path) {
             conn.password = db.value("password", "");
             conn.database = db.value("database", "");
             conn.lab_schema = db.value("lab_schema", cfg.lab_schema);
+            conn.pvc_name = db.value("pvc_name", "");
+            conn.k8s_namespace = db.value("k8s_namespace", "");
             cfg.databases.push_back(conn);
         }
     } else {

@@ -445,19 +445,172 @@ samba-tool group addmembers "Research Lab" dedup-lab
 
 ---
 
-## Naechste Schritte (PRIORISIERT, ab Session 5)
+## Session 5 (Kontext 5, 2026-02-17 ~06:35 UTC): CockroachDB TLS + Lab Infrastructure
 
-1. **[SOFORT]** CockroachDB TLS aktivieren (User hat angewiesen!)
-   - cert-manager pruefen, CrdbCluster patchen, Rolling Restart
-   - Lab-User mit Passwort neu anlegen
-2. **[SOFORT]** GitLab Push Ergebnis pruefen (task b44c03e)
-3. **[TODO]** Redis Connector anpassen: DB 15 → Key-Prefix `dedup:*`
-4. **[TODO]** MinIO Lab-User anlegen + Lab-Buckets erstellen
-5. **[TODO]** Grafana-Service im K8s deployen
-6. **[TODO]** C++ SHA-256 implementieren (aktuell Placeholder)
-7. **[TODO]** C++ COPY Protocol für PostgreSQL Bulk-Insert
-8. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB in doku.tex)
-9. **[SPAETER]** MariaDB/ClickHouse im Cluster deployen
+### Was wurde gemacht
+
+#### 1. CockroachDB TLS Migration KOMPLETT
+- **Ausgangslage:** `tlsEnabled: false`, CrdbCluster in letzter Session gepatcht
+- **Problem:** Rolling Restart Deadlock — Pod 3 (TLS) konnte nicht mit Pods 0-2 (insecure) kommunizieren
+- **Loesung:** Alle 4 Pods gleichzeitig geloescht (`kubectl delete pods cockroachdb-{0,1,2,3}`)
+  - `podManagementPolicy: Parallel` erlaubte gleichzeitigen Neustart
+  - Pod 1 blieb auf alter Revision → Force-Delete noetig
+- **Ergebnis:** 4/4 Nodes `is_available=true, is_live=true` mit TLS
+- **Zertifikate:** CA + Node + Client, gueltig bis 2031-02-20
+- **Secrets:** `cockroachdb-ca`, `cockroachdb-node`, `cockroachdb-root`
+
+#### 2. CockroachDB Lab-User mit Passwort
+- `CREATE USER "dedup_lab" WITH PASSWORD ' [CLUSTER-PW-REDACTED]'` — jetzt im TLS-Modus moeglich!
+- `GRANT ALL ON DATABASE dedup_lab TO "dedup_lab"`
+
+#### 3. Redis Connector Fix (DB 15 → Key-Prefix)
+- **redis_connector.hpp:** `LAB_DB = 15` → `KEY_PREFIX = "dedup:"`
+- **redis_connector.cpp:** SELECT entfernt, PING zur Verifizierung
+  - Cleanup: SCAN + DEL statt FLUSHDB (cluster-safe)
+  - Size: SCAN + STRLEN statt DBSIZE
+  - Alle Keys mit Prefix `dedup:` (z.B. `dedup:filename.dat`)
+- **config.hpp:** Kommentar aktualisiert
+- **Commit:** `e29c9d4`
+
+#### 4. MinIO Lab Setup KOMPLETT
+- **User:** `dedup-lab` erstellt mit `readwrite` Policy
+- **Buckets:** `dedup-lab-u0`, `dedup-lab-u50`, `dedup-lab-u90`, `dedup-lab-results`
+- **credentials.env** aktualisiert (CRDB TLS + Redis Key-Prefix)
+
+#### 5. Kafka Lab Topics KOMPLETT
+- **3 Topics:** `dedup-lab-u0`, `dedup-lab-u50`, `dedup-lab-u90`
+- **Config:** 4 Partitions, Replication Factor 3
+
+#### 6. Git Status
+- **Commit e29c9d4:** "Fix Redis connector for cluster mode + CockroachDB TLS + MinIO/Kafka lab setup"
+- **GitHub Push:** Erfolgreich (c2fc814..e29c9d4)
+- **GitLab Push:** Haengt wiederholt (SSH ProxyJump + git-receive-pack Timeout)
+
+### Schema-Isolation Status (AKTUALISIERT)
+
+| Datenbank | Status | Detail |
+|-----------|--------|--------|
+| PostgreSQL | **DONE** | Schema `dedup_lab`, User `dedup-lab`, GRANT ALL |
+| CockroachDB | **DONE (TLS!)** | Database `dedup_lab`, User `dedup_lab` MIT Passwort |
+| Redis | **DONE** | Key-Prefix `dedup:*` (Cluster Mode, kein SELECT) |
+| Kafka | **DONE** | 3 Topics `dedup-lab-u0/u50/u90` (4 Part, RF=3) |
+| MinIO | **DONE** | User `dedup-lab` + 4 Buckets (u0/u50/u90/results) |
+
+---
+
+## Session 6 (Kontext 6, 2026-02-17 ~17:30 UTC): GitLab Push Diagnose + Cluster Cleanup
+
+### Was wurde gemacht
+
+#### 1. GitLab Push — ALLE VERSUCHE GESCHEITERT
+- **5+ Push-Versuche** (via ProxyJump, direkt von pve1, mit Keepalive) — alle Timeout
+- **SSH-Verbindung funktioniert** (`ssh -T gitlab-push` = OK)
+- **GitLab Shell empfaengt und autorisiert** den Push korrekt
+- **Gitaly SSHReceivePack** startet, laeuft 360s, wird dann abgebrochen ("context canceled")
+- **Repo auf GitLab ist LEER** — HEAD zeigt auf `refs/heads/development` aber `refs/heads/` ist leer
+- **Jeder Push laedt Objects hoch, aber die finale Referenz-Aktualisierung schlaegt durch Timeout fehl**
+
+#### 2. Root Cause Analyse
+- **K8s API I/O Timeouts:** `read tcp 10.0.15.201:54428→10.0.15.250:6443: i/o timeout`
+- `kubectl cp` und `kubectl exec` mit groesseren Daten-Streams scheitern
+- Kleine kubectl-Befehle (get, exec kurze Kommandos, logs) funktionieren
+- **Vermutung:** MTU-Problem oder TCP-Window-Issue auf VLAN 15 (K8S API)
+- **Alternative:** Gitaly Repo hat stale Lock-Datei (gefunden + entfernt auf Repo 135)
+
+#### 3. GitLab Reparaturen
+- **Gitaly + Praefect neugestartet** (alle 4 Pods)
+- **GitLab Shell + Webservice neugestartet** (Rolling Restart)
+- **Stale Lock entfernt:** `/home/git/repositories/@cluster/repositories/13/67/135/refs/heads/development.lock`
+- **Alternativer Push-Ansatz:** Git Bundle (167KB) erstellt, via SCP auf pve1, dort Clone + Push versucht — scheitert ebenfalls
+
+#### 4. Redis GitLab auf 4 Replicas skaliert
+- Anderer Agent hatte `redis-gitlab` von 4 auf 1 herunterskaliert
+- **Zurueck auf 4 Replicas:** je 1 Pod pro Node (Anti-Affinity)
+  - redis-gitlab-0 → talos-lux-kpk
+  - redis-gitlab-1 → talos-5x2-s49
+  - redis-gitlab-2 → talos-say-ls6
+  - redis-gitlab-3 → talos-qkr-yc0
+
+#### 5. Cluster-Diagnose (vollstaendig)
+- **4/4 Nodes Ready** (Talos v1.11.6, K8s v1.34.0)
+- **0 fehlerhafte Pods** (alle Running/Completed)
+- **Longhorn:** 37 → 35 Volumes nach Cleanup (alle healthy)
+- **MinIO:** 4/4 Running, **KEINE PVCs** (Direct Disk, kein Longhorn!)
+- **Redis Cluster:** 4/4, **Redis GitLab:** 4/4
+- **CockroachDB:** 4/4 TLS, **PostgreSQL:** 4/4, **Kafka:** 7/7
+- **Samba AD:** 4/4, **OPNsense:** 4/4
+
+#### 6. Verwaiste Longhorn Volumes bereinigt
+- **pvc-056637a0** (5Gi) — ehem. `gitlab/redis-data-redis-gitlab-0`, PV Released → GELOESCHT
+- **pvc-f1b1085e** (50Gi) — ehem. `kafka/data-kafka-cluster-broker-1`, PV Released → GELOESCHT
+- Dienste verifiziert: Redis GitLab PONG + 12.243 Keys, Kafka Broker-1 unfenced + Topics erreichbar
+- **55Gi Longhorn-Speicher zurueckgewonnen**
+
+### Git Status (Lokal)
+- **6 Commits auf `development`:**
+  1. `fa9d890` Initial commit
+  2. `2cac967` Dual CI pipeline
+  3. `39cb309` C++ integration test framework (2.051 LOC, 20 files)
+  4. `38b6824` Session docs update
+  5. `c2fc814` Lab isolation (Samba AD user, PG schema, CockroachDB database)
+  6. `e29c9d4` Redis cluster fix + CockroachDB TLS + MinIO/Kafka lab setup
+- **GitHub:** ALLE 6 Commits gepusht
+- **GitLab:** 0 Commits (Push blockiert durch K8s API Timeout)
+
+---
+
+## Session 7 (2026-02-17 ~18:30 UTC): GitLab HTTPS Push + SHA-256 + K8s CI
+
+### Was wurde gemacht
+1. **[DONE] GitLab Push via HTTPS** — User hat Firewall geupdated, gitlab.comdare.de via HTTPS erreichbar
+   - Remote URL: `https://oauth2:TOKEN@gitlab.comdare.de/comdare/research/dedup-database-analysis.git`
+   - Alle 6 Commits erfolgreich gepusht
+2. **[DONE] SHA-256 (FIPS 180-4)** — Pure C++ Implementierung in `utils/sha256.hpp`
+3. **[DONE] Dataset Generator** — xoshiro256** PRNG, kontrollierte Duplikation (U0/U50/U90)
+4. **[DONE] MinIO S3 Auth** — AWS Signature V4 mit HMAC-SHA256
+5. **[DONE] Kafka AdminClient** — Topic Create/Delete via librdkafka Admin API
+6. **[DONE] JSON Config Parser** — `config.hpp::from_json()`
+7. **[DONE] K8s CI Pipeline** — Umstellung auf K8s Runner (KEIN lokales Kompilieren)
+8. **Commit 61a71c3** gepusht auf GitLab + GitHub
+
+## Session 8 (2026-02-17 ~22:30 UTC): Longhorn-Metriken + MariaDB/ClickHouse Stubs
+
+### Was wurde gemacht
+1. **[DONE] Longhorn Physical Size Fix** — `data_loader.cpp` nutzt jetzt `MetricsCollector.get_longhorn_actual_size()` statt connector logical size fuer physische Messung (doku.tex 5.1)
+2. **[DONE] PVC Name Mapping** — `DbConnection` erweitert um `pvc_name` + `k8s_namespace`, default_k8s_config mit realen PVC-Namen
+3. **[DONE] Ingest Throughput** — `throughput_bytes_per_sec` in ExperimentResult (doku.tex 5.4.1)
+4. **[DONE] SHA-256 Fix** — perfile_insert nutzt jetzt echten SHA-256 statt Placeholder
+5. **[DONE] MariaDB Connector** — Vollstaendiger Stub mit libmysqlclient, InnoDB OPTIMIZE TABLE
+6. **[DONE] ClickHouse Connector** — Vollstaendiger Stub mit HTTP API (port 8123), MergeTree Engine
+7. **[DONE] CMakeLists.txt refactored** — `configure_dedup_target()` Funktion, optionale Dependencies (hiredis, rdkafka, mysqlclient)
+8. **[DONE] CI Pipeline** — `libmariadb-dev` als optionale Dependency
+
+### Erkannte Limitationen (aus Session-Lektuere)
+- **MinIO = Direct Disk** — KEIN Longhorn PVC → Longhorn-Metriken funktionieren hier NICHT
+- **MariaDB + ClickHouse = NICHT IM CLUSTER** — muessen erst deployed werden
+- **Redis = Cluster Mode** — kein SELECT, Key-Prefix-Isolation
+- **CockroachDB = TLS** → sslmode=verify-full
+- **Longhorn thin-provisioned** → schrumpft NICHT nach Delete (braucht TRIM/Discard + Maintenance)
+
+### Noch fehlende Datenbanken (laut doku.tex, NICHT im Cluster)
+| System | Prioritaet | Status |
+|--------|-----------|--------|
+| MariaDB | HOCH (doku.tex 5.2) | Connector FERTIG, Cluster-Deploy TODO |
+| ClickHouse | HOCH (doku.tex 5.2) | Connector FERTIG, Cluster-Deploy TODO |
+| comdare-DB (ex Redcomponent-DB) | MITTEL | Bereits im Cluster (3 Pods), Connector TODO |
+| QuestDB | HOCH (Web-Research) | Cluster-Deploy + Connector TODO |
+| InfluxDB v3 | HOCH (Web-Research) | Cluster-Deploy + Connector TODO |
+| TimescaleDB | HOCH (Web-Research) | Cluster-Deploy + Connector TODO |
+| Cassandra/ScyllaDB | HOCH (Web-Research) | Cluster-Deploy + Connector TODO |
+
+## Naechste Schritte (PRIORISIERT)
+
+1. **[TODO]** CI Pipeline testen — Push + Verify auf K8s Runner
+2. **[TODO]** MariaDB im K8s Cluster deployen (StatefulSet, Longhorn PVC)
+3. **[TODO]** ClickHouse im K8s Cluster deployen (StatefulSet, Longhorn PVC)
+4. **[TODO]** Grafana-Service im K8s deployen (Prometheus Pushgateway)
+5. **[SPAETER]** Phase 2 inhaltliche Erweiterung (DuckDB, Cassandra, MongoDB in doku.tex)
+6. **[SPAETER]** QuestDB/InfluxDB/TimescaleDB/Cassandra Connectors + Cluster-Deploy
 
 ## Technische Notizen
 

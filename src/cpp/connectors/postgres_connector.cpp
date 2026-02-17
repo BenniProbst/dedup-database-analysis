@@ -257,7 +257,7 @@ MeasureResult PostgresConnector::perfile_insert(const std::string& data_dir, Dup
         std::vector<char> buf(fsize);
         f.read(buf.data(), static_cast<std::streamsize>(fsize));
 
-        std::string sha256_hex(64, '0');
+        std::string sha256_hex = SHA256::hash_hex(buf.data(), fsize);
         std::string fsize_str = std::to_string(fsize);
 
         const char* values[4] = {
