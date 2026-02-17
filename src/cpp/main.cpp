@@ -21,6 +21,7 @@
 
 #include "config.hpp"
 #include "utils/logger.hpp"
+#include "utils/sha256.hpp"
 #include "connectors/postgres_connector.hpp"
 #include "connectors/redis_connector.hpp"
 #include "connectors/kafka_connector.hpp"
@@ -28,6 +29,7 @@
 #include "experiment/schema_manager.hpp"
 #include "experiment/data_loader.hpp"
 #include "experiment/metrics_collector.hpp"
+#include "experiment/dataset_generator.hpp"
 
 namespace fs = std::filesystem;
 
@@ -43,6 +45,10 @@ static void print_usage(const char* prog) {
         "                      Valid: postgresql,cockroachdb,redis,kafka,minio\n"
         "  --grades LIST       Comma-separated grades (default: U0,U50,U90)\n"
         "  --lab-schema NAME   Lab schema name (default: dedup_lab)\n"
+        "  --generate-data     Generate synthetic test datasets before running\n"
+        "  --num-files N       Files per duplication grade (default: 100)\n"
+        "  --file-size N       Fixed file size in bytes (default: variable 4K-1M)\n"
+        "  --seed N            PRNG seed for reproducible data (default: 42)\n"
         "  --dry-run           Simulate without actual DB operations\n"
         "  --verbose           Enable debug logging\n"
         "  --help              Show this help\n"
@@ -51,6 +57,18 @@ static void print_usage(const char* prog) {
         "        Production/customer data is NEVER modified.\n"
         "        Lab schemas are RESET after every run.\n",
         prog);
+}
+
+static void print_sha256_selftest() {
+    // NIST test vector: SHA-256("abc") = ba7816bf...
+    std::string hash = dedup::SHA256::hash_hex("abc", 3);
+    std::string expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    if (hash == expected) {
+        LOG_INF("SHA-256 self-test: PASS");
+    } else {
+        LOG_ERR("SHA-256 self-test: FAIL (got %s)", hash.c_str());
+        LOG_ERR("  expected: %s", expected.c_str());
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -62,6 +80,10 @@ int main(int argc, char* argv[]) {
     std::string systems_filter;
     std::string grades_filter;
     bool dry_run = false;
+    bool generate_data = false;
+    size_t num_files = 100;
+    size_t file_size = 0;
+    uint64_t seed = 42;
 
 #ifdef DEDUP_DRY_RUN
     dry_run = true;
@@ -83,6 +105,14 @@ int main(int argc, char* argv[]) {
             grades_filter = argv[++i];
         } else if (std::strcmp(argv[i], "--lab-schema") == 0 && i + 1 < argc) {
             lab_schema = argv[++i];
+        } else if (std::strcmp(argv[i], "--generate-data") == 0) {
+            generate_data = true;
+        } else if (std::strcmp(argv[i], "--num-files") == 0 && i + 1 < argc) {
+            num_files = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--file-size") == 0 && i + 1 < argc) {
+            file_size = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            seed = std::stoull(argv[++i]);
         } else if (std::strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (std::strcmp(argv[i], "--verbose") == 0) {
@@ -94,8 +124,33 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    LOG_INF("=== Dedup Integration Test ===");
+    LOG_INF("TU Dresden Research: Deduplikation in Datenhaltungssystemen");
+
     if (dry_run) {
         LOG_INF("=== DRY RUN MODE === (no actual DB operations)");
+    }
+
+    // SHA-256 self-test
+    print_sha256_selftest();
+
+    // Generate datasets if requested
+    if (generate_data) {
+        LOG_INF("=== DATASET GENERATION ===");
+        dedup::DatasetConfig dcfg;
+        dcfg.num_files = num_files;
+        dcfg.fixed_file_size = file_size;
+        dcfg.seed = seed;
+
+        dedup::DatasetGenerator gen(dcfg);
+        size_t total = gen.generate_all(data_dir, dedup::PayloadType::MIXED);
+        LOG_INF("Generated %zu files (%zu bytes) in %s",
+            gen.total_files_written(), gen.total_bytes_written(), data_dir.c_str());
+
+        if (total == 0) {
+            LOG_ERR("Dataset generation failed!");
+            return 1;
+        }
     }
 
     // Load configuration

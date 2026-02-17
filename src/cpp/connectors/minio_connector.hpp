@@ -1,11 +1,14 @@
 #pragma once
+// MinIO/S3 connector -- uses bucket prefix "dedup-lab-*" for isolation
+// Production buckets are NEVER touched (gitlab-*, buildsystem-*)
+// Uses libcurl + AWS Signature V4 for proper S3 authentication
 #include "db_connector.hpp"
+#include <vector>
+
+struct curl_slist;
 
 namespace dedup {
 
-// MinIO/S3 connector -- uses bucket prefix "dedup-lab-*" for isolation
-// Production buckets are NEVER touched (gitlab-*, buildsystem-*)
-// Uses libcurl for S3-compatible API (no heavy AWS SDK needed)
 class MinioConnector : public DbConnector {
 public:
     ~MinioConnector() override { disconnect(); }
@@ -30,17 +33,29 @@ public:
 
 private:
     std::string endpoint_;
+    std::string s3_host_;
     std::string access_key_;
     std::string secret_key_;
     std::string bucket_prefix_ = "dedup-lab";
+    std::string datetime_;     // Cached for current request signing
     bool connected_ = false;
 
-    // S3 API helpers using libcurl
+    // AWS Signature V4 signing
+    std::string s3_sign_request(const std::string& method, const std::string& path,
+                                 const std::string& payload_hash);
+
+    // Setup an authenticated S3 request with proper headers
+    void* s3_setup_request(const std::string& method, const std::string& path,
+                           const std::string& payload_hash,
+                           struct curl_slist** out_headers);
+
+    // S3 API operations
     bool s3_put_object(const std::string& bucket, const std::string& key,
                        const char* data, size_t len);
     bool s3_delete_object(const std::string& bucket, const std::string& key);
     bool s3_create_bucket(const std::string& bucket);
     bool s3_delete_bucket(const std::string& bucket);
+    std::vector<std::string> s3_list_objects(const std::string& bucket);
 };
 
 } // namespace dedup

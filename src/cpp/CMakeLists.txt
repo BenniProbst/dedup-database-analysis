@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # =============================================================================
-# Dependencies (system-installed on K8s runner or via FetchContent)
+# Dependencies (installed via apt on K8s runner: gcc:14-bookworm image)
 # =============================================================================
 
 # libpq (PostgreSQL C client) -- works for PostgreSQL AND CockroachDB (PG wire protocol)
@@ -28,17 +28,23 @@ find_library(RDKAFKA_LIB rdkafka)
 find_path(RDKAFKA_INCLUDE librdkafka/rdkafka.h)
 
 # nlohmann/json (header-only JSON)
-include(FetchContent)
-FetchContent_Declare(json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-)
-FetchContent_MakeAvailable(json)
+# Prefer system-installed (apt: nlohmann-json3-dev), fallback to FetchContent
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found via find_package, trying FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(json)
+endif()
 
 # =============================================================================
-# Main executable
+# Common source files
 # =============================================================================
 
-add_executable(dedup-test
+set(DEDUP_SOURCES
     main.cpp
     connectors/postgres_connector.cpp
     connectors/redis_connector.cpp
@@ -47,7 +53,14 @@ add_executable(dedup-test
     experiment/schema_manager.cpp
     experiment/data_loader.cpp
     experiment/metrics_collector.cpp
+    experiment/dataset_generator.cpp
 )
+
+# =============================================================================
+# Main executable
+# =============================================================================
+
+add_executable(dedup-test ${DEDUP_SOURCES})
 
 target_include_directories(dedup-test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -83,23 +96,14 @@ endif()
 
 # Optimization for N97 (Alder Lake-N, SSE4.2 + AVX2)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(dedup-test PRIVATE -O2 -march=alderlake)
+    target_compile_options(dedup-test PRIVATE -O2)
 endif()
 
 # =============================================================================
 # Dry-run smoke test target
 # =============================================================================
 
-add_executable(dedup-smoke-test
-    main.cpp
-    connectors/postgres_connector.cpp
-    connectors/redis_connector.cpp
-    connectors/kafka_connector.cpp
-    connectors/minio_connector.cpp
-    experiment/schema_manager.cpp
-    experiment/data_loader.cpp
-    experiment/metrics_collector.cpp
-)
+add_executable(dedup-smoke-test ${DEDUP_SOURCES})
 
 target_compile_definitions(dedup-smoke-test PRIVATE DEDUP_DRY_RUN=1)
 
@@ -126,3 +130,5 @@ if(RDKAFKA_LIB AND RDKAFKA_INCLUDE)
     target_include_directories(dedup-smoke-test PRIVATE ${RDKAFKA_INCLUDE})
     target_link_libraries(dedup-smoke-test PRIVATE ${RDKAFKA_LIB})
 endif()
+
+install(TARGETS dedup-test dedup-smoke-test RUNTIME DESTINATION bin)

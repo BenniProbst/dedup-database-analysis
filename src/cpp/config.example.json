@@ -1,0 +1,60 @@
+{
+    "lab_user": "dedup-lab",
+    "lab_schema": "dedup_lab",
+    "data_dir": "/tmp/datasets",
+    "results_dir": "results",
+    "replica_count": 4,
+    "dry_run": false,
+
+    "databases": [
+        {
+            "system": "postgresql",
+            "host": "postgres-lb.databases.svc.cluster.local",
+            "port": 5432,
+            "user": "dedup-lab",
+            "password": "",
+            "database": "postgres",
+            "lab_schema": "dedup_lab"
+        },
+        {
+            "system": "cockroachdb",
+            "host": "cockroachdb-public.cockroach-operator-system.svc.cluster.local",
+            "port": 26257,
+            "user": "dedup-lab",
+            "password": "",
+            "database": "dedup_lab",
+            "lab_schema": "dedup_lab"
+        },
+        {
+            "system": "redis",
+            "host": "redis-standalone.redis.svc.cluster.local",
+            "port": 6379
+        },
+        {
+            "system": "kafka",
+            "host": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local",
+            "port": 9092,
+            "lab_schema": "dedup-lab"
+        },
+        {
+            "system": "minio",
+            "host": "minio-lb.minio.svc.cluster.local",
+            "port": 9000,
+            "user": "dedup-lab",
+            "password": "",
+            "lab_schema": "dedup-lab"
+        }
+    ],
+
+    "dup_grades": ["U0", "U50", "U90"],
+
+    "prometheus": {
+        "url": "http://prometheus.monitoring.svc.cluster.local:9090"
+    },
+
+    "grafana": {
+        "url": "",
+        "api_key": "",
+        "dashboard_uid": ""
+    }
+}

@@ -1,6 +1,7 @@
 #include "postgres_connector.hpp"
 #include "../utils/timer.hpp"
 #include "../utils/logger.hpp"
+#include "../utils/sha256.hpp"
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -194,8 +195,8 @@ MeasureResult PostgresConnector::bulk_insert(const std::string& data_dir, DupGra
         std::vector<char> buf(fsize);
         f.read(buf.data(), static_cast<std::streamsize>(fsize));
 
-        // Compute SHA-256 placeholder (TODO: real SHA-256)
-        std::string sha256_hex(64, '0');
+        // Compute SHA-256 fingerprint for dedup detection
+        std::string sha256_hex = SHA256::hash_hex(buf.data(), fsize);
 
         const char* values[4] = {
             "application/octet-stream",

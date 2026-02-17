@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <fstream>
 #include <nlohmann/json.hpp>
 
 namespace dedup {
@@ -131,10 +132,70 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
     return cfg;
 }
 
+inline DbSystem parse_db_system(const std::string& s) {
+    if (s == "postgresql") return DbSystem::POSTGRESQL;
+    if (s == "cockroachdb") return DbSystem::COCKROACHDB;
+    if (s == "redis") return DbSystem::REDIS;
+    if (s == "kafka") return DbSystem::KAFKA;
+    if (s == "minio") return DbSystem::MINIO;
+    return DbSystem::POSTGRESQL;
+}
+
 inline ExperimentConfig ExperimentConfig::from_json(const std::string& path) {
-    // TODO: parse JSON config file
-    (void)path;
-    return default_k8s_config();
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        return default_k8s_config();
+    }
+
+    nlohmann::json j;
+    f >> j;
+
+    ExperimentConfig cfg;
+    cfg.lab_user = j.value("lab_user", cfg.lab_user);
+    cfg.lab_schema = j.value("lab_schema", cfg.lab_schema);
+    cfg.data_dir = j.value("data_dir", cfg.data_dir);
+    cfg.results_dir = j.value("results_dir", cfg.results_dir);
+    cfg.replica_count = j.value("replica_count", cfg.replica_count);
+    cfg.dry_run = j.value("dry_run", cfg.dry_run);
+
+    if (j.contains("prometheus")) {
+        cfg.prometheus.url = j["prometheus"].value("url", cfg.prometheus.url);
+    }
+
+    if (j.contains("grafana")) {
+        cfg.grafana.url = j["grafana"].value("url", cfg.grafana.url);
+        cfg.grafana.api_key = j["grafana"].value("api_key", cfg.grafana.api_key);
+        cfg.grafana.dashboard_uid = j["grafana"].value("dashboard_uid", cfg.grafana.dashboard_uid);
+    }
+
+    if (j.contains("databases")) {
+        cfg.databases.clear();
+        for (const auto& db : j["databases"]) {
+            DbConnection conn;
+            conn.system = parse_db_system(db.value("system", "postgresql"));
+            conn.host = db.value("host", "localhost");
+            conn.port = db.value("port", 5432);
+            conn.user = db.value("user", cfg.lab_user);
+            conn.password = db.value("password", "");
+            conn.database = db.value("database", "");
+            conn.lab_schema = db.value("lab_schema", cfg.lab_schema);
+            cfg.databases.push_back(conn);
+        }
+    } else {
+        cfg.databases = default_k8s_config().databases;
+    }
+
+    if (j.contains("dup_grades")) {
+        cfg.dup_grades.clear();
+        for (const auto& g : j["dup_grades"]) {
+            std::string gs = g.get<std::string>();
+            if (gs == "U0") cfg.dup_grades.push_back(DupGrade::U0);
+            else if (gs == "U50") cfg.dup_grades.push_back(DupGrade::U50);
+            else if (gs == "U90") cfg.dup_grades.push_back(DupGrade::U90);
+        }
+    }
+
+    return cfg;
 }
 
 } // namespace dedup

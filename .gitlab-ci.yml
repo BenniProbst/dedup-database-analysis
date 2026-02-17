@@ -3,44 +3,25 @@
 # =============================================================================
 # Pipeline 1: LaTeX compilation (auto on .tex/.bib/.cls/.bst changes)
 # Pipeline 2: C++ compilation + smoke tests (auto on src/cpp/** changes)
-# Pipeline 3: DB experiment integration test (all manual triggers)
+# Pipeline 3: DB experiment (manual trigger, uses C++ binary in-cluster)
 #
 # Cluster: 4 Worker Nodes (Intel N97), Talos v1.11.6, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
-# Metriken: Prometheus (longhorn_volume_actual_size_bytes) + Grafana
+# Runner: GitLab K8s Runner (namespace: gitlab-runner)
 # =============================================================================
 
 stages:
   - latex
   - cpp-build
   - cpp-test
-  - prepare
-  - deploy-databases
-  - generate-data
-  - stage1-bulk-insert
-  - stage1-measure
-  - stage2-perfile-insert
-  - stage2-measure
-  - stage3-delete
-  - stage3-maintenance
-  - stage3-measure
-  - cleanup
-  - report
+  - experiment
 
 variables:
-  KUBE_NAMESPACE: dedup-research
-  LONGHORN_SC: longhorn
-  PVC_SIZE: 100Gi
-  REPLICA_COUNT: "4"
   PROMETHEUS_URL: http://prometheus.monitoring.svc.cluster.local:9090
-  # Duplikationsgrade
-  DUP_GRADES: "U0 U50 U90"
-  # Systeme unter Test (nur im Cluster vorhandene)
-  SYSTEMS: "postgresql cockroachdb redis kafka minio"
-  # TODO: mariadb clickhouse wenn deployed
-  # Timeouts
-  BULK_TIMEOUT: "3600"
-  MAINTENANCE_TIMEOUT: "1800"
+  REPLICA_COUNT: "4"
+  LAB_SCHEMA: dedup_lab
+  DUP_GRADES: "U0,U50,U90"
+  SYSTEMS: "postgresql,cockroachdb,redis,kafka,minio"
 
 # =============================================================================
 # PIPELINE 1: LaTeX Compilation (auto-triggered on document changes)
@@ -56,33 +37,15 @@ latex:compile:
   script:
     - |
       echo "=== LaTeX Compilation: Triple-Pass Build ==="
-      echo "Start: $(date -Iseconds)"
-
-      # Pass 1: Initial compilation
       pdflatex -interaction=nonstopmode -halt-on-error doku.tex || true
-
-      # BibTeX pass
       bibtex doku || true
-
-      # Pass 2+3: Resolve references
       pdflatex -interaction=nonstopmode -halt-on-error doku.tex || true
       pdflatex -interaction=nonstopmode -halt-on-error doku.tex
-
-      echo "=== Compilation Complete ==="
       ls -lh doku.pdf 2>/dev/null && echo "PDF generated successfully" || echo "ERROR: PDF not generated"
-
-      # Show warnings summary (but don't fail on them)
-      echo ""
-      echo "=== LaTeX Warnings ==="
-      grep -c "Warning" doku.log 2>/dev/null && grep "Warning" doku.log | head -20 || echo "No warnings"
-
-      echo ""
+      echo "=== Warnings ==="
+      grep -c "Warning" doku.log 2>/dev/null && grep "Warning" doku.log | head -10 || echo "None"
       echo "=== Undefined References ==="
-      grep -c "undefined" doku.log 2>/dev/null && grep "undefined" doku.log | head -10 || echo "No undefined references"
-
-      echo ""
-      echo "=== Missing Citations ==="
-      grep -c "Citation.*undefined" doku.log 2>/dev/null && grep "Citation.*undefined" doku.log | head -10 || echo "No missing citations"
+      grep "undefined" doku.log | head -5 || echo "None"
   artifacts:
     paths:
       - docs/doku.pdf
@@ -98,7 +61,7 @@ latex:compile:
         - "docs/Makefile"
 
 # =============================================================================
-# PIPELINE 2: C++ Compilation + Tests (auto on src/cpp/** changes)
+# PIPELINE 2: C++ Build + Tests (auto on src/cpp/** changes)
 # =============================================================================
 
 .cpp-default: &cpp-default
@@ -106,35 +69,32 @@ latex:compile:
     - kubernetes
   image: gcc:14-bookworm
   before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq cmake libpq-dev libcurl4-openssl-dev libhiredis-dev librdkafka-dev
-    - mc alias set minio http://minio-lb.minio.svc.cluster.local:9000 buildsystem-ci ' [CLUSTER-PW-REDACTED]' 2>/dev/null || true
+    - |
+      apt-get update -qq
+      apt-get install -y -qq cmake libpq-dev libcurl4-openssl-dev \
+        libhiredis-dev librdkafka-dev nlohmann-json3-dev
 
 cpp:build:
   <<: *cpp-default
   stage: cpp-build
   script:
     - |
-      echo "=== C++ Build: dedup-integration-test ==="
+      echo "=== C++ Build: dedup-integration-test v${CI_COMMIT_SHORT_SHA} ==="
       echo "Compiler: $(gcc --version | head -1)"
       echo "CMake: $(cmake --version | head -1)"
 
       mkdir -p build && cd build
-      cmake ../src/cpp \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CXX_FLAGS="-O2"
+      cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
 
-      make -j$(nproc) dedup-test dedup-smoke-test 2>&1
+      echo "=== Building dedup-test ==="
+      make -j$(nproc) dedup-test 2>&1
+
+      echo "=== Building dedup-smoke-test ==="
+      make -j$(nproc) dedup-smoke-test 2>&1
 
       echo "=== Build artifacts ==="
-      ls -lh dedup-test dedup-smoke-test 2>/dev/null
-
-      # Upload to MinIO buildsystem-artifacts cache
-      if command -v mc &>/dev/null; then
-        mc cp dedup-test minio/buildsystem-artifacts/dedup-database-analysis/dedup-test 2>/dev/null || true
-        mc cp dedup-smoke-test minio/buildsystem-artifacts/dedup-database-analysis/dedup-smoke-test 2>/dev/null || true
-        echo "Artifacts uploaded to MinIO"
-      fi
+      ls -lh dedup-test dedup-smoke-test
+      file dedup-test
   artifacts:
     paths:
       - build/dedup-test
@@ -146,6 +106,7 @@ cpp:build:
         - "src/cpp/**/*.hpp"
         - "src/cpp/**/*.h"
         - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
 
 cpp:smoke-test:
   <<: *cpp-default
@@ -153,11 +114,34 @@ cpp:smoke-test:
   needs: ["cpp:build"]
   script:
     - |
-      echo "=== Smoke Test (DRY RUN - no DB connections) ==="
+      echo "=== Smoke Test: SHA-256 + Dataset Generator + Dry-Run ==="
       chmod +x build/dedup-smoke-test
 
-      # Smoke test: runs with DEDUP_DRY_RUN=1, no actual DB connections
-      build/dedup-smoke-test --dry-run --verbose 2>&1
+      # 1. Generate test datasets (100 files per grade, 4K-64K, seed=42)
+      echo "--- Step 1: Generate datasets ---"
+      build/dedup-smoke-test --generate-data \
+        --data-dir /tmp/datasets \
+        --num-files 100 \
+        --file-size 16384 \
+        --seed 42 \
+        --dry-run --verbose 2>&1
+
+      # Verify generated files
+      echo "--- Dataset verification ---"
+      for grade in U0 U50 U90; do
+        COUNT=$(ls /tmp/datasets/${grade}/*.dat 2>/dev/null | wc -l)
+        SIZE=$(du -sh /tmp/datasets/${grade}/ 2>/dev/null | cut -f1)
+        echo "  ${grade}: ${COUNT} files, ${SIZE}"
+      done
+
+      # 2. Check for duplicates using SHA-256
+      echo "--- Step 2: Verify duplication levels ---"
+      for grade in U0 U50 U90; do
+        TOTAL=$(ls /tmp/datasets/${grade}/*.dat 2>/dev/null | wc -l)
+        UNIQUE=$(sha256sum /tmp/datasets/${grade}/*.dat 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
+        DUP_PCT=$(python3 -c "print(round((1 - ${UNIQUE}/${TOTAL}) * 100, 1) if ${TOTAL} > 0 else 0)")
+        echo "  ${grade}: ${TOTAL} total, ${UNIQUE} unique, ${DUP_PCT}% duplicates"
+      done
 
       echo "=== Smoke Test PASSED ==="
   rules:
@@ -166,796 +150,101 @@ cpp:smoke-test:
         - "src/cpp/**/*.hpp"
         - "src/cpp/**/*.h"
         - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
 
-cpp:dry-test-suite:
+cpp:full-dry-test:
   <<: *cpp-default
   stage: cpp-test
   needs: ["cpp:build"]
   script:
     - |
-      echo "=== Dry Test Suite (all systems, all grades, no DB) ==="
+      echo "=== Full Dry Test: All Systems x All Grades ==="
       chmod +x build/dedup-smoke-test
 
-      # Test all systems
-      for sys in postgresql cockroachdb redis kafka minio; do
-        echo "--- Testing ${sys} ---"
-        build/dedup-smoke-test --dry-run --systems ${sys} --verbose 2>&1
-        echo "  ${sys}: OK"
-      done
+      # Generate datasets first
+      build/dedup-smoke-test --generate-data \
+        --data-dir /tmp/datasets \
+        --num-files 50 \
+        --seed 42 \
+        --dry-run 2>&1
 
-      # Test all grades
-      for grade in U0 U50 U90; do
-        echo "--- Testing grade ${grade} ---"
-        build/dedup-smoke-test --dry-run --grades ${grade} --verbose 2>&1
-        echo "  ${grade}: OK"
-      done
+      # Run full experiment simulation
+      echo "--- Full experiment (dry-run) ---"
+      build/dedup-smoke-test \
+        --data-dir /tmp/datasets \
+        --results-dir results \
+        --dry-run --verbose 2>&1
 
-      # Test help output
-      build/dedup-smoke-test --help 2>&1
+      echo "--- Results ---"
+      cat results/combined_results.json 2>/dev/null | head -100
 
-      echo "=== Dry Test Suite PASSED ==="
+      echo "--- Help output ---"
+      build/dedup-smoke-test --help
+
+      echo "=== Full Dry Test PASSED ==="
+  artifacts:
+    paths:
+      - results/
+    expire_in: 7 days
   rules:
     - changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
         - "src/cpp/**/*.h"
         - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
 
 # =============================================================================
-# PIPELINE 3: DB Experiment Integration (all manual triggers)
-# =============================================================================
-# Default for experiment jobs: K8s Runner im Cluster
-
-.experiment-default: &experiment-default
-  tags:
-    - kubernetes
-  image: alpine/k8s:1.34.0
-  before_script:
-    - apk add --no-cache curl jq python3 py3-pip bash postgresql-client
-    - pip3 install --break-system-packages pandas matplotlib
-
-# =============================================================================
-# STAGE: prepare - Namespace, PVCs, RBAC anlegen
+# PIPELINE 3: Real DB Experiment (manual trigger)
+# Uses the C++ binary to connect to production databases via lab schemas
 # =============================================================================
 
-prepare:namespace:
-  <<: *experiment-default
-  stage: prepare
+experiment:run:
+  <<: *cpp-default
+  stage: experiment
+  needs: ["cpp:build"]
+  timeout: 4 hours
   script:
     - |
-      echo "=== Creating namespace and RBAC ==="
-      kubectl create namespace ${KUBE_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
-
-      echo "=== Creating ServiceAccount for experiment runner ==="
-      cat <<'YAML' | kubectl apply -f -
-      apiVersion: v1
-      kind: ServiceAccount
-      metadata:
-        name: dedup-runner
-        namespace: ${KUBE_NAMESPACE}
-      ---
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: Role
-      metadata:
-        name: dedup-runner-role
-        namespace: ${KUBE_NAMESPACE}
-      rules:
-        - apiGroups: [""]
-          resources: ["pods", "pods/exec", "pods/log", "services", "persistentvolumeclaims"]
-          verbs: ["get", "list", "watch", "create", "delete"]
-        - apiGroups: ["batch"]
-          resources: ["jobs"]
-          verbs: ["get", "list", "watch", "create", "delete"]
-        - apiGroups: ["apps"]
-          resources: ["statefulsets", "deployments"]
-          verbs: ["get", "list", "watch", "create", "delete", "patch"]
-      ---
-      apiVersion: rbac.authorization.k8s.io/v1
-      kind: RoleBinding
-      metadata:
-        name: dedup-runner-binding
-        namespace: ${KUBE_NAMESPACE}
-      subjects:
-        - kind: ServiceAccount
-          name: dedup-runner
-          namespace: ${KUBE_NAMESPACE}
-      roleRef:
-        kind: Role
-        name: dedup-runner-role
-        apiGroup: rbac.authorization.k8s.io
-      YAML
-  rules:
-    - when: manual
-      allow_failure: false
-
-# =============================================================================
-# STAGE: deploy-databases - Datenbanken als StatefulSets deployen
-# =============================================================================
-
-.deploy-db-template: &deploy-db
-  <<: *experiment-default
-  stage: deploy-databases
-  needs: ["prepare:namespace"]
-  script:
-    - |
-      echo "=== Deploying ${DB_NAME} ==="
-
-      # PVC erstellen
-      cat <<YAML | kubectl apply -f -
-      apiVersion: v1
-      kind: PersistentVolumeClaim
-      metadata:
-        name: ${DB_NAME}-data
-        namespace: ${KUBE_NAMESPACE}
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        storageClassName: ${LONGHORN_SC}
-        resources:
-          requests:
-            storage: ${PVC_SIZE}
-      YAML
-
-      # Warten bis PVC gebunden
-      echo "Waiting for PVC ${DB_NAME}-data to be bound..."
-      kubectl wait --for=jsonpath='{.status.phase}'=Bound \
-        pvc/${DB_NAME}-data -n ${KUBE_NAMESPACE} --timeout=120s
-
-      # DB-spezifisches Manifest anwenden
-      kubectl apply -f k8s/jobs/${DB_NAME}-deployment.yaml -n ${KUBE_NAMESPACE}
-
-      # Warten bis Ready
-      kubectl rollout status deployment/${DB_NAME} -n ${KUBE_NAMESPACE} --timeout=300s \
-        || kubectl rollout status statefulset/${DB_NAME} -n ${KUBE_NAMESPACE} --timeout=300s \
-        || true
-  rules:
-    - when: manual
-      allow_failure: false
-
-deploy:postgresql:
-  <<: *deploy-db
-  variables:
-    DB_NAME: postgresql
-
-deploy:mariadb:
-  <<: *deploy-db
-  variables:
-    DB_NAME: mariadb
-
-deploy:clickhouse:
-  <<: *deploy-db
-  variables:
-    DB_NAME: clickhouse
-
-deploy:kafka:
-  <<: *deploy-db
-  variables:
-    DB_NAME: kafka
-
-deploy:minio:
-  <<: *deploy-db
-  variables:
-    DB_NAME: minio
-
-deploy:cockroachdb:
-  <<: *deploy-db
-  variables:
-    DB_NAME: cockroachdb
-
-deploy:comdare-db:
-  <<: *deploy-db
-  variables:
-    DB_NAME: comdare-db
-
-# =============================================================================
-# STAGE: generate-data - Testdaten mit kontrollierten Duplikationsgraden erzeugen
-# =============================================================================
-
-generate:datasets:
-  <<: *experiment-default
-  stage: generate-data
-  script:
-    - |
-      echo "=== Generating test datasets ==="
-
-      python3 scripts/generate_datasets.py \
-        --output-dir /tmp/datasets \
-        --dup-grades U0 U50 U90 \
-        --payload-types text image event json uuid bank
-
-      echo "=== Uploading datasets to shared PVC ==="
-      # Datasets als ConfigMap oder via MinIO teilen
-      for grade in U0 U50 U90; do
-        echo "  Grade: ${grade}"
-        ls -lh /tmp/datasets/${grade}/
-      done
-  artifacts:
-    paths:
-      - /tmp/datasets/
-    expire_in: 7 days
-  rules:
-    - when: manual
-
-# =============================================================================
-# STAGE: stage1-bulk-insert - Bulk-Load aller Duplikationsgrade
-# =============================================================================
-
-.bulk-insert-template: &bulk-insert
-  <<: *experiment-default
-  stage: stage1-bulk-insert
-  timeout: 2 hours
-  script:
-    - |
-      echo "=== Stage 1: Bulk Insert - ${DB_NAME} / ${DUP_GRADE} ==="
-      echo "Start: $(date -Iseconds)"
-
-      # Longhorn-Metrik VORHER messen
-      VOLUME_NAME=$(kubectl get pvc ${DB_NAME}-data -n ${KUBE_NAMESPACE} \
-        -o jsonpath='{.spec.volumeName}')
-      SIZE_BEFORE=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-      echo "Physical size before: ${SIZE_BEFORE} bytes"
-
-      # Bulk-Load ausfuehren
-      START_TIME=$(date +%s%N)
-
-      python3 src/loaders/${DB_NAME}_loader.py \
-        --action bulk-insert \
-        --data-dir /tmp/datasets/${DUP_GRADE} \
-        --namespace ${KUBE_NAMESPACE} \
-        --db-name ${DB_NAME}
-
-      END_TIME=$(date +%s%N)
-      DURATION_MS=$(( (END_TIME - START_TIME) / 1000000 ))
-      echo "Bulk insert duration: ${DURATION_MS}ms"
-
-      # Longhorn-Metrik NACHHER messen
-      sleep 10  # Warten bis Longhorn Metriken aktualisiert
-      SIZE_AFTER=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-      echo "Physical size after: ${SIZE_AFTER} bytes"
-
-      # Ergebnis speichern
-      mkdir -p results/stage1
-      cat > results/stage1/${DB_NAME}_${DUP_GRADE}.json <<JSON
-      {
-        "system": "${DB_NAME}",
-        "dup_grade": "${DUP_GRADE}",
-        "stage": "bulk_insert",
-        "size_before_bytes": ${SIZE_BEFORE},
-        "size_after_bytes": ${SIZE_AFTER},
-        "size_delta_bytes": $((SIZE_AFTER - SIZE_BEFORE)),
-        "duration_ms": ${DURATION_MS},
-        "timestamp": "$(date -Iseconds)"
-      }
-      JSON
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-# PostgreSQL Bulk-Insert fuer alle Duplikationsgrade
-bulk:postgresql:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U0
-  needs: ["deploy:postgresql", "generate:datasets"]
-
-bulk:postgresql:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U50
-  needs: ["deploy:postgresql", "generate:datasets"]
-
-bulk:postgresql:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U90
-  needs: ["deploy:postgresql", "generate:datasets"]
-
-# MariaDB
-bulk:mariadb:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: mariadb
-    DUP_GRADE: U0
-  needs: ["deploy:mariadb", "generate:datasets"]
-
-bulk:mariadb:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: mariadb
-    DUP_GRADE: U50
-  needs: ["deploy:mariadb", "generate:datasets"]
-
-bulk:mariadb:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: mariadb
-    DUP_GRADE: U90
-  needs: ["deploy:mariadb", "generate:datasets"]
-
-# ClickHouse
-bulk:clickhouse:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: clickhouse
-    DUP_GRADE: U0
-  needs: ["deploy:clickhouse", "generate:datasets"]
-
-bulk:clickhouse:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: clickhouse
-    DUP_GRADE: U50
-  needs: ["deploy:clickhouse", "generate:datasets"]
-
-bulk:clickhouse:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: clickhouse
-    DUP_GRADE: U90
-  needs: ["deploy:clickhouse", "generate:datasets"]
-
-# Kafka
-bulk:kafka:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: kafka
-    DUP_GRADE: U0
-  needs: ["deploy:kafka", "generate:datasets"]
-
-bulk:kafka:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: kafka
-    DUP_GRADE: U50
-  needs: ["deploy:kafka", "generate:datasets"]
-
-bulk:kafka:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: kafka
-    DUP_GRADE: U90
-  needs: ["deploy:kafka", "generate:datasets"]
-
-# MinIO
-bulk:minio:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: minio
-    DUP_GRADE: U0
-  needs: ["deploy:minio", "generate:datasets"]
-
-bulk:minio:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: minio
-    DUP_GRADE: U50
-  needs: ["deploy:minio", "generate:datasets"]
-
-bulk:minio:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: minio
-    DUP_GRADE: U90
-  needs: ["deploy:minio", "generate:datasets"]
-
-# CockroachDB
-bulk:cockroachdb:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: cockroachdb
-    DUP_GRADE: U0
-  needs: ["deploy:cockroachdb", "generate:datasets"]
-
-bulk:cockroachdb:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: cockroachdb
-    DUP_GRADE: U50
-  needs: ["deploy:cockroachdb", "generate:datasets"]
-
-bulk:cockroachdb:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: cockroachdb
-    DUP_GRADE: U90
-  needs: ["deploy:cockroachdb", "generate:datasets"]
-
-# comdare-db
-bulk:comdare-db:U0:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: comdare-db
-    DUP_GRADE: U0
-  needs: ["deploy:comdare-db", "generate:datasets"]
-
-bulk:comdare-db:U50:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: comdare-db
-    DUP_GRADE: U50
-  needs: ["deploy:comdare-db", "generate:datasets"]
-
-bulk:comdare-db:U90:
-  <<: *bulk-insert
-  variables:
-    DB_NAME: comdare-db
-    DUP_GRADE: U90
-  needs: ["deploy:comdare-db", "generate:datasets"]
-
-# =============================================================================
-# STAGE: stage1-measure - Longhorn-Snapshot + Metriken aggregieren
-# =============================================================================
-
-measure:stage1:
-  <<: *experiment-default
-  stage: stage1-measure
-  script:
-    - |
-      echo "=== Stage 1 Measurement Summary ==="
-
-      python3 src/reporters/aggregate_results.py \
-        --input-dir results/stage1 \
-        --output results/stage1_summary.json \
-        --stage bulk_insert
-
-      python3 src/reporters/generate_charts.py \
-        --input results/stage1_summary.json \
-        --output-dir results/charts/stage1 \
-        --title "Stage 1: Bulk Insert - Physical vs Logical Storage"
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-# =============================================================================
-# STAGE: stage2-perfile-insert - Einzeldatei-Inserts
-# =============================================================================
-
-.perfile-insert-template: &perfile-insert
-  <<: *experiment-default
-  stage: stage2-perfile-insert
-  timeout: 3 hours
-  script:
-    - |
-      echo "=== Stage 2: Per-File Insert - ${DB_NAME} / ${DUP_GRADE} ==="
-
-      # Longhorn-Metrik VORHER
-      VOLUME_NAME=$(kubectl get pvc ${DB_NAME}-data -n ${KUBE_NAMESPACE} \
-        -o jsonpath='{.spec.volumeName}')
-      SIZE_BEFORE=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-
-      # Schema: files(id UUID PK, mime TEXT, size_bytes BIGINT, sha256 BYTEA, payload BYTEA)
-      python3 src/loaders/${DB_NAME}_loader.py \
-        --action perfile-insert \
-        --data-dir /tmp/datasets/${DUP_GRADE} \
-        --namespace ${KUBE_NAMESPACE} \
-        --db-name ${DB_NAME} \
-        --output results/stage2/${DB_NAME}_${DUP_GRADE}_latencies.csv
-
-      sleep 10
-      SIZE_AFTER=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-
-      # Logische Bytes berechnen
-      LOGICAL_BYTES=$(python3 -c "
-      import os, json
-      total = sum(os.path.getsize(os.path.join(dp, f))
-        for dp, dn, filenames in os.walk('/tmp/datasets/${DUP_GRADE}')
-        for f in filenames)
-      print(total)
-      ")
-
-      # EDR berechnen: EDR = B_logical / (B_phys / N)
-      PHYS_DELTA=$((SIZE_AFTER - SIZE_BEFORE))
-      if [ "${PHYS_DELTA}" -gt 0 ]; then
-        EDR=$(python3 -c "print(round(${LOGICAL_BYTES} / (${PHYS_DELTA} / ${REPLICA_COUNT}), 3))")
-      else
-        EDR="inf"
-      fi
-
-      mkdir -p results/stage2
-      cat > results/stage2/${DB_NAME}_${DUP_GRADE}.json <<JSON
-      {
-        "system": "${DB_NAME}",
-        "dup_grade": "${DUP_GRADE}",
-        "stage": "perfile_insert",
-        "logical_bytes": ${LOGICAL_BYTES},
-        "size_before_bytes": ${SIZE_BEFORE},
-        "size_after_bytes": ${SIZE_AFTER},
-        "size_delta_bytes": ${PHYS_DELTA},
-        "edr": "${EDR}",
-        "replica_count": ${REPLICA_COUNT},
-        "timestamp": "$(date -Iseconds)"
-      }
-      JSON
-
-      echo "EDR (Effective Dedup Ratio): ${EDR}"
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-# Stage 2 Jobs (exemplarisch fuer alle Systeme x Duplikationsgrade)
-perfile:postgresql:U0:
-  <<: *perfile-insert
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U0
-
-perfile:postgresql:U50:
-  <<: *perfile-insert
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U50
-
-perfile:postgresql:U90:
-  <<: *perfile-insert
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U90
-
-measure:stage2:
-  <<: *experiment-default
-  stage: stage2-measure
-  script:
-    - |
-      echo "=== Stage 2 Measurement Summary ==="
-      python3 src/reporters/aggregate_results.py \
-        --input-dir results/stage2 \
-        --output results/stage2_summary.json \
-        --stage perfile_insert
-
-      python3 src/reporters/generate_charts.py \
-        --input results/stage2_summary.json \
-        --output-dir results/charts/stage2 \
-        --title "Stage 2: Per-File Insert - EDR Comparison"
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-# =============================================================================
-# STAGE: stage3-delete - Loeschen + Maintenance + Reclamation
-# =============================================================================
-
-.delete-template: &delete-job
-  <<: *experiment-default
-  stage: stage3-delete
-  timeout: 2 hours
-  script:
-    - |
-      echo "=== Stage 3: Delete - ${DB_NAME} / ${DUP_GRADE} ==="
-
-      VOLUME_NAME=$(kubectl get pvc ${DB_NAME}-data -n ${KUBE_NAMESPACE} \
-        -o jsonpath='{.spec.volumeName}')
-      SIZE_BEFORE=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-
-      python3 src/loaders/${DB_NAME}_loader.py \
-        --action perfile-delete \
-        --namespace ${KUBE_NAMESPACE} \
-        --db-name ${DB_NAME} \
-        --output results/stage3/${DB_NAME}_${DUP_GRADE}_delete_latencies.csv
-
-      sleep 10
-      SIZE_AFTER_DELETE=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-
-      mkdir -p results/stage3
-      cat > results/stage3/${DB_NAME}_${DUP_GRADE}_delete.json <<JSON
-      {
-        "system": "${DB_NAME}",
-        "dup_grade": "${DUP_GRADE}",
-        "stage": "delete",
-        "size_before_bytes": ${SIZE_BEFORE},
-        "size_after_delete_bytes": ${SIZE_AFTER_DELETE},
-        "timestamp": "$(date -Iseconds)"
-      }
-      JSON
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-delete:postgresql:U90:
-  <<: *delete-job
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U90
-
-# =============================================================================
-# STAGE: stage3-maintenance - Systemspezifische Cleanup-Operationen
-# =============================================================================
-
-.maintenance-template: &maintenance-job
-  <<: *experiment-default
-  stage: stage3-maintenance
-  timeout: 1 hour
-  script:
-    - |
-      echo "=== Stage 3: Maintenance - ${DB_NAME} ==="
-
-      python3 src/cleanup/${DB_NAME}_maintenance.py \
-        --namespace ${KUBE_NAMESPACE} \
-        --db-name ${DB_NAME}
-
-      # Warten auf Compaction / VACUUM / Retention
-      echo "Waiting ${MAINTENANCE_TIMEOUT}s for maintenance to complete..."
-      sleep ${MAINTENANCE_TIMEOUT}
-
-      # Longhorn TRIM/Discard erzwingen (fuer Block-Storage Reclamation)
-      echo "Running filesystem TRIM..."
-      kubectl exec -n ${KUBE_NAMESPACE} deploy/${DB_NAME} -- \
-        fstrim -v /data 2>/dev/null || echo "TRIM not supported or not needed"
-
-      VOLUME_NAME=$(kubectl get pvc ${DB_NAME}-data -n ${KUBE_NAMESPACE} \
-        -o jsonpath='{.spec.volumeName}')
-      SIZE_AFTER_MAINT=$(curl -s "${PROMETHEUS_URL}/api/v1/query?query=longhorn_volume_actual_size_bytes{volume=\"${VOLUME_NAME}\"}" \
-        | jq -r '.data.result[0].value[1] // "0"')
-
-      mkdir -p results/stage3
-      cat > results/stage3/${DB_NAME}_${DUP_GRADE}_maintenance.json <<JSON
-      {
-        "system": "${DB_NAME}",
-        "dup_grade": "${DUP_GRADE}",
-        "stage": "maintenance",
-        "size_after_maintenance_bytes": ${SIZE_AFTER_MAINT},
-        "maintenance_type": "${MAINT_TYPE}",
-        "timestamp": "$(date -Iseconds)"
-      }
-      JSON
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-maintenance:postgresql:
-  <<: *maintenance-job
-  variables:
-    DB_NAME: postgresql
-    DUP_GRADE: U90
-    MAINT_TYPE: "VACUUM FULL"
-
-maintenance:kafka:
-  <<: *maintenance-job
-  variables:
-    DB_NAME: kafka
-    DUP_GRADE: U90
-    MAINT_TYPE: "retention+compaction"
-
-maintenance:clickhouse:
-  <<: *maintenance-job
-  variables:
-    DB_NAME: clickhouse
-    DUP_GRADE: U90
-    MAINT_TYPE: "OPTIMIZE TABLE FINAL"
-
-maintenance:cockroachdb:
-  <<: *maintenance-job
-  variables:
-    DB_NAME: cockroachdb
-    DUP_GRADE: U90
-    MAINT_TYPE: "RocksDB compaction"
-
-# =============================================================================
-# STAGE: stage3-measure - Finale Messung nach Maintenance
-# =============================================================================
-
-measure:stage3:
-  <<: *experiment-default
-  stage: stage3-measure
-  script:
-    - |
-      echo "=== Stage 3 Measurement Summary ==="
-      python3 src/reporters/aggregate_results.py \
-        --input-dir results/stage3 \
-        --output results/stage3_summary.json \
-        --stage reclamation
-
-      python3 src/reporters/generate_charts.py \
-        --input results/stage3_summary.json \
-        --output-dir results/charts/stage3 \
-        --title "Stage 3: Delete + Reclamation"
-  artifacts:
-    paths:
-      - results/
-    expire_in: 30 days
-  rules:
-    - when: manual
-
-# =============================================================================
-# STAGE: cleanup - Alle Testressourcen aufraeumen
-# =============================================================================
-
-cleanup:volumes:
-  <<: *experiment-default
-  stage: cleanup
-  script:
-    - |
-      echo "=== Cleanup: Deleting test resources ==="
-
-      # Alle Deployments/StatefulSets im Namespace loeschen
-      kubectl delete deployments,statefulsets --all -n ${KUBE_NAMESPACE} --timeout=120s || true
-
-      # Auf Pod-Terminierung warten
-      kubectl wait --for=delete pod --all -n ${KUBE_NAMESPACE} --timeout=300s || true
-
-      # PVCs loeschen (gibt Longhorn Volumes frei)
-      kubectl delete pvc --all -n ${KUBE_NAMESPACE} --timeout=120s || true
-
-      echo "=== Waiting for Longhorn volume cleanup ==="
-      sleep 30
-
-      # Pruefen ob Volumes geloescht
-      REMAINING=$(kubectl get pvc -n ${KUBE_NAMESPACE} --no-headers 2>/dev/null | wc -l)
-      echo "Remaining PVCs: ${REMAINING}"
-
-      if [ "${REMAINING}" -gt 0 ]; then
-        echo "WARNING: ${REMAINING} PVCs still exist. Manual cleanup may be needed."
-        kubectl get pvc -n ${KUBE_NAMESPACE}
-      fi
-  rules:
-    - when: manual
-      allow_failure: true
-
-cleanup:namespace:
-  <<: *experiment-default
-  stage: cleanup
-  needs: ["cleanup:volumes"]
-  script:
-    - |
-      echo "=== Cleanup: Deleting namespace ==="
-      kubectl delete namespace ${KUBE_NAMESPACE} --timeout=120s || true
-      echo "Namespace ${KUBE_NAMESPACE} deleted"
-  rules:
-    - when: manual
-      allow_failure: true
-
-# =============================================================================
-# STAGE: report - Finalen Statistik-Report generieren
-# =============================================================================
-
-report:final:
-  <<: *experiment-default
-  stage: report
-  script:
-    - |
-      echo "=== Generating Final Report ==="
-
-      python3 src/reporters/final_report.py \
-        --results-dir results/ \
-        --output-dir results/report/ \
-        --title "Deduplikation in Datenhaltungssystemen - Experimentelle Ergebnisse"
-
+      echo "=== REAL EXPERIMENT: Dedup Database Analysis ==="
+      echo "Connecting to production databases via lab schemas"
+      echo "Systems: ${SYSTEMS}"
+      echo "Grades: ${DUP_GRADES}"
+      echo "Lab Schema: ${LAB_SCHEMA}"
       echo ""
-      echo "======================================"
-      echo "  REPORT GENERATED"
-      echo "======================================"
-      echo ""
-      cat results/report/summary.txt
+
+      chmod +x build/dedup-test
+
+      # Step 1: Generate test datasets (larger for real experiment)
+      echo "=== Step 1: Generate datasets ==="
+      build/dedup-test --generate-data \
+        --data-dir /tmp/datasets \
+        --num-files 500 \
+        --seed 42 \
+        --systems "${SYSTEMS}" \
+        --grades "${DUP_GRADES}" \
+        --lab-schema "${LAB_SCHEMA}" \
+        --results-dir results \
+        --verbose 2>&1
+
+      echo "=== Step 2: Run experiment ==="
+      build/dedup-test \
+        --data-dir /tmp/datasets \
+        --systems "${SYSTEMS}" \
+        --grades "${DUP_GRADES}" \
+        --lab-schema "${LAB_SCHEMA}" \
+        --results-dir results \
+        --verbose 2>&1
+
+      echo "=== Results ==="
+      cat results/combined_results.json | python3 -m json.tool 2>/dev/null | head -200
+
+      echo "=== Per-system results ==="
+      ls -la results/*.json
   artifacts:
     paths:
-      - results/report/
-    reports:
-      dotenv: results/report/metrics.env
+      - results/
     expire_in: 90 days
   rules:
     - when: manual
+      allow_failure: false
