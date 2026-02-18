@@ -19,6 +19,8 @@ data:
       "replica_count": 4,
       "dry_run": false,
 
+      "db_internal_metrics": true,
+
       "databases": [
         {
           "system": "postgresql",
@@ -28,7 +30,8 @@ data:
           "database": "postgres",
           "lab_schema": "dedup_lab",
           "pvc_name": "data-postgres-ha-0",
-          "k8s_namespace": "databases"
+          "k8s_namespace": "databases",
+          "max_experiment_bytes": 0
         },
         {
           "system": "cockroachdb",
@@ -38,14 +41,17 @@ data:
           "database": "dedup_lab",
           "lab_schema": "dedup_lab",
           "pvc_name": "datadir-cockroachdb-0",
-          "k8s_namespace": "cockroach-operator-system"
+          "k8s_namespace": "cockroach-operator-system",
+          "max_experiment_bytes": 53687091200,
+          "_comment": "125 GiB PVC shared with production. Experiment limited to 50 GiB."
         },
         {
           "system": "redis",
           "host": "redis-cluster.redis.svc.cluster.local",
           "port": 6379,
           "pvc_name": "data-redis-cluster-0",
-          "k8s_namespace": "redis"
+          "k8s_namespace": "redis",
+          "max_experiment_bytes": 0
         },
         {
           "system": "kafka",
@@ -53,7 +59,8 @@ data:
           "port": 9092,
           "lab_schema": "dedup-lab",
           "pvc_name": "data-kafka-cluster-broker-0",
-          "k8s_namespace": "kafka"
+          "k8s_namespace": "kafka",
+          "max_experiment_bytes": 0
         },
         {
           "system": "minio",
@@ -62,7 +69,9 @@ data:
           "user": "dedup-lab-s3",
           "lab_schema": "dedup-lab",
           "pvc_name": "",
-          "k8s_namespace": "minio"
+          "k8s_namespace": "minio",
+          "max_experiment_bytes": 0,
+          "_comment": "Direct Disk (no Longhorn PVC). LDAP Access Key."
         },
         {
           "system": "mariadb",
@@ -72,19 +81,47 @@ data:
           "database": "dedup_lab",
           "lab_schema": "dedup_lab",
           "pvc_name": "data-mariadb-0",
-          "k8s_namespace": "databases"
+          "k8s_namespace": "databases",
+          "max_experiment_bytes": 0,
+          "_comment": "50 GiB Longhorn PVC, replica 4. TODO: deploy to K8s cluster."
         },
         {
           "system": "clickhouse",
           "host": "clickhouse.databases.svc.cluster.local",
           "port": 8123,
+          "user": "dedup-lab",
+          "database": "dedup_lab",
           "lab_schema": "dedup_lab",
           "pvc_name": "data-clickhouse-0",
-          "k8s_namespace": "databases"
+          "k8s_namespace": "databases",
+          "max_experiment_bytes": 0,
+          "_comment": "50 GiB Longhorn PVC, replica 4. TODO: deploy to K8s cluster."
         }
       ],
 
       "dup_grades": ["U0", "U50", "U90"],
+
+      "payload_types": [
+        "random_binary",
+        "structured_json",
+        "text_document",
+        "uuid_keys",
+        "jsonb_documents"
+      ],
+
+      "data_sources": {
+        "cache_dir": "/datasets/cache",
+        "nasa_hudf_url": "https://stsci-opo.org/STScI-01EVST5CZG5BK2MAJQFCY2QHVS.tif",
+        "nasa_api_url": "https://images-api.nasa.gov",
+        "blender_urls": [
+          "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
+          "https://download.blender.org/durian/movies/Sintel.2010.1080p.mkv",
+          "https://download.blender.org/mango/download/ToS-4k-1920.mov"
+        ],
+        "gutenberg_ids": [1342, 2701],
+        "gutenberg_mirror": "https://www.gutenberg.org/cache/epub",
+        "gharchive_base_url": "https://data.gharchive.org/"
+      },
 
       "prometheus": {
         "url": "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090"
