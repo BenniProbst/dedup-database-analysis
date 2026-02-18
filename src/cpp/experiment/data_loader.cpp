@@ -83,6 +83,18 @@ ExperimentResult DataLoader::run_stage(
 
     LOG_INF("=== %s / %s / %s ===", result.system.c_str(), result.dup_grade.c_str(), result.stage.c_str());
 
+    // Check per-DB experiment size limit (e.g. CockroachDB: 50 GiB)
+    if (db_conn.max_experiment_bytes > 0) {
+        int64_t current_size = connector.get_logical_size_bytes();
+        if (current_size >= db_conn.max_experiment_bytes) {
+            result.error = "Experiment size limit reached (" +
+                std::to_string(db_conn.max_experiment_bytes / (1024*1024*1024)) +
+                " GiB). Skipping stage.";
+            LOG_WRN("%s", result.error.c_str());
+            return result;
+        }
+    }
+
     // Resolve Longhorn volume name from PVC (once per stage)
     std::string volume_name;
     if (!db_conn.pvc_name.empty()) {

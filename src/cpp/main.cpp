@@ -23,6 +23,7 @@
 #include <memory>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #include "config.hpp"
 #include "utils/logger.hpp"
@@ -57,6 +58,10 @@ static void print_usage(const char* prog) {
         "                      Valid: postgresql,cockroachdb,redis,kafka,minio,\n"
         "                             mariadb,clickhouse,comdare-db\n"
         "  --grades LIST       Comma-separated grades (default: U0,U50,U90)\n"
+        "  --payload-types LIST Comma-separated payload types (default: synthetic)\n"
+        "                      Valid: random_binary,structured_json,text_document,\n"
+        "                             uuid_keys,jsonb_documents,nasa_image,\n"
+        "                             blender_video,gutenberg_text,github_events,mixed\n"
         "  --lab-schema NAME   Lab schema name (default: dedup_lab)\n"
         "  --generate-data     Generate synthetic test datasets before running\n"
         "  --num-files N       Files per duplication grade (default: 100)\n"
@@ -93,6 +98,7 @@ int main(int argc, char* argv[]) {
     std::string lab_schema = "dedup_lab";
     std::string systems_filter;
     std::string grades_filter;
+    std::string payload_types_filter;
     bool dry_run = false;
     bool generate_data = false;
     bool cleanup_only = false;
@@ -118,6 +124,8 @@ int main(int argc, char* argv[]) {
             systems_filter = argv[++i];
         } else if (std::strcmp(argv[i], "--grades") == 0 && i + 1 < argc) {
             grades_filter = argv[++i];
+        } else if (std::strcmp(argv[i], "--payload-types") == 0 && i + 1 < argc) {
+            payload_types_filter = argv[++i];
         } else if (std::strcmp(argv[i], "--lab-schema") == 0 && i + 1 < argc) {
             lab_schema = argv[++i];
         } else if (std::strcmp(argv[i], "--generate-data") == 0) {
@@ -158,9 +166,13 @@ int main(int argc, char* argv[]) {
         dcfg.num_files = num_files;
         dcfg.fixed_file_size = file_size;
         dcfg.seed = seed;
+        dcfg.data_sources = cfg.data_sources;
 
         dedup::DatasetGenerator gen(dcfg);
-        size_t total = gen.generate_all(data_dir, dedup::PayloadType::MIXED);
+        // Use first configured payload type, or MIXED if multiple
+        dedup::PayloadType gen_type = cfg.payload_types.size() == 1
+            ? cfg.payload_types[0] : dedup::PayloadType::MIXED;
+        size_t total = gen.generate_all(data_dir, gen_type);
         LOG_INF("Generated %zu files (%zu bytes) in %s",
             gen.total_files_written(), gen.total_bytes_written(), data_dir.c_str());
 
@@ -280,6 +292,18 @@ int main(int argc, char* argv[]) {
         if (grades_filter.find("U0") != std::string::npos) grades.push_back(dedup::DupGrade::U0);
         if (grades_filter.find("U50") != std::string::npos) grades.push_back(dedup::DupGrade::U50);
         if (grades_filter.find("U90") != std::string::npos) grades.push_back(dedup::DupGrade::U90);
+    }
+
+    // Parse payload types filter (doku.tex §6.3)
+    if (!payload_types_filter.empty()) {
+        cfg.payload_types.clear();
+        // Split by comma and parse each
+        std::string token;
+        std::istringstream stream(payload_types_filter);
+        while (std::getline(stream, token, ',')) {
+            cfg.payload_types.push_back(dedup::parse_payload_type(token));
+        }
+        LOG_INF("Payload types: %zu types selected", cfg.payload_types.size());
     }
 
     // Create lab schemas

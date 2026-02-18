@@ -5,6 +5,7 @@
     "results_dir": "results",
     "replica_count": 4,
     "dry_run": false,
+    "db_internal_metrics": true,
 
     "databases": [
         {
@@ -16,7 +17,9 @@
             "database": "postgres",
             "lab_schema": "dedup_lab",
             "pvc_name": "data-postgres-ha-0",
-            "k8s_namespace": "databases"
+            "k8s_namespace": "databases",
+            "max_experiment_bytes": 0,
+            "_comment": "50 GiB Longhorn PVC, replica 4"
         },
         {
             "system": "cockroachdb",
@@ -27,14 +30,18 @@
             "database": "dedup_lab",
             "lab_schema": "dedup_lab",
             "pvc_name": "datadir-cockroachdb-0",
-            "k8s_namespace": "cockroach-operator-system"
+            "k8s_namespace": "cockroach-operator-system",
+            "max_experiment_bytes": 53687091200,
+            "_comment": "125 GiB PVC shared with production. Experiment limited to 50 GiB."
         },
         {
             "system": "redis",
             "host": "redis-cluster.redis.svc.cluster.local",
             "port": 6379,
             "pvc_name": "data-redis-cluster-0",
-            "k8s_namespace": "redis"
+            "k8s_namespace": "redis",
+            "max_experiment_bytes": 0,
+            "_comment": "50 GiB Longhorn PVC, cluster mode, key prefix dedup:*"
         },
         {
             "system": "kafka",
@@ -42,39 +49,47 @@
             "port": 9092,
             "lab_schema": "dedup-lab",
             "pvc_name": "data-kafka-cluster-broker-0",
-            "k8s_namespace": "kafka"
+            "k8s_namespace": "kafka",
+            "max_experiment_bytes": 0,
+            "_comment": "50 GiB Longhorn PVC per broker, topic prefix dedup-lab-*"
         },
         {
             "system": "minio",
             "host": "minio-lb.minio.svc.cluster.local",
             "port": 9000,
-            "user": "dedup-lab",
+            "user": "dedup-lab-s3",
             "password": "",
             "lab_schema": "dedup-lab",
             "pvc_name": "",
             "k8s_namespace": "minio",
-            "_comment": "MinIO uses Direct Disk (no Longhorn PVC) -- no Longhorn metrics available"
+            "max_experiment_bytes": 0,
+            "_comment": "Direct Disk (no Longhorn PVC). LDAP Access Key."
         },
         {
             "system": "mariadb",
-            "host": "mariadb.databases.svc.cluster.local",
+            "host": "mariadb-lb.databases.svc.cluster.local",
             "port": 3306,
             "user": "dedup-lab",
             "password": "",
             "database": "dedup_lab",
             "lab_schema": "dedup_lab",
-            "pvc_name": "",
+            "pvc_name": "data-mariadb-0",
             "k8s_namespace": "databases",
-            "_comment": "TODO: MariaDB not yet deployed in K8s cluster"
+            "max_experiment_bytes": 0,
+            "_comment": "50 GiB Longhorn PVC, replica 4. TODO: deploy to K8s cluster."
         },
         {
             "system": "clickhouse",
-            "host": "clickhouse.databases.svc.cluster.local",
+            "host": "clickhouse-lb.databases.svc.cluster.local",
             "port": 8123,
+            "user": "dedup-lab",
+            "password": "",
+            "database": "dedup_lab",
             "lab_schema": "dedup_lab",
-            "pvc_name": "",
+            "pvc_name": "data-clickhouse-0",
             "k8s_namespace": "databases",
-            "_comment": "TODO: ClickHouse not yet deployed in K8s cluster"
+            "max_experiment_bytes": 0,
+            "_comment": "50 GiB Longhorn PVC, replica 4, HTTP API. TODO: deploy to K8s cluster."
         },
         {
             "system": "comdare-db",
@@ -83,22 +98,46 @@
             "lab_schema": "dedup_lab",
             "pvc_name": "",
             "k8s_namespace": "databases",
-            "_comment": "OPTIONAL: Requires cmake -DENABLE_COMDARE_DB=ON. Not yet deployed."
+            "max_experiment_bytes": 0,
+            "_comment": "OPTIONAL: Requires cmake -DENABLE_COMDARE_DB=ON. REST API metrics."
         }
     ],
 
     "dup_grades": ["U0", "U50", "U90"],
 
+    "payload_types": [
+        "random_binary",
+        "structured_json",
+        "text_document",
+        "uuid_keys",
+        "jsonb_documents"
+    ],
+
+    "data_sources": {
+        "cache_dir": "/tmp/dedup-datasets-cache",
+        "nasa_hudf_url": "https://stsci-opo.org/STScI-01EVST5CZG5BK2MAJQFCY2QHVS.tif",
+        "nasa_api_url": "https://images-api.nasa.gov",
+        "blender_urls": [
+            "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
+            "https://download.blender.org/durian/movies/Sintel.2010.1080p.mkv",
+            "https://download.blender.org/mango/download/ToS-4k-1920.mov"
+        ],
+        "gutenberg_ids": [1342, 2701],
+        "gutenberg_mirror": "https://www.gutenberg.org/cache/epub",
+        "gharchive_base_url": "https://data.gharchive.org/",
+        "_comment": "Real-world data sources from doku.tex §6.3. Downloaded + cached on first use."
+    },
+
     "prometheus": {
         "url": "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090",
-        "_comment": "kube-prometheus-stack in monitoring namespace"
+        "_comment": "TODO: deploy kube-prometheus-stack to monitoring namespace"
     },
 
     "grafana": {
         "url": "",
         "api_key": "",
         "dashboard_uid": "",
-        "_comment": "TODO: Grafana not yet deployed -- needs kube-prometheus-stack"
+        "_comment": "TODO: deploy Grafana with experiment dashboard"
     },
 
     "metrics_trace": {
@@ -107,7 +146,7 @@
         "events_topic": "dedup-lab-events",
         "sample_interval_ms": 100,
         "enabled": true,
-        "_comment": "100ms sampling for ALL DB metrics, persisted to Kafka + Grafana"
+        "_comment": "10 Hz sampling for ALL DB metrics, persisted to Kafka + Grafana"
     },
 
     "git_export": {
@@ -115,6 +154,6 @@
         "branch": "development",
         "auto_push": true,
         "ssl_verify": false,
-        "_comment": "Export results to GitLab BEFORE cleanup. GitLab uses self-signed cert."
+        "_comment": "Export results to GitLab BEFORE cleanup. Self-signed cert."
     }
 }

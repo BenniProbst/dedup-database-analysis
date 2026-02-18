@@ -1,15 +1,15 @@
 #pragma once
-// Generates synthetic test datasets with controlled duplication levels
-// as defined in doku.tex Chapter 5 (Experimental Design):
+// Generates test datasets with controlled duplication levels
+// as defined in doku.tex Chapter 6 (Experimental Design):
 //   U0  = unique (0% duplicates)
 //   U50 = 50% duplicates
 //   U90 = 90% duplicates
 //
-// Payload types:
-//   - random binary (simulates images/video)
-//   - structured JSON (simulates application data)
-//   - text (simulates documents)
-//   - UUID keys (high-entropy identifiers)
+// Supports both synthetic and real-world payload types (§6.3):
+//   Synthetic: random binary, structured JSON, text, UUID, JSONB
+//   Real-world: NASA images, Blender video, Gutenberg text, GH Archive
+//
+// PayloadType enum is defined in config.hpp.
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -23,14 +23,7 @@ struct DatasetConfig {
     size_t max_file_size = 1048576;   // 1 MB maximum
     size_t fixed_file_size = 0;       // If >0, override min/max with fixed size
     uint64_t seed = 42;              // PRNG seed for reproducibility
-};
-
-// Payload type for generated files
-enum class PayloadType {
-    RANDOM_BINARY,    // Pure random bytes (incompressible, like encrypted data)
-    STRUCTURED_JSON,  // JSON with known fields (compressible, semi-structured)
-    TEXT_DOCUMENT,    // ASCII text with word patterns (highly compressible)
-    MIXED             // Random mix of above types
+    DataSourceConfig data_sources;   // URLs for real-world data caching
 };
 
 class DatasetGenerator {
@@ -60,11 +53,20 @@ private:
     uint64_t next_u64();
     size_t random_size();
 
-    // Payload generators
+    // Synthetic payload generators
     std::vector<char> generate_random_binary(size_t size);
     std::vector<char> generate_json(size_t approx_size);
     std::vector<char> generate_text(size_t approx_size);
+    std::vector<char> generate_uuid_keys(size_t approx_size);
+    std::vector<char> generate_jsonb_document(size_t approx_size);
     std::vector<char> generate_payload(size_t size, PayloadType type);
+
+    // Real-world data source loaders (download + cache)
+    std::vector<char> load_cached_or_download(const std::string& url, const std::string& cache_key);
+    std::vector<char> load_nasa_image();
+    std::vector<char> load_blender_video();
+    std::vector<char> load_gutenberg_text();
+    std::vector<char> load_github_events();
 
     // Write file to disk
     bool write_file(const std::string& path, const std::vector<char>& data);

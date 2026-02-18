@@ -5,6 +5,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace dedup {
@@ -156,6 +157,147 @@ std::vector<char> DatasetGenerator::generate_text(size_t approx_size) {
     return {text.begin(), text.end()};
 }
 
+// ---- UUID key generator (§6.3 "UUID / GUID identifiers") ----
+
+std::vector<char> DatasetGenerator::generate_uuid_keys(size_t approx_size) {
+    // Generate a batch of UUID v4 strings, one per line
+    std::string result;
+    result.reserve(approx_size + 64);
+    while (result.size() < approx_size) {
+        // UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+        uint64_t a = next_u64(), b = next_u64();
+        char buf[48];
+        std::snprintf(buf, sizeof(buf),
+            "%08x-%04x-4%03x-%04x-%012llx\n",
+            static_cast<uint32_t>(a >> 32),
+            static_cast<uint16_t>(a >> 16),
+            static_cast<uint16_t>(a) & 0x0FFF,
+            static_cast<uint16_t>((b >> 48) & 0x3FFF) | 0x8000,
+            static_cast<unsigned long long>(b & 0xFFFFFFFFFFFFULL));
+        result += buf;
+    }
+    return {result.begin(), result.end()};
+}
+
+// ---- JSONB document generator (§6.3 "JSON / JSONB payloads") ----
+
+std::vector<char> DatasetGenerator::generate_jsonb_document(size_t approx_size) {
+    // Generate nested JSON documents with varied structure (semi-structured)
+    static const char* event_types[] = {
+        "page_view", "click", "purchase", "signup", "logout",
+        "search", "comment", "upload", "download", "share"
+    };
+    static const char* user_agents[] = {
+        "Mozilla/5.0", "Chrome/120.0", "Safari/17.2",
+        "Edge/120.0", "Firefox/121.0", "curl/8.5"
+    };
+
+    std::ostringstream oss;
+    oss << "{\n";
+    oss << "  \"event_id\": \"" << std::hex << next_u64() << std::dec << "\",\n";
+    oss << "  \"type\": \"" << event_types[next_u64() % 10] << "\",\n";
+    oss << "  \"timestamp\": " << (1700000000 + next_u64() % 100000000) << ",\n";
+    oss << "  \"user\": {\n";
+    oss << "    \"id\": " << (next_u64() % 1000000) << ",\n";
+    oss << "    \"session\": \"" << std::hex << next_u64() << next_u64() << std::dec << "\",\n";
+    oss << "    \"agent\": \"" << user_agents[next_u64() % 6] << "\"\n";
+    oss << "  },\n";
+    oss << "  \"payload\": {\n";
+
+    // Variable-depth nested properties to reach target size
+    size_t current = oss.str().size();
+    int depth = 0;
+    while (current < approx_size - 100) {
+        if (depth > 0 && next_u64() % 4 == 0) {
+            oss << "    },\n";
+            depth--;
+        } else if (depth < 3 && next_u64() % 3 == 0) {
+            oss << "    \"nested_" << (next_u64() % 100) << "\": {\n";
+            depth++;
+        } else {
+            oss << "    \"field_" << (next_u64() % 10000) << "\": ";
+            uint64_t choice = next_u64() % 4;
+            if (choice == 0) oss << (next_u64() % 999999);
+            else if (choice == 1) oss << "\"val_" << std::hex << next_u64() << std::dec << "\"";
+            else if (choice == 2) oss << (next_u64() % 2 ? "true" : "false");
+            else oss << (static_cast<double>(next_u64() % 100000) / 100.0);
+            oss << ",\n";
+        }
+        current = oss.str().size();
+    }
+    while (depth-- > 0) oss << "    },\n";
+    oss << "    \"checksum\": \"" << std::hex << next_u64() << std::dec << "\"\n";
+    oss << "  }\n";
+    oss << "}\n";
+
+    std::string s = oss.str();
+    return {s.begin(), s.end()};
+}
+
+// ---- Real-world data loaders (download + cache) ----
+
+std::vector<char> DatasetGenerator::load_cached_or_download(
+    const std::string& url, const std::string& cache_key) {
+    // Check cache first
+    std::string cache_path = cfg_.data_sources.cache_dir + "/" + cache_key;
+    std::ifstream cached(cache_path, std::ios::binary | std::ios::ate);
+    if (cached.is_open()) {
+        auto size = cached.tellg();
+        cached.seekg(0);
+        std::vector<char> data(static_cast<size_t>(size));
+        cached.read(data.data(), size);
+        LOG_INF("[datagen] Cache hit: %s (%zu bytes)", cache_key.c_str(), data.size());
+        return data;
+    }
+
+    // Download via curl (available in K8s runner image)
+    LOG_INF("[datagen] Downloading: %s -> %s", url.c_str(), cache_path.c_str());
+    fs::create_directories(cfg_.data_sources.cache_dir);
+    std::string cmd = "curl -sL -o \"" + cache_path + "\" \"" + url + "\"";
+    int rc = std::system(cmd.c_str());
+    if (rc != 0) {
+        LOG_ERR("[datagen] Download failed (rc=%d): %s", rc, url.c_str());
+        return {};
+    }
+
+    // Read downloaded file
+    std::ifstream downloaded(cache_path, std::ios::binary | std::ios::ate);
+    if (!downloaded.is_open()) return {};
+    auto size = downloaded.tellg();
+    downloaded.seekg(0);
+    std::vector<char> data(static_cast<size_t>(size));
+    downloaded.read(data.data(), size);
+    LOG_INF("[datagen] Downloaded: %s (%zu bytes)", cache_key.c_str(), data.size());
+    return data;
+}
+
+std::vector<char> DatasetGenerator::load_nasa_image() {
+    return load_cached_or_download(cfg_.data_sources.nasa_hudf_url, "nasa_hudf.tif");
+}
+
+std::vector<char> DatasetGenerator::load_blender_video() {
+    if (cfg_.data_sources.blender_urls.empty()) return {};
+    size_t idx = next_u64() % cfg_.data_sources.blender_urls.size();
+    const auto& url = cfg_.data_sources.blender_urls[idx];
+    return load_cached_or_download(url, "blender_" + std::to_string(idx) + ".mp4");
+}
+
+std::vector<char> DatasetGenerator::load_gutenberg_text() {
+    if (cfg_.data_sources.gutenberg_ids.empty()) return {};
+    int gid = cfg_.data_sources.gutenberg_ids[next_u64() % cfg_.data_sources.gutenberg_ids.size()];
+    std::string url = cfg_.data_sources.gutenberg_mirror + "/" + std::to_string(gid) +
+                      "/pg" + std::to_string(gid) + ".txt";
+    return load_cached_or_download(url, "gutenberg_" + std::to_string(gid) + ".txt");
+}
+
+std::vector<char> DatasetGenerator::load_github_events() {
+    // Download a single hour of GH Archive data (JSON lines, ~50-200 MB compressed)
+    std::string url = cfg_.data_sources.gharchive_base_url + "2024-01-01-0.json.gz";
+    return load_cached_or_download(url, "gharchive_2024-01-01-0.json.gz");
+}
+
+// ---- Payload dispatch ----
+
 std::vector<char> DatasetGenerator::generate_payload(size_t size, PayloadType type) {
     switch (type) {
         case PayloadType::RANDOM_BINARY:
@@ -164,11 +306,26 @@ std::vector<char> DatasetGenerator::generate_payload(size_t size, PayloadType ty
             return generate_json(size);
         case PayloadType::TEXT_DOCUMENT:
             return generate_text(size);
+        case PayloadType::UUID_KEYS:
+            return generate_uuid_keys(size);
+        case PayloadType::JSONB_DOCUMENTS:
+            return generate_jsonb_document(size);
+        case PayloadType::NASA_IMAGE:
+            return load_nasa_image();
+        case PayloadType::BLENDER_VIDEO:
+            return load_blender_video();
+        case PayloadType::GUTENBERG_TEXT:
+            return load_gutenberg_text();
+        case PayloadType::GITHUB_EVENTS:
+            return load_github_events();
         case PayloadType::MIXED: {
-            uint64_t choice = next_u64() % 3;
+            // Mix across all synthetic types (real-world only if explicitly requested)
+            uint64_t choice = next_u64() % 5;
             if (choice == 0) return generate_random_binary(size);
             if (choice == 1) return generate_json(size);
-            return generate_text(size);
+            if (choice == 2) return generate_text(size);
+            if (choice == 3) return generate_uuid_keys(size);
+            return generate_jsonb_document(size);
         }
     }
     return generate_random_binary(size);
