@@ -110,8 +110,13 @@
         "structured_json",
         "text_document",
         "uuid_keys",
-        "jsonb_documents"
+        "jsonb_documents",
+        "nasa_image",
+        "blender_video",
+        "gutenberg_text",
+        "github_events"
     ],
+    "_payload_types_comment": "Full factorial: each type gets own data_dir/{type}/{U0,U50,U90}/",
 
     "data_sources": {
         "cache_dir": "/tmp/dedup-datasets-cache",
