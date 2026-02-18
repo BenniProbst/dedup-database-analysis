@@ -73,13 +73,14 @@ latex:compile:
     expire_in: 30 days
     when: always
   rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - changes:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+      changes:
         - "docs/**/*.tex"
         - "docs/**/*.bib"
         - "docs/**/*.cls"
         - "docs/**/*.bst"
         - "docs/Makefile"
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
 
 # =============================================================================
 # Docker Image Build (optional, manual -- uses Kaniko for K8s runners)
@@ -156,7 +157,8 @@ cpp:build:
     expire_in: 30 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - changes:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
         - "src/cpp/**/*.h"
@@ -205,7 +207,8 @@ cpp:smoke-test:
       echo "=== Smoke Test PASSED ==="
   rules:
     - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - changes:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
         - "src/cpp/**/*.h"
@@ -248,7 +251,8 @@ cpp:full-dry-test:
     expire_in: 7 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - changes:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
         - "src/cpp/**/*.h"
