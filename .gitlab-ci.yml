@@ -73,6 +73,7 @@ latex:compile:
     expire_in: 30 days
     when: always
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
     - changes:
         - "docs/**/*.tex"
         - "docs/**/*.bib"
@@ -154,6 +155,7 @@ cpp:build:
       - build/dedup-smoke-test
     expire_in: 30 days
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
     - changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
@@ -202,6 +204,7 @@ cpp:smoke-test:
 
       echo "=== Smoke Test PASSED ==="
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
     - changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
@@ -244,6 +247,7 @@ cpp:full-dry-test:
       - results/
     expire_in: 7 days
   rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
     - changes:
         - "src/cpp/**/*.cpp"
         - "src/cpp/**/*.hpp"
@@ -343,7 +347,7 @@ experiment:run:
             "system": "cockroachdb",
             "host": "cockroachdb-public.cockroach-operator-system.svc.cluster.local",
             "port": 26257,
-            "user": "dedup-lab",
+            "user": "dedup_lab",
             "password": "${DEDUP_CRDB_PASSWORD}",
             "database": "${LAB_SCHEMA}",
             "lab_schema": "${LAB_SCHEMA}",

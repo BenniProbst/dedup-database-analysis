@@ -149,7 +149,7 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
          "data-postgres-ha-0", "databases"},
 
         {DbSystem::COCKROACHDB, "cockroachdb-public.cockroach-operator-system.svc.cluster.local", 26257,
-         cfg.lab_user, "", "dedup_lab", "dedup_lab",
+         "dedup_lab", "", "dedup_lab", "dedup_lab",  // CockroachDB: underscore (no dash in usernames!)
          "datadir-cockroachdb-0", "cockroach-operator-system"},
 
         {DbSystem::REDIS, "redis-cluster.redis.svc.cluster.local", 6379,
