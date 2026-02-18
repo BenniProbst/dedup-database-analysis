@@ -14,6 +14,7 @@ namespace dedup {
 nlohmann::json ExperimentResult::to_json() const {
     nlohmann::json j = {
         {"system", system},
+        {"payload_type", payload_type},
         {"dup_grade", dup_grade},
         {"stage", stage},
         {"duration_ns", duration_ns},
@@ -81,16 +82,19 @@ ExperimentResult DataLoader::run_stage(
     Stage stage,
     DupGrade grade,
     const std::string& data_dir,
-    const std::string& lab_schema) {
+    const std::string& lab_schema,
+    PayloadType payload_type) {
 
     ExperimentResult result;
     result.system = connector.system_name();
+    result.payload_type = payload_type_str(payload_type);
     result.dup_grade = dup_grade_str(grade);
     result.stage = stage_str(stage);
     result.replica_count = replica_count_;
     result.timestamp = current_timestamp();
 
-    LOG_INF("=== %s / %s / %s ===", result.system.c_str(), result.dup_grade.c_str(), result.stage.c_str());
+    LOG_INF("=== %s / %s / %s / %s ===", result.system.c_str(),
+        result.payload_type.c_str(), result.dup_grade.c_str(), result.stage.c_str());
 
     // Check per-DB experiment size limit (e.g. CockroachDB: 50 GiB)
     if (db_conn.max_experiment_bytes > 0) {
@@ -227,17 +231,17 @@ ExperimentResult DataLoader::run_stage(
             result.bytes_logical, result.phys_delta, replica_count_);
     }
 
-    // Push metrics to Grafana
+    // Push metrics to Grafana (with payload_type dimension)
     metrics_.push_metric("dedup_duration_ms",
         static_cast<double>(result.duration_ns) / 1e6,
-        result.system, result.dup_grade, result.stage);
+        result.system, result.payload_type, result.dup_grade, result.stage);
     metrics_.push_metric("dedup_edr", result.edr,
-        result.system, result.dup_grade, result.stage);
+        result.system, result.payload_type, result.dup_grade, result.stage);
     metrics_.push_metric("dedup_phys_delta_bytes",
         static_cast<double>(result.phys_delta),
-        result.system, result.dup_grade, result.stage);
+        result.system, result.payload_type, result.dup_grade, result.stage);
     metrics_.push_metric("dedup_throughput_bps", result.throughput_bytes_per_sec,
-        result.system, result.dup_grade, result.stage);
+        result.system, result.payload_type, result.dup_grade, result.stage);
 
     LOG_INF("Result: %lld rows, %lld logical bytes, phys_delta=%lld, %lld ms, EDR=%.3f, %.1f MB/s",
         result.rows_affected, result.bytes_logical, result.phys_delta,
@@ -252,46 +256,48 @@ std::vector<ExperimentResult> DataLoader::run_full_experiment(
     const DbConnection& db_conn,
     const std::string& data_dir,
     const std::string& lab_schema,
-    const std::vector<DupGrade>& grades) {
+    const std::vector<DupGrade>& grades,
+    PayloadType payload_type) {
 
     std::vector<ExperimentResult> results;
 
-    LOG_INF("=== FULL EXPERIMENT: %s ===", connector.system_name());
+    LOG_INF("=== FULL EXPERIMENT: %s / %s ===", connector.system_name(), payload_type_str(payload_type));
     LOG_INF("PVC: %s (namespace: %s)", db_conn.pvc_name.c_str(), db_conn.k8s_namespace.c_str());
 
     for (auto grade : grades) {
-        LOG_INF("--- Grade: %s ---", dup_grade_str(grade));
+        LOG_INF("--- %s / Grade: %s ---", payload_type_str(payload_type), dup_grade_str(grade));
 
         // Reset lab schema before each grade
         connector.reset_lab_schema(lab_schema);
 
         // Stage 1: Bulk Insert
-        results.push_back(run_stage(connector, db_conn, Stage::BULK_INSERT, grade, data_dir, lab_schema));
+        results.push_back(run_stage(connector, db_conn, Stage::BULK_INSERT, grade, data_dir, lab_schema, payload_type));
 
         // Reset for Stage 2
         connector.reset_lab_schema(lab_schema);
 
         // Stage 2: Per-File Insert
-        results.push_back(run_stage(connector, db_conn, Stage::PERFILE_INSERT, grade, data_dir, lab_schema));
+        results.push_back(run_stage(connector, db_conn, Stage::PERFILE_INSERT, grade, data_dir, lab_schema, payload_type));
 
         // Stage 3a: Per-File Delete
-        results.push_back(run_stage(connector, db_conn, Stage::PERFILE_DELETE, grade, data_dir, lab_schema));
+        results.push_back(run_stage(connector, db_conn, Stage::PERFILE_DELETE, grade, data_dir, lab_schema, payload_type));
 
         // Stage 3b: Maintenance (VACUUM FULL / compaction / retention)
-        results.push_back(run_stage(connector, db_conn, Stage::MAINTENANCE, grade, data_dir, lab_schema));
+        results.push_back(run_stage(connector, db_conn, Stage::MAINTENANCE, grade, data_dir, lab_schema, payload_type));
 
         // Reset after each grade run
         connector.reset_lab_schema(lab_schema);
-        LOG_INF("Lab schema reset after %s run", dup_grade_str(grade));
+        LOG_INF("Lab schema reset after %s / %s run", payload_type_str(payload_type), dup_grade_str(grade));
     }
 
-    // Save per-system results to JSON
+    // Save per-system per-payload results to JSON
     nlohmann::json j_results = nlohmann::json::array();
     for (const auto& r : results) {
         j_results.push_back(r.to_json());
     }
 
-    std::string outpath = "results/" + std::string(connector.system_name()) + "_results.json";
+    std::string outpath = "results/" + std::string(connector.system_name()) +
+        "_" + payload_type_str(payload_type) + "_results.json";
     std::ofstream out(outpath);
     if (out.is_open()) {
         out << j_results.dump(2);

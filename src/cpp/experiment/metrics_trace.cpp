@@ -56,12 +56,13 @@ std::string MetricPoint::to_json() const {
 
 std::string ExperimentEvent::to_json() const {
     nlohmann::json j;
-    j["ts"]        = timestamp_ms;
-    j["event"]     = event_type;
-    j["system"]    = system;
-    j["dup_grade"] = dup_grade;
-    j["stage"]     = stage;
-    j["detail"]    = detail;
+    j["ts"]           = timestamp_ms;
+    j["event"]        = event_type;
+    j["system"]       = system;
+    j["payload_type"] = payload_type;
+    j["dup_grade"]    = dup_grade;
+    j["stage"]        = stage;
+    j["detail"]       = detail;
     return j.dump();
 }
 

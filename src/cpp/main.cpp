@@ -171,27 +171,36 @@ int main(int argc, char* argv[]) {
     cfg.lab_schema = lab_schema;
     cfg.dry_run = dry_run;
 
-    // Generate datasets if requested
+    // Generate datasets if requested (one subdirectory per payload type)
+    // Directory structure: data_dir/{payload_type}/{U0,U50,U90}/
     if (generate_data) {
         LOG_INF("=== DATASET GENERATION ===");
+        LOG_INF("Generating datasets for %zu payload types", cfg.payload_types.size());
+
         dedup::DatasetConfig dcfg;
         dcfg.num_files = num_files;
         dcfg.fixed_file_size = file_size;
         dcfg.seed = seed;
         dcfg.data_sources = cfg.data_sources;
 
-        dedup::DatasetGenerator gen(dcfg);
-        // Use first configured payload type, or MIXED if multiple
-        dedup::PayloadType gen_type = cfg.payload_types.size() == 1
-            ? cfg.payload_types[0] : dedup::PayloadType::MIXED;
-        size_t total = gen.generate_all(data_dir, gen_type);
-        LOG_INF("Generated %zu files (%zu bytes) in %s",
-            gen.total_files_written(), gen.total_bytes_written(), data_dir.c_str());
+        size_t total_all = 0;
+        for (auto pt : cfg.payload_types) {
+            std::string pt_dir = data_dir + "/" + dedup::payload_type_str(pt);
+            LOG_INF("Generating %s datasets in %s", dedup::payload_type_str(pt), pt_dir.c_str());
 
-        if (total == 0) {
+            dedup::DatasetGenerator gen(dcfg);
+            size_t total = gen.generate_all(pt_dir, pt);
+            LOG_INF("  %s: %zu files (%zu bytes)",
+                dedup::payload_type_str(pt), gen.total_files_written(), gen.total_bytes_written());
+            total_all += total;
+        }
+
+        if (total_all == 0) {
             LOG_ERR("Dataset generation failed!");
             return 1;
         }
+        LOG_INF("Total: %zu files generated across %zu payload types",
+            total_all, cfg.payload_types.size());
     }
 
     // Create results directory
@@ -318,34 +327,56 @@ int main(int argc, char* argv[]) {
                 dedup::collectors::for_system(entry.db_conn.system));
         }
         trace.start();
-        trace.publish_event({dedup::now_ms(), "experiment_start", "", "", "",
-            "{\"systems\":" + std::to_string(entries.size()) + "}"});
+        trace.publish_event({dedup::now_ms(), "experiment_start", "", "", "", "",
+            "{\"systems\":" + std::to_string(entries.size()) +
+            ",\"payload_types\":" + std::to_string(cfg.payload_types.size()) + "}"});
     }
 
-    // Run experiments — pass DbConnection for PVC/Longhorn mapping
+    // Run experiments -- full factorial: payload_type × system × grade × stage
+    // Directory structure: data_dir/{payload_type}/{U0,U50,U90}/
     dedup::DataLoader loader(schema_mgr, metrics, cfg.replica_count, cfg.db_internal_metrics);
     std::vector<dedup::ExperimentResult> all_results;
 
-    for (auto& entry : entries) {
+    LOG_INF("=== EXPERIMENT MATRIX: %zu payload types x %zu systems x %zu grades x %zu stages ===",
+        cfg.payload_types.size(), entries.size(), grades.size(), cfg.stages.size());
+
+    for (auto pt : cfg.payload_types) {
+        std::string pt_data_dir = data_dir + "/" + dedup::payload_type_str(pt);
+        LOG_INF("=== PAYLOAD TYPE: %s (data: %s) ===", dedup::payload_type_str(pt), pt_data_dir.c_str());
+
         if (cfg.metrics_trace.enabled) {
-            trace.publish_event({dedup::now_ms(), "system_start",
-                dedup::db_system_str(entry.db_conn.system), "", "", ""});
+            trace.publish_event({dedup::now_ms(), "payload_start", "",
+                dedup::payload_type_str(pt), "", "", ""});
         }
 
-        auto results = loader.run_full_experiment(
-            *entry.connector, entry.db_conn, data_dir, lab_schema, grades);
-        all_results.insert(all_results.end(), results.begin(), results.end());
+        for (auto& entry : entries) {
+            if (cfg.metrics_trace.enabled) {
+                trace.publish_event({dedup::now_ms(), "system_start",
+                    dedup::db_system_str(entry.db_conn.system),
+                    dedup::payload_type_str(pt), "", "", ""});
+            }
+
+            auto results = loader.run_full_experiment(
+                *entry.connector, entry.db_conn, pt_data_dir, lab_schema, grades, pt);
+            all_results.insert(all_results.end(), results.begin(), results.end());
+
+            if (cfg.metrics_trace.enabled) {
+                trace.publish_event({dedup::now_ms(), "system_end",
+                    dedup::db_system_str(entry.db_conn.system),
+                    dedup::payload_type_str(pt), "", "",
+                    "{\"runs\":" + std::to_string(results.size()) + "}"});
+            }
+        }
 
         if (cfg.metrics_trace.enabled) {
-            trace.publish_event({dedup::now_ms(), "system_end",
-                dedup::db_system_str(entry.db_conn.system), "", "",
-                "{\"runs\":" + std::to_string(results.size()) + "}"});
+            trace.publish_event({dedup::now_ms(), "payload_end", "",
+                dedup::payload_type_str(pt), "", "", ""});
         }
     }
 
     // Stop MetricsTrace background thread
     if (cfg.metrics_trace.enabled) {
-        trace.publish_event({dedup::now_ms(), "experiment_end", "", "", "",
+        trace.publish_event({dedup::now_ms(), "experiment_end", "", "", "", "",
             "{\"total_runs\":" + std::to_string(all_results.size()) + "}"});
         trace.stop();
         LOG_INF("MetricsTrace: %lld metrics, %lld events published",
@@ -391,15 +422,15 @@ int main(int argc, char* argv[]) {
     LOG_INF("Total runs: %zu", all_results.size());
     LOG_INF("Results: %s", combined_path.c_str());
 
-    // Print summary table (doku.tex metrics: duration, logical bytes, physical delta, EDR, throughput, latency)
-    std::printf("\n%-13s %-4s %-15s %10s %12s %12s %7s %10s %10s %10s %10s\n",
-        "System", "Dup", "Stage", "Time(ms)", "Logical(B)", "PhysDelta", "EDR", "MB/s",
+    // Print summary table (doku.tex metrics: payload, duration, logical bytes, physical delta, EDR, throughput, latency)
+    std::printf("\n%-13s %-16s %-4s %-15s %10s %12s %12s %7s %10s %10s %10s %10s\n",
+        "System", "Payload", "Dup", "Stage", "Time(ms)", "Logical(B)", "PhysDelta", "EDR", "MB/s",
         "p50(us)", "p95(us)", "p99(us)");
-    std::printf("%.135s\n",
-        "---------------------------------------------------------------------------------------------------------------------------------------");
+    std::printf("%.160s\n",
+        "----------------------------------------------------------------------------------------------------------------------------------------------------------------");
     for (const auto& r : all_results) {
-        std::printf("%-13s %-4s %-15s %10lld %12lld %12lld %7.3f %10.1f",
-            r.system.c_str(), r.dup_grade.c_str(), r.stage.c_str(),
+        std::printf("%-13s %-16s %-4s %-15s %10lld %12lld %12lld %7.3f %10.1f",
+            r.system.c_str(), r.payload_type.c_str(), r.dup_grade.c_str(), r.stage.c_str(),
             r.duration_ns / 1000000, r.bytes_logical, r.phys_delta,
             r.edr, r.throughput_bytes_per_sec / (1024.0 * 1024.0));
         if (r.latency_count > 0) {

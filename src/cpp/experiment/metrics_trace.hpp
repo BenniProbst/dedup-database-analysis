@@ -49,6 +49,7 @@ struct ExperimentEvent {
     int64_t timestamp_ms;
     std::string event_type;     // "stage_start", "stage_end", "error", "experiment_start", "experiment_end"
     std::string system;
+    std::string payload_type;   // Payload type (doku.tex §6.3)
     std::string dup_grade;
     std::string stage;
     std::string detail;         // JSON payload with extra info

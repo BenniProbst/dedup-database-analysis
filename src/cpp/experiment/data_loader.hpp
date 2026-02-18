@@ -11,9 +11,10 @@
 
 namespace dedup {
 
-// Result of a full experiment run (one system, one dup grade, one stage)
+// Result of a full experiment run (one system, one payload type, one dup grade, one stage)
 struct ExperimentResult {
     std::string system;
+    std::string payload_type;       // Payload type (doku.tex §6.3)
     std::string dup_grade;
     std::string stage;
     int64_t duration_ns = 0;
@@ -55,22 +56,24 @@ public:
         : schema_mgr_(schema_mgr), metrics_(metrics),
           replica_count_(replica_count), db_internal_metrics_(db_internal_metrics) {}
 
-    // Run a full experiment: all stages, all dup grades, for one connector
+    // Run a full experiment: all stages, all dup grades, for one connector and payload type
     std::vector<ExperimentResult> run_full_experiment(
         DbConnector& connector,
         const DbConnection& db_conn,
         const std::string& data_dir,
         const std::string& lab_schema,
-        const std::vector<DupGrade>& grades);
+        const std::vector<DupGrade>& grades,
+        PayloadType payload_type = PayloadType::MIXED);
 
-    // Run a single stage for one connector and dup grade
+    // Run a single stage for one connector, payload type, and dup grade
     ExperimentResult run_stage(
         DbConnector& connector,
         const DbConnection& db_conn,
         Stage stage,
         DupGrade grade,
         const std::string& data_dir,
-        const std::string& lab_schema);
+        const std::string& lab_schema,
+        PayloadType payload_type = PayloadType::MIXED);
 
 private:
     SchemaManager& schema_mgr_;

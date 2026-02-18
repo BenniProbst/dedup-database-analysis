@@ -21,8 +21,8 @@ public:
 
     // Push a metric data point to Grafana (via Prometheus pushgateway or direct)
     bool push_metric(const std::string& metric_name, double value,
-                     const std::string& db_system, const std::string& dup_grade,
-                     const std::string& stage);
+                     const std::string& db_system, const std::string& payload_type,
+                     const std::string& dup_grade, const std::string& stage);
 
     // Query MinIO physical bucket size via MinIO Prometheus endpoint
     // Used when MinIO has no Longhorn PVC (Direct Disk)

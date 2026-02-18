@@ -131,16 +131,17 @@ int64_t MetricsCollector::get_minio_physical_size(const std::string& minio_endpo
 }
 
 bool MetricsCollector::push_metric(const std::string& metric_name, double value,
-                                     const std::string& db_system, const std::string& dup_grade,
-                                     const std::string& stage) {
+                                     const std::string& db_system, const std::string& payload_type,
+                                     const std::string& dup_grade, const std::string& stage) {
     if (grafana_.url.empty()) {
         LOG_DBG("[metrics] No Grafana endpoint configured, skipping push");
         return false;
     }
 
 #ifdef DEDUP_DRY_RUN
-    LOG_INF("[metrics] DRY RUN push: %s{db=%s,grade=%s,stage=%s} = %.3f",
-        metric_name.c_str(), db_system.c_str(), dup_grade.c_str(), stage.c_str(), value);
+    LOG_INF("[metrics] DRY RUN push: %s{db=%s,payload=%s,grade=%s,stage=%s} = %.3f",
+        metric_name.c_str(), db_system.c_str(), payload_type.c_str(),
+        dup_grade.c_str(), stage.c_str(), value);
     return true;
 #endif
 
@@ -148,8 +149,10 @@ bool MetricsCollector::push_metric(const std::string& metric_name, double value,
     CURL* curl = curl_easy_init();
     if (!curl) return false;
 
+    const std::string& pt = payload_type.empty() ? "unknown" : payload_type;
     std::string url = grafana_.url + "/metrics/job/dedup-test"
                       "/db_system/" + db_system
+                      + "/payload_type/" + pt
                       + "/dup_grade/" + dup_grade
                       + "/stage/" + stage;
 
