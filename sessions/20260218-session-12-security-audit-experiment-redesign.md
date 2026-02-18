@@ -516,3 +516,334 @@ ssh -i ~/.ssh/pve1 root@192.168.178.44 "kubectl get pods -n databases --no-heade
 - **MinIO:** LDAP Access Key `dedup-lab-s3`, NICHT lokaler User
 - **Longhorn Replicas:** 4 (EDR_replica = physical/4)
 - **MinIO = Direct Disk:** Kein Longhorn PVC, Prometheus-Endpoint fuer Size
+
+---
+
+# ===================================================================
+# FORTSETZUNG: Session 12, Kontext 2 (nach Context-Compaction)
+# Datum: 2026-02-18 ~19:00-19:35 UTC
+# ===================================================================
+
+## 11. doku.tex Infrastruktur-Alignment (Commit `6915178`)
+
+Fuenf gezielte Aenderungen an doku.tex, um das Forschungsdokument mit der
+tatsaechlichen K8s-Cluster-Infrastruktur in Einklang zu bringen:
+
+### 11.1 PVC-Groesse korrigiert (Zeile 182)
+- **Vorher:** "PVC of 100 GiB"
+- **Nachher:** "PVC of 50 GiB" + MinIO-Ausnahme (Direct Disk, kein Longhorn PVC)
+
+### 11.2 Longhorn Replica vs. DB Replica: Bruecke geschlagen (Zeile 184)
+Neuer Absatz erklaert die Beziehung zwischen Longhorn-Storage-Replikation (N=4,
+Block-Level, auf allen 4 Nodes synchron) und anwendungsseitiger DB-Replikation.
+Kernaussage: Longhorn entkoppelt Storage-Replikation von der DB-eigenen Replikation
+(PG Streaming, CRDB Raft, Kafka ISR). Jede DB sieht ein logisches Volume, Longhorn
+verwaltet transparent 4 physische Kopien.
+
+### 11.3 comdare-DB Beschreibung aktualisiert
+- **Vorher:** "black box"
+- **Nachher:** "REST API endpoint + empirical comparison"
+
+### 11.4 CockroachDB 125 GiB PVC dokumentiert
+CockroachDB teilt seinen 125 GiB PVC mit Produktionsdaten. Experimente sind auf
+50 GiB begrenzt (`max_experiment_bytes = 53687091200`). Produktionsdaten werden
+NIEMALS beruehrt.
+
+### 11.5 Neuer Paragraph: Database-internal Instrumentation (doku.tex §6.5)
+~30 Zeilen LaTeX mit per-DB internen Mess-Tools:
+
+| System | Interne Messung |
+|--------|----------------|
+| PostgreSQL | `pg_total_relation_size()`, `pg_statio_all_tables` (TOAST), `pg_stat_statements` |
+| CockroachDB | `crdb_internal.kv_store_status`, `SHOW RANGES span_stats` |
+| Redis | `MEMORY STATS` Dekomposition, `LATENCY` Subsystem |
+| Kafka | JMX `RequestMetrics` 5-Komponenten-Timing |
+| MinIO | `minio_s3_ttfb_seconds_distribution` |
+| MariaDB | `INNODB_TABLESPACES FILE_SIZE/ALLOCATED_SIZE`, `performance_schema` |
+| ClickHouse | `system.columns` Kompressionsverhaeltnis, `system.query_log ProfileEvents` |
+
+---
+
+## 12. config.hpp + Datagen Komplett-Redesign (Commit `a67d234`)
+
+### 12.1 config.hpp (268 → 477 LOC, +209 LOC)
+
+**PayloadType Enum** (von dataset_generator.hpp hierher verschoben):
+```
+RANDOM_BINARY, STRUCTURED_JSON, TEXT_DOCUMENT, UUID_KEYS, JSONB_DOCUMENTS,
+NASA_IMAGE, BLENDER_VIDEO, GUTENBERG_TEXT, GITHUB_EVENTS, MIXED
+```
+5 synthetische + 4 realweltliche + 1 Composite = 10 Typen.
+
+**Neue Structs:**
+- `DataSourceConfig` — URLs fuer NASA, Blender, Gutenberg, GH Archive + Cache-Dir
+- `DbConnection.max_experiment_bytes` — Per-DB Experimentlimit (CRDB: 50 GiB)
+- `ExperimentConfig.payload_types` — Konfigurierbare Payload-Typ-Liste
+- `ExperimentConfig.data_sources` — Realweltdaten-Quellen
+- `ExperimentConfig.db_internal_metrics` — Toggle fuer doku.tex §6.5
+
+**Hilfsfunktionen:**
+- `payload_type_str()`, `parse_payload_type()`, `is_real_world_payload()`, `dup_grade_ratio()`
+
+### 12.2 dataset_generator.hpp (76 → 76 LOC, umstrukturiert)
+- PayloadType Enum ENTFERNT (jetzt in config.hpp)
+- `DatasetConfig` erhaelt `DataSourceConfig data_sources`
+- Neue Methoden: `generate_uuid_keys()`, `generate_jsonb_document()`
+- Neue Methoden: `load_cached_or_download()`, `load_nasa_image()`,
+  `load_blender_video()`, `load_gutenberg_text()`, `load_github_events()`
+
+### 12.3 dataset_generator.cpp (+161 LOC)
+- UUID v4 Generator (128-bit Random mit Version/Variant Bits)
+- Nested JSONB Document Generator (verschachtelte JSON-Objekte mit Arrays)
+- `load_cached_or_download()`: Generischer Download+Cache via `curl` Systemprozess
+- 4 realweltliche Loader (NASA, Blender, Gutenberg, GH Archive)
+- Erweiterter `generate_payload()` Switch mit allen 10 PayloadType-Werten
+
+### 12.4 data_loader.cpp (+12 LOC)
+- `max_experiment_bytes` Guard am Anfang von `run_stage()`:
+  Prueft aktuelle DB-Groesse gegen Limit, ueberspringt Stage bei Ueberschreitung
+
+### 12.5 main.cpp (+26 LOC)
+- Neues `--payload-types` CLI-Flag mit Komma-Parsing via `std::istringstream`
+- `DatasetConfig.data_sources` wird aus `ExperimentConfig` befuellt
+
+### 12.6 config.example.json (komplett neugeschrieben)
+Alle neuen Felder dokumentiert: `max_experiment_bytes`, `payload_types`,
+`data_sources` mit URLs, `db_internal_metrics`, `prometheus`, `grafana`,
+`metrics_trace`, `git_export`.
+
+---
+
+## 13. DB-Internal Instrumentation Collectors (Commit `d23841f`, +703 LOC)
+
+### 13.1 Neue Dateien: db_internal_metrics.hpp/cpp (44 + 593 = 637 LOC)
+
+Implementiert Stage-Boundary-Snapshots fuer alle 7 Datenbanksysteme.
+Diese werden ZWEIMAL pro Stage aufgerufen (vor + nach), ergaenzend
+zur Longhorn-physischen Groessenmessung.
+
+#### PostgreSQL (`snapshot_postgresql`, ~60 LOC)
+1. `pg_total_relation_size()` fuer Lab-Schema (inkl. Indexes + TOAST)
+2. `pg_statio_all_tables` Aggregate (heap_blks_read/hit, toast_blks_read/hit)
+3. `pg_stat_statements` Top-5 Queries nach total_exec_time (erfordert Extension)
+
+#### CockroachDB (`snapshot_cockroachdb`, ~55 LOC)
+1. `pg_database_size('dedup_lab')` (via PG Wire Protokoll)
+2. `crdb_internal.kv_store_status` Aggregate (live/key/val/intent/sys bytes)
+3. `SHOW RANGES FROM DATABASE dedup_lab` (range_count, range_size_mb)
+
+#### Redis (`snapshot_redis`, ~40 LOC, HAS_HIREDIS Guard)
+1. `DBSIZE` (Gesamtanzahl Keys)
+2. `MEMORY STATS` Dekomposition: peak/total/startup allocated, dataset.bytes,
+   overhead.total, keys.count, fragmentation.bytes, Ratio-Felder
+
+#### Kafka (`snapshot_kafka`, ~50 LOC)
+JMX Prometheus Exporter (Port 9404):
+1. 5-Komponenten-Timing fuer Produce-Requests (p50):
+   TotalTimeMs, RequestQueueTimeMs, LocalTimeMs, RemoteTimeMs, ResponseSendTimeMs
+2. Fetch-Request TotalTimeMs (p50)
+3. Gesamt Log-Size und Messages-In Total
+
+#### MinIO (`snapshot_minio`, ~35 LOC)
+Prometheus Cluster-Endpoint `/minio/v2/metrics/cluster`:
+1. Bucket-Gesamt-Bytes und Objekt-Anzahl
+2. S3 TTFB Mean (sum/count aus Distribution)
+3. RX/TX Byte-Zaehler
+
+#### MariaDB (`snapshot_mariadb`, ~55 LOC, HAS_MYSQL Guard)
+1. `information_schema.INNODB_TABLESPACES` — FILE_SIZE, ALLOCATED_SIZE fuer Lab-DB
+2. `SHOW TABLE STATUS` — Per-Table Breakdown (rows, data_length, index_length, data_free)
+3. `performance_schema.events_waits_summary_global_by_event_name` — Top-5 InnoDB IO Waits
+
+#### ClickHouse (`snapshot_clickhouse`, ~50 LOC)
+HTTP API POST (`FORMAT JSONCompact`):
+1. `system.columns` — Compressed vs Uncompressed pro Table + Compression Ratio
+2. `system.parts` — Active Parts Count, Total Rows, Bytes-on-Disk pro Table
+
+### 13.2 data_loader.hpp Erweiterungen
+- `ExperimentResult` erhaelt `db_internal_before` und `db_internal_after` (JSON)
+- `DataLoader` erhaelt `db_internal_metrics_` Flag im Konstruktor
+
+### 13.3 data_loader.cpp Integration
+- Snapshot BEFORE: Nach Longhorn-Volume-Aufloesung, vor logischer Groessenmessung
+- Snapshot AFTER: Nach Longhorn-AFTER-Messung, vor EDR-Berechnung
+- `to_json()` serialisiert beide Snapshots ins Ergebnis
+- Direkte `<algorithm>` und `<numeric>` Includes hinzugefuegt (nicht auf transitive abhaengig)
+
+### 13.4 metrics_trace.cpp Erweiterungen (100ms-Collector, +19 LOC)
+Leichtgewichtige Zusatzmetriken aus bestehenden Datenquellen:
+- **Redis:** `used_memory_dataset`, `used_memory_overhead`, `mem_fragmentation_ratio`
+- **MariaDB:** `Innodb_data_read`, `Innodb_rows_inserted`, `Innodb_rows_deleted`
+- **MinIO:** `minio_s3_ttfb_seconds_distribution_sum/count`
+
+### 13.5 main.cpp Bugfix
+**KOMPILIERUNGS-BUG BEHOBEN:** `ExperimentConfig cfg` wurde VOR Deklaration in
+`generate_data` Block verwendet (Zeilen 169, 173-174 referierten `cfg.data_sources`
+und `cfg.payload_types`, aber `cfg` wurde erst auf Zeile 186 deklariert).
+Fix: Konfigurationsladung vor Dataset-Generierung verschoben.
+
+### 13.6 CMakeLists.txt
+`experiment/db_internal_metrics.cpp` zur DEDUP_SOURCES Liste hinzugefuegt.
+
+---
+
+## 14. K8s ConfigMap Update (Commit `054ab0a`)
+
+K8s ConfigMap (`k8s/base/configmap.yaml`) an redesigntes Config-Schema angepasst:
+- `db_internal_metrics: true` hinzugefuegt
+- `max_experiment_bytes` pro DB (CRDB: 53687091200 = 50 GiB)
+- `payload_types` Array (5 synthetische Typen)
+- `data_sources` Sektion mit allen realweltlichen URLs (NASA, Blender, Gutenberg, GH Archive)
+- `_comment` Felder fuer Deploy-Status (MariaDB/ClickHouse: TODO)
+- ClickHouse user/database Felder ergaenzt
+
+---
+
+## 15. Code-Metriken (Session 12 komplett)
+
+### Commits dieser Session (chronologisch)
+```
+c072e72  Session 10-11: K8s credentials, security hardening, LaTeX docs
+ff89071  Security audit: redact all cluster credentials for publication
+6915178  docs(doku.tex): align Chapter 6 with actual K8s testbed infrastructure
+a67d234  refactor(config+datagen): redesign experiment framework for doku.tex §6.3
+916b6b7  security: remove credentials from tracked files, add .credentials.env template
+41666ba  docs: restore session files with credentials redacted
+d23841f  feat(instrumentation): add DB-internal metrics snapshots (doku.tex §6.5)
+054ab0a  chore(k8s): update experiment ConfigMap with redesigned config fields
+```
+
+### Geaenderte Dateien (Session 12 Fortsetzung, ab ff89071)
+```
+18 Dateien geaendert, +1.418 / -116 Zeilen
+
+Neue Dateien:
+  db_internal_metrics.hpp     44 LOC
+  db_internal_metrics.cpp    593 LOC
+  credentials.env.example     24 LOC
+  README.md                   35 LOC
+
+Hauptaenderungen:
+  config.hpp                +279 LOC (Redesign)
+  dataset_generator.cpp     +161 LOC (Neue Generatoren)
+  config.example.json        +73 LOC (Neugeschrieben)
+  main.cpp                   +52 LOC (CLI Flags + Bugfix)
+  configmap.yaml             +44 LOC (K8s Config)
+  data_loader.cpp            +35 LOC (Snapshots + Guard)
+  doku.tex                   +24 LOC (Infrastruktur-Alignment)
+  metrics_trace.cpp          +19 LOC (Extra Collectors)
+  data_loader.hpp            +12 LOC (DB-Internal Fields)
+  dataset_generator.hpp       (Umstrukturiert)
+  CMakeLists.txt              +1 LOC
+```
+
+### Aktuelle Code-Architektur (34 Dateien, ~5.200 LOC)
+```
+src/cpp/
+├── CMakeLists.txt              — gcc:14, C++20, libpq/curl/hiredis/rdkafka/mysqlclient
+├── config.hpp (477)            — REDESIGNED: 10 PayloadTypes, DataSourceConfig, DB limits
+├── config.example.json (159)   — Vollstaendige Referenz-Konfiguration
+├── main.cpp (~415)             — CLI: --payload-types, --config, --generate-data, etc.
+├── connectors/
+│   ├── db_connector.hpp (55)   — Abstract Interface + MeasureResult
+│   ├── postgres_connector.*    — libpq, COPY, VACUUM, pg_database_size()
+│   ├── redis_connector.*       — hiredis, Key-Prefix dedup:*, SCAN+DEL
+│   ├── kafka_connector.*       — librdkafka, Admin API, Producer/Consumer
+│   ├── minio_connector.*       — libcurl, AWS SigV4, S3 API
+│   ├── mariadb_connector.*     — libmysqlclient, InnoDB OPTIMIZE
+│   ├── clickhouse_connector.*  — HTTP API, MergeTree
+│   └── comdare_connector.*     — REST API (conditional, -DENABLE_COMDARE_DB=ON)
+├── experiment/
+│   ├── dataset_generator.* (~400)    — 10 Payload-Generatoren + Download+Cache
+│   ├── data_loader.* (~370)          — 4-Stage Engine + DB-Internal Snapshots
+│   ├── db_internal_metrics.* (637)   — NEW: 7 DB-Snapshot-Funktionen
+│   ├── schema_manager.*              — CREATE/DROP lab schema
+│   ├── metrics_collector.*           — Longhorn + MinIO Prometheus queries
+│   ├── metrics_trace.* (~690)        — 100ms Sampling Thread (7+3 Collectors)
+│   └── results_exporter.*            — Kafka→CSV + Git commit+push
+└── utils/
+    ├── logger.hpp, sha256.hpp, timer.hpp
+```
+
+---
+
+## 16. Task-Status (Session 12 Ende)
+
+### Erledigte Tasks
+| # | Task | Commit |
+|---|------|--------|
+| 57 | Lab-Passwort generiert | — (Cluster/keys) |
+| 58 | 51+ Credentials redaktiert | `ff89071` |
+| 59 | Experiment-Programm implementiert (Kern) | `a67d234`, `d23841f` |
+| 60 | MinIO LDAP Credentials | `a67d234` |
+| 61 | Pipeline 1310 Smoke-Test | `c072e72` |
+| 65 | DB-Internal Instrumentation Collectors | `d23841f` |
+| 66 | K8s Manifeste vorbereitet | `054ab0a` |
+| 67 | DB-Internal in DataLoader integriert | `d23841f` |
+| 68 | Kompilierung verifiziert + Commit | `d23841f` |
+
+### Offene Tasks
+| # | Task | Status | Naechster Schritt |
+|---|------|--------|-------------------|
+| 62 | MariaDB deployen (K8s) | BEREIT | `kubectl apply -f k8s/mariadb/` |
+| 63 | ClickHouse deployen (K8s) | BEREIT | `kubectl apply -f k8s/clickhouse/` |
+| 64 | Prometheus+Grafana+Pushgateway | BEREIT | `helm install -f k8s/monitoring/values.yaml` |
+
+### Hinweis zu Tasks 62-64 (Infrastruktur-Deploy):
+- Manifeste sind KOMPLETT und BEREIT zum Apply
+- MariaDB: StatefulSet + ConfigMap + Services (mariadb:11.7, 50Gi Longhorn)
+- ClickHouse: StatefulSet + ConfigMap + Services (clickhouse/clickhouse-server:24.12, 50Gi Longhorn)
+- Prometheus: Helm values mit Longhorn/Kafka/ClickHouse/MinIO Scrape-Configs
+- **WICHTIG:** Cluster wird aktuell von anderem Agent aktualisiert — temporaere Ausfaelle moeglich
+- **METHODIK:** Erst Cluster-Update abwarten, dann deployen
+
+---
+
+## 17. CONTEXT RECOVERY (fuer naechste Session)
+
+### Sofort weitermachen mit:
+1. **Infrastruktur-Deploy** (Tasks #62-64) — Manifeste liegen bereit:
+   ```bash
+   # Warten bis Cluster stabil, dann:
+   kubectl apply -f k8s/base/namespace.yaml
+   kubectl apply -f k8s/base/rbac.yaml
+   kubectl apply -f k8s/base/secrets.yaml  # CI-Variablen setzen!
+   kubectl apply -f k8s/mariadb/statefulset.yaml
+   kubectl apply -f k8s/clickhouse/statefulset.yaml
+   helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+     -n monitoring --create-namespace -f k8s/monitoring/values.yaml
+   ```
+
+2. **Verbindungstests** — Dry-Run mit MariaDB + ClickHouse:
+   ```bash
+   dedup-test --config config.json --systems mariadb,clickhouse --dry-run
+   ```
+
+3. **Erweiterte Experiment-Dimensionen** (Phase B des Redesigns):
+   - 5 Dup-Ratios (D0/D50/D90/D95/D99) statt 3
+   - Within/Across Placement
+   - Cold/Warm Cache
+   - Delete-Varianten (logical/truncate/drop+recreate)
+   - 3× Wiederholungen mit Averaging
+   Diese Dimensionen sind im doku.tex spezifiziert aber noch NICHT implementiert.
+
+### Git-Status:
+```
+Branch:       development
+Letzter Commit: 054ab0a (chore(k8s): update experiment ConfigMap)
+Remote:       GitLab ✅ + GitHub ✅ (beide synchron)
+Pipeline:     Erwartet nach Push (auto-trigger)
+```
+
+### Kritische Dateien:
+| Was | Pfad | LOC |
+|-----|------|-----|
+| Hauptkonfiguration | `src/cpp/config.hpp` | 477 |
+| DB-Internal Snapshots | `src/cpp/experiment/db_internal_metrics.cpp` | 593 |
+| 100ms Collectors | `src/cpp/experiment/metrics_trace.cpp` | ~690 |
+| Experiment-Engine | `src/cpp/experiment/data_loader.cpp` | ~370 |
+| Dataset-Generator | `src/cpp/experiment/dataset_generator.cpp` | ~400 |
+| K8s ConfigMap | `k8s/base/configmap.yaml` | ~115 |
+| MariaDB Manifest | `k8s/mariadb/statefulset.yaml` | 176 |
+| ClickHouse Manifest | `k8s/clickhouse/statefulset.yaml` | 221 |
+| Monitoring Values | `k8s/monitoring/values.yaml` | 200 |
