@@ -34,7 +34,7 @@ data:
           "system": "cockroachdb",
           "host": "cockroachdb-public.cockroach-operator-system.svc.cluster.local",
           "port": 26257,
-          "user": "dedup-lab",
+          "user": "dedup_lab",
           "database": "dedup_lab",
           "lab_schema": "dedup_lab",
           "pvc_name": "datadir-cockroachdb-0",
@@ -59,7 +59,7 @@ data:
           "system": "minio",
           "host": "minio-lb.minio.svc.cluster.local",
           "port": 9000,
-          "user": "dedup-lab",
+          "user": "dedup-lab-s3",
           "lab_schema": "dedup-lab",
           "pvc_name": "",
           "k8s_namespace": "minio"

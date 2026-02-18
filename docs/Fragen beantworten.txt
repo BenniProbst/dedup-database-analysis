@@ -1,0 +1,46 @@
+Zu den Fragen: 
+A-1 Ja es geht um die physische Deduplikation und wie die Daten denn tatsächlich jeweils abgebildet werden durch jede Deduplikation und Datenspeicherung. In diesem Sinne gibt es ja auch Deduplikation die nicht direkt beabsichtigt war, sich aber dennoch als solche auswirkt und hier wird es neben dem klassischen Fokus auch interessant.
+A-2 Ja genau, zwei verbindliche Sätze innerhalb der Einleitung zusätzlich zu dem was schon steht.
+A-3 Die geannten Beispiele sind genau meine eigene Leistung, die wichtigsten im Kontext sind Feature-Matrix (bitte sehr exzessiv) mit Vergleichen in der Matrix und ein reproduzierbares Experiment, welches ich selbst entwickelt habe.
+A-4 Pflicht ist das Messsystem mit multiplen Datenbanken, es musste nicht unbedingt Kubernetes sein aber das bot sich an. Die Einrichtung mit gitlab und runners war schwer, aber bietet später viel Komfort.
+
+B-5 Ja die genannten Systeme laufen in der Pipeline. Alle haben einen LDAP lab_user damit die Kundendaten nicht beeinträchtigt werden und erzeugen nur separate Schemata für die Tests die laut dem mitgelieferten gitlab runner yaml nach jedem Lauf zurückgesetzt werden. die comdare DB wurde nicht rechtzeitig fertig.
+B-6 Redis und alle genannten Datenbanken wurden gemessen und kommen in die Hauptauswertung. Die meisten machen keine Deduplikation im klassischen Sinne, aber möglicherweise haben sie innere (gründlich zu recherchierende) Speicher Architekturen und Prinzipien, die grundsätzlich ungewollte einfache "Deduplikationen" erzeugen.
+B-7 Ja die beiden sind identisch, ich baue diese DB und es gab einen Markenkonflikt, deshalb heißen wir seit einer Woche Comdare.
+B-8 Ja die Comdare DB ist geplant, kommt nächste Woche.
+B-9 Jede Datenbank hat Replika 4. Alle laufen auf Longhorn. Alle Replika sind gleich verteilt.
+
+C-10 Wir erstellen ein detailliertes Diagramm derselben Mess-Kategorie (Gesschwindigkeiten und Latenzen) und berechnen zusätzlich den Durchschnittswert der Messreihe.
+C-11 Ich will immer den Wert pro Replika natürlich, die Sache der Replika ist rein eine Sache der Sicherheit im Cluster gegen Ausfälle.
+C-12 Wir lassen die Overheads drin, das sind natürliche Artefakte eines Systems, wir deuten darauf hin, dass sie existieren.
+C-13 Ich messe Logical delete vs physical no-shrink. Manche Datenbanken können das.
+
+D-14 Ich sehe nirgends stabile Punkte im Text. Lass das raus oder versuche es im Kontext zu ergründen.
+D-15 Ich lese nur size over Time. Das Thema compaction muss von uns tatsächlich noch mit rein.
+D-16 Ich möchte gerne für click house beide merge trees verwenden und sequentiell testen.
+D-17 Wir wollen zum Vergleich beide Vacuum Methoden testen, das ist Deduplikation im weiteren Sinne
+D-18 Wir wolle einmal mit und einmal ohne page compression arbeiten, das ist auch Deduplikation und ein auszuwertendes Feature im weiteren Sinne. Also Deduplikation auch als Features mit Kombination von Kompression berücksichtigen.
+D-19 Bitte recherchiere, welche CockroachDB TTL Parameter den Speicher beeinflussen.
+
+E-20 Ja genau, Verhalten bei 50% Duplikate, 90%, 95%, 99% . Weiterhin das Latenzverhalten und so weiter. Bitte recherchiere verschiedene wissenschaftliche Artikel zu Datenbanken-Forschungspaper auf Google Scholar, dort sind diese Metriken standardisiert und jeder Datenbank-Forscher verwendet sie, wir übernehmen den Standard.
+E-21 Nun diese Frage kann ich nicht beantworten, weil es die Forschungs- und Recherchefrage selbst ist. Jede Datenbank handhabt das intern anders, bitte recherchiere das...es ist genau die Frage, die gefordert ist in dieser Arbeit.
+E-22 Genau wie die letzte Frage: Je Datenbank anders und zu recherchieren. Das hängt vom Datenbank API Interface und dessen Client ab.
+E-23 Ich möchte gerne die Performance über 1 GB, 5 GB und 10 GB messen. Alle durchläufe jeweils mit allen Datenbanken, Testdaten und Features.
+D-24 Jeder Punkt wird 3 Mal wiederholt, also die gesamte Messkette für einen Einzelversuch immer 3 Mal, alle Messpunkte werden auch in einzeldiagrammen gezeigt, aber dennoch gemittelt je Versuch zusammengelegt. Einmal legen wir die Messpunkte je gespeicherter Größe und einmal je Zeitwert per Durchschnitt übereinander.
+
+F-25 Ich messe beides: Wenn vorhanden DB side Timing, sonst End-to End wenn nicht möglich.
+F-26 die C++ App läuft auf K8s auf einer der 4 nodes wo auch die Datenbanken laufen.
+F-27 Ich sorge dafür, dass ein Controller der Datenbank auf einer anderen node angesprochen wird, der per DNS den kürzesten Weg zu dieser node selbst für die Datenbank Speicherung wählt.
+F-28 Die CPU Affinity wird nicht für diesen Versuch implementiert, nur comdare DB könnte das, ist aber noch nicht fertig.
+F-29 Nun jede Datenbank ist unterschiedlich und genau das Löschen sollen wir recherchieren, was überhaupt geht. Im besten Fall wird der wahrscheinlichste Ansatz gewählt um die Daten wirklich zu löschen, dass sie nicht wieder zugegriffen werden können. In der Regel wird der Versuch noch erweitert: Ein durchlauf mit löschen und wiederbefüllen, ob die Datenbank denn am gemessenen Werten WIRKLICH löscht und das messen wir über die Deduplikation und Speicher. Also Methode komplett löschen vs. Duplikate einfügen vs. nur links entfernen und deren Auswirkungen. Das ist die Forschungsfrage.
+F-30 Wir wollen warm Cache testen, aber wir wollen für jede DB den Cache resetter ermitteln und vor jedem Lauf triggern, recherchiere das bitte.
+
+G-29 Siehe oben
+G-30 Ich will immer ein warm Cache Szenario und ein Cold Cache Szenario zusätzlich zu jedem Lauf jeder Datenbank für einen Datentyp
+G-31 Das ist zu recherchieren
+
+H-32 Ich erwarte csv Dateien, die Grafana dann vom repo interpretieren kann, wenn intern die Messdaten nach GitLab repo exportiert werden.
+H-33 Bitte recherchiere die standardisierten Werte für Datenbank-Forschungsergebnis-Metriken dazu, wir übernehmen das.
+H-34 Kernplots sind Speichervolumen, Latenz und Übertragungszeit der Daten
+
+I-35

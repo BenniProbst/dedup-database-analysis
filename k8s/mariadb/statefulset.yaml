@@ -83,8 +83,7 @@ data:
   init-lab.sql: |
     -- Lab schema initialization for dedup experiment
     -- This runs on first boot only (initdb)
-    CREATE DATABASE IF NOT EXISTS dedup_lab;
-    CREATE USER IF NOT EXISTS 'dedup-lab'@'%' IDENTIFIED BY 'REPLACE_WITH_SECRET';
+    -- User+DB creation handled by MARIADB_USER/MARIADB_PASSWORD env vars
     GRANT ALL PRIVILEGES ON dedup_lab.* TO 'dedup-lab'@'%';
     FLUSH PRIVILEGES;
 ---
