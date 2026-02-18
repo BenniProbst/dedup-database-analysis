@@ -60,6 +60,7 @@ set(DEDUP_SOURCES
     experiment/data_loader.cpp
     experiment/metrics_collector.cpp
     experiment/dataset_generator.cpp
+    experiment/db_internal_metrics.cpp
     experiment/metrics_trace.cpp
     experiment/results_exporter.cpp
 )

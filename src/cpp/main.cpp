@@ -159,6 +159,18 @@ int main(int argc, char* argv[]) {
     // SHA-256 self-test
     print_sha256_selftest();
 
+    // Load configuration (before dataset generation -- cfg is used by generator)
+    dedup::ExperimentConfig cfg;
+    if (!config_path.empty()) {
+        cfg = dedup::ExperimentConfig::from_json(config_path);
+    } else {
+        cfg = dedup::ExperimentConfig::default_k8s_config();
+    }
+    cfg.data_dir = data_dir;
+    cfg.results_dir = results_dir;
+    cfg.lab_schema = lab_schema;
+    cfg.dry_run = dry_run;
+
     // Generate datasets if requested
     if (generate_data) {
         LOG_INF("=== DATASET GENERATION ===");
@@ -181,18 +193,6 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
-
-    // Load configuration
-    dedup::ExperimentConfig cfg;
-    if (!config_path.empty()) {
-        cfg = dedup::ExperimentConfig::from_json(config_path);
-    } else {
-        cfg = dedup::ExperimentConfig::default_k8s_config();
-    }
-    cfg.data_dir = data_dir;
-    cfg.results_dir = results_dir;
-    cfg.lab_schema = lab_schema;
-    cfg.dry_run = dry_run;
 
     // Create results directory
     fs::create_directories(results_dir);
@@ -323,7 +323,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Run experiments — pass DbConnection for PVC/Longhorn mapping
-    dedup::DataLoader loader(schema_mgr, metrics, cfg.replica_count);
+    dedup::DataLoader loader(schema_mgr, metrics, cfg.replica_count, cfg.db_internal_metrics);
     std::vector<dedup::ExperimentResult> all_results;
 
     for (auto& entry : entries) {

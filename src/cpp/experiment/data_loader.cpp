@@ -1,8 +1,11 @@
 #include "data_loader.hpp"
+#include "db_internal_metrics.hpp"
 #include "../utils/logger.hpp"
 #include "../utils/timer.hpp"
+#include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <numeric>
 #include <thread>
 #include <fstream>
 
@@ -29,6 +32,12 @@ nlohmann::json ExperimentResult::to_json() const {
         {"timestamp", timestamp},
         {"error", error}
     };
+
+    // DB-internal instrumentation (doku.tex §6.5)
+    if (!db_internal_before.is_null() && !db_internal_before.empty())
+        j["db_internal_before"] = db_internal_before;
+    if (!db_internal_after.is_null() && !db_internal_after.empty())
+        j["db_internal_after"] = db_internal_after;
 
     // Per-file latency stats (populated for perfile_insert / perfile_delete stages)
     if (latency_count > 0) {
@@ -107,6 +116,13 @@ ExperimentResult DataLoader::run_stage(
         }
     }
     result.volume_name = volume_name;
+
+    // ---- DB-internal snapshot BEFORE (doku.tex §6.5) ----
+    if (db_internal_metrics_) {
+        result.db_internal_before = db_internal::snapshot(db_conn);
+        LOG_INF("DB-internal snapshot BEFORE captured (%zu fields)",
+            result.db_internal_before.value("data", nlohmann::json::object()).size());
+    }
 
     // ---- BEFORE measurements ----
     // Logical size: reported by the database connector itself
@@ -197,6 +213,13 @@ ExperimentResult DataLoader::run_stage(
     }
 
     result.phys_delta = result.phys_size_after - result.phys_size_before;
+
+    // ---- DB-internal snapshot AFTER (doku.tex §6.5) ----
+    if (db_internal_metrics_) {
+        result.db_internal_after = db_internal::snapshot(db_conn);
+        LOG_INF("DB-internal snapshot AFTER captured (%zu fields)",
+            result.db_internal_after.value("data", nlohmann::json::object()).size());
+    }
 
     // Calculate EDR: B_logical / (B_phys / N), doku.tex 5.4.2
     if (result.bytes_logical > 0 && result.phys_delta > 0) {

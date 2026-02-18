@@ -31,6 +31,11 @@ struct ExperimentResult {
     std::string timestamp;
     std::string error;
 
+    // DB-internal instrumentation snapshots (doku.tex §6.5)
+    // Captured at stage boundaries when db_internal_metrics is enabled.
+    nlohmann::json db_internal_before;
+    nlohmann::json db_internal_after;
+
     // Per-file latency stats from perfile_insert / perfile_delete (doku.tex Stage 2/3)
     int64_t latency_count = 0;
     int64_t latency_min_ns = 0;
@@ -45,8 +50,10 @@ struct ExperimentResult {
 
 class DataLoader {
 public:
-    DataLoader(SchemaManager& schema_mgr, MetricsCollector& metrics, int replica_count)
-        : schema_mgr_(schema_mgr), metrics_(metrics), replica_count_(replica_count) {}
+    DataLoader(SchemaManager& schema_mgr, MetricsCollector& metrics,
+               int replica_count, bool db_internal_metrics = true)
+        : schema_mgr_(schema_mgr), metrics_(metrics),
+          replica_count_(replica_count), db_internal_metrics_(db_internal_metrics) {}
 
     // Run a full experiment: all stages, all dup grades, for one connector
     std::vector<ExperimentResult> run_full_experiment(
@@ -69,6 +76,7 @@ private:
     SchemaManager& schema_mgr_;
     MetricsCollector& metrics_;
     int replica_count_;
+    bool db_internal_metrics_;
 
     std::string current_timestamp();
 };

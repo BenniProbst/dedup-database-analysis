@@ -445,6 +445,13 @@ std::vector<MetricPoint> collect_redis(const DbConnection& conn) {
             pts.push_back(mp("redis", "total_connections_received", v, "count"));
         if ((v = parse_info_val(info, "connected_clients")) >= 0)
             pts.push_back(mp("redis", "connected_clients", v, "count"));
+        // Additional memory breakdown (doku.tex §6.5)
+        if ((v = parse_info_val(info, "used_memory_dataset")) >= 0)
+            pts.push_back(mp("redis", "used_memory_dataset", v, "bytes"));
+        if ((v = parse_info_val(info, "used_memory_overhead")) >= 0)
+            pts.push_back(mp("redis", "used_memory_overhead", v, "bytes"));
+        if ((v = parse_info_val(info, "mem_fragmentation_ratio")) >= 0)
+            pts.push_back(mp("redis", "mem_fragmentation_ratio", v, "ratio"));
     }
     if (reply) freeReplyObject(reply);
     redisFree(ctx);
@@ -505,6 +512,11 @@ std::vector<MetricPoint> collect_minio(const DbConnection& conn) {
             pts.push_back(mp("minio", "s3_rx_bytes_total", value, "bytes"));
         else if (name == "minio_s3_tx_bytes_total")
             pts.push_back(mp("minio", "s3_tx_bytes_total", value, "bytes"));
+        // TTFB distribution (doku.tex §6.5)
+        else if (name == "minio_s3_ttfb_seconds_distribution_sum")
+            pts.push_back(mp("minio", "s3_ttfb_sum", value, "seconds"));
+        else if (name == "minio_s3_ttfb_seconds_distribution_count")
+            pts.push_back(mp("minio", "s3_ttfb_count", value, "count"));
     }
 
     return pts;
@@ -551,6 +563,13 @@ std::vector<MetricPoint> collect_mariadb(const DbConnection& conn) {
                     pts.push_back(mp("mariadb", "com_insert", v, "count"));
                 else if (n == "Com_delete")
                     pts.push_back(mp("mariadb", "com_delete", v, "count"));
+                // Additional InnoDB counters (doku.tex §6.5)
+                else if (n == "Innodb_data_read")
+                    pts.push_back(mp("mariadb", "innodb_data_read", v, "bytes"));
+                else if (n == "Innodb_rows_inserted")
+                    pts.push_back(mp("mariadb", "innodb_rows_inserted", v, "count"));
+                else if (n == "Innodb_rows_deleted")
+                    pts.push_back(mp("mariadb", "innodb_rows_deleted", v, "count"));
             }
             mysql_free_result(res);
         }
