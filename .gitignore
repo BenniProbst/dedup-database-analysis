@@ -53,6 +53,5 @@ credentials.env
 *.credentials
 .env.local
 
-# Session logs (contain plaintext passwords and internal infrastructure details)
-sessions/
-infrastructure/sessions/*.md
+# Session logs: passwords must be redacted before committing!
+# Use [LAB-PW-REDACTED] and [CLUSTER-PW-REDACTED] as placeholders
