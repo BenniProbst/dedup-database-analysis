@@ -115,7 +115,42 @@ dedup-database-analysis/
     jobs/                # CronJobs/Jobs pro Experiment-Stufe
   scripts/               # Hilfsskripte (Daten-Download, Duplikation-Generator)
   .gitlab-ci.yml         # CI/CD Pipeline fuer automatisierte Experimente
+  credentials.env.example  # Template fuer lokale Credentials
+  .credentials.env       # Echte Credentials (gitignored, NICHT im Repo!)
 ```
+
+## Credentials einrichten
+
+Die Datenbank-Credentials werden NICHT im Repository gespeichert. Stattdessen:
+
+1. **Template kopieren:**
+   ```bash
+   cp credentials.env.example .credentials.env
+   ```
+
+2. **Passwörter eintragen** (aus GitLab CI/CD Variables oder Cluster-Dokumentation):
+   ```bash
+   # .credentials.env ausfuellen (KEY=VALUE Format)
+   DEDUP_LAB_PASSWORD=<dein-passwort>
+   DEDUP_PG_PASSWORD=<dein-passwort>
+   # ...
+   ```
+
+3. **Verwendung im Code:**
+   ```bash
+   # Shell: Variablen laden
+   source .credentials.env
+
+   # K8s: secrets.yaml mit envsubst befuellen
+   envsubst < k8s/base/secrets.yaml | kubectl apply -f -
+   ```
+
+4. **In GitLab CI/CD:** Die Variablen werden unter Settings > CI/CD > Variables
+   als Protected/Masked Variables konfiguriert und automatisch injiziert.
+
+**Sicherheit:** `.credentials.env` ist in `.gitignore` eingetragen und wird
+niemals committed. Das Template `credentials.env.example` enthaelt nur leere
+Schluessel ohne Werte und ist sicher versionierbar.
 
 ## Remotes
 

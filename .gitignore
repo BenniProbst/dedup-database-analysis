@@ -49,5 +49,10 @@ k8s/secrets/
 
 # Credentials (NEVER commit!)
 credentials.env
+.credentials.env
 *.credentials
 .env.local
+
+# Session logs (contain plaintext passwords and internal infrastructure details)
+sessions/
+infrastructure/sessions/*.md
