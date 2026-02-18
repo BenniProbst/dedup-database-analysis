@@ -161,7 +161,7 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
          "data-kafka-cluster-broker-0", "kafka"},
 
         {DbSystem::MINIO, "minio-lb.minio.svc.cluster.local", 9000,
-         cfg.lab_user, "", "", "dedup-lab",
+         "dedup-lab-s3", "", "", "dedup-lab",  // LDAP Access Key (local user removed)
          "", "minio"},  // MinIO = Direct Disk, NO Longhorn PVC!
 
         {DbSystem::MARIADB, "mariadb.databases.svc.cluster.local", 3306,

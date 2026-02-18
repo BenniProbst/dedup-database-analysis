@@ -13,7 +13,7 @@
 set -euo pipefail
 
 LAB_USER="dedup-lab"
-LAB_PASS=' [CLUSTER-PW-REDACTED]'
+LAB_PASS="${DEDUP_LAB_PASSWORD:?Error: Set DEDUP_LAB_PASSWORD env variable first}"
 LAB_SCHEMA="dedup_lab"
 
 echo "=== Setup dedup-lab user on all databases ==="

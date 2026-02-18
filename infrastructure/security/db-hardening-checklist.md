@@ -70,7 +70,7 @@ kubectl exec -n databases postgres-ha-0 -- \
 
 # 2. Redis dedup-lab kann dedup:* Keys setzen
 kubectl exec -n redis redis-cluster-0 -- \
-  redis-cli --user dedup-lab --pass ' [CLUSTER-PW-REDACTED]' SET dedup:test hello
+  redis-cli --user dedup-lab --pass "$DEDUP_LAB_PASSWORD" SET dedup:test hello
 
 # 3. Kafka dedup-lab Topics erstellen (via Strimzi KafkaUser ACL)
 # Automatisch durch Strimzi enforced

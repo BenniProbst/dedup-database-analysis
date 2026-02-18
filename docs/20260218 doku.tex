@@ -5,6 +5,7 @@
 \usepackage{booktabs} % for \toprule, \midrule, \bottomrule, \cmidrule
 \usepackage{pgfplots}
 \usepackage{enumitem}
+\usepackage{csquotes}
 \pgfplotsset{compat=1.18}
 \usepackage{siunitx}
 \sisetup{
@@ -26,8 +27,10 @@
 \matno{4510512}
 
 \betreuer{Dr. Alexander Krause}
+\hsl{Prof. Dr. Wolfgang Lehner}
 
 \begin{document}
+
 
 \let\cleardoublepage\clearpage
 \selectlanguage{american} % ensure US English is active
@@ -48,52 +51,34 @@ Deduplication is a technique in modern storage systems for identifying redundant
 
 \chapter{Introduction and Motivation}
 \label{ch:einleitung}
+In modern IT systems, enormous volumes of data are generated that often contain redundant content. \emph{Data deduplication} (also called deduplication) refers to techniques for detecting such redundant data and storing them only once. In this way, storage requirements and transmission costs can be drastically reduced. Deduplication is used particularly in data backup environments (backups) to save storage space and network bandwidth, since e.g. identical email attachments or files that are backed up multiple times need only be stored once. Deduplication also plays an important role in cloud storage and modern data storage systems, as identical data that are stored multiple times by different users or applications only need to be kept once. Through this increase in efficiency, companies can reduce costs for storage media, power, and cooling while simultaneously accelerating data transfer.
 
-Data-intensive systems face a persistent tension between growth in raw data volumes and the practical constraints of storage cost, network bandwidth and processing time. Redundancy is a major driver of this tension: identical or near-identical payloads appear across backups, replicas, log streams, telemetry series, database tables and object stores. \emph{Deduplication} aims to reduce this redundancy by storing repeated information only once and reusing it via references.
+Throughout this report, the focus is on \textbf{physical deduplication}: whether redundant payload bytes result in shared or eliminated \emph{on-disk} representations, and how such effects become visible across storage layers. This is distinct from \textbf{compression}, which reduces the footprint of each object instance without cross-object sharing. Beyond intentionally engineered deduplication, this work also treats \textbf{deduplication as an emergent effect} that can arise unintentionally from database semantics and maintenance (e.g., upserts, merge policies, compaction, or TTL/GC).
 
-In the broadest sense, deduplication can be understood at two distinct levels:
+\paragraph{Module context and deliverable.}
+The work is written in the context of the TU Dresden module \emph{Analyse eines Forschungsthemas} (Diplom-Informatik, Prüfungsordnung $\geq$2010) and therefore combines a structured literature analysis with an empirical exploration on a real system. \cite{TUDresdenModuleINF-D-960}
 
-\begin{itemize}
-\item \textbf{Physical (byte-level) deduplication:} equal byte sequences are stored once (typically via fingerprints/hashes) and referenced multiple times. This is the classical notion from backup systems and content-addressable storage \cite{Muthitacharoen2001,Quinlan2002,Zhu2008}.
-\item \textbf{Semantic (model-level) deduplication:} equal \emph{meaning} is stored once by enforcing uniqueness constraints or by choosing an idempotent write model (e.g., ``upsert'' by key). This can prevent duplicates from entering a database, but it does not necessarily imply physical deduplication at the storage layer \cite{Hellerstein2007,PostgresInsertOnConflict,KafkaDesignCompaction}.
-\end{itemize}
-
-The central question of this work---\textbf{``What is deduplication in the core?''}---therefore requires a careful differentiation between \emph{deduplication}, \emph{compression} and other mechanisms that reduce storage or data movement. In addition, databases deliberately keep redundancy (e.g., MVCC versions, write-ahead logs, replication) to achieve correctness, performance and fault tolerance \cite{PostgresMVCC,TaftEtAl2020CockroachDB}. This creates a practical challenge: even if two inserted objects are identical, the persistent representation may not be identical, and redundancy reduction can occur in different layers and at different times.
-
-\section{Task and scope of this ``Analysis of a Research Topic''}
-
-This document is written in the context of the module \emph{Analyse eines Forschungsthemas} (Diploma in Computer Science, TU Dresden). The primary task is a \textbf{structured literature review} to clarify the term ``deduplication'' and to survey established approaches. The review is complemented by a \textbf{single, focused empirical study} that explores how deduplication-relevant mechanisms manifest in modern data management systems under a controlled experimental setup.
-
-The work is \emph{not} a full engineering thesis about implementing a new deduplication algorithm. Instead, it aims to produce:
-\begin{enumerate}
-\item a precise terminology and taxonomy for deduplication and adjacent concepts,
-\item a mechanism-oriented comparison of selected systems (where and how redundancy can be reduced),
-\item an experimental protocol and measurement plan that can be executed reproducibly on the available testbed.
+\paragraph{Research questions.}
+\begin{enumerate}[label=RQ\arabic*:, leftmargin=*, itemsep=0.2em]
+  \item What is \emph{physical} deduplication in database systems, and how does it differ from compression and purely logical duplicate prevention?
+  \item Which storage-architecture mechanisms in common systems can be interpreted as deduplication (full/partial) or lead to deduplication-like effects (indirect)?
+  \item How do duplicate ratios (0--99\%), placement (within vs across schemas/topics/buckets), and cache state (cold vs warm) influence storage footprint ($\mathrm{EDR}$), throughput, and latency?
+  \item How do deletion semantics and maintenance operations (vacuum/compaction/merge/GC) translate logical deletion into physical space reclamation?
 \end{enumerate}
 
-\section{Research questions}
+\paragraph{Own contribution.}
+The key contributions are (i) an exhaustive feature matrix (Appendix~\ref{app:feature-matrix}) with explicit comparisons, and (ii) a reproducible, automated benchmark pipeline and measurement system that enables controlled experiments across multiple databases.
 
-The literature review and the experimental design are guided by the following research questions (RQs):
 
-\begin{itemize}
-\item \textbf{RQ1 (Definition):} Which definition of ``deduplication'' is consistent across storage systems, databases and stream processing? How does it differ from compression and from semantic data cleansing?
-\item \textbf{RQ2 (Layers):} On which layers (application/SQL, database engine, file/object store, block storage) do the selected systems reduce redundancy---and on which layers does \emph{no} deduplication occur?
-\item \textbf{RQ3 (Mechanisms):} Which internal mechanisms (e.g., MVCC, compaction, merge processes, log compaction, index-level deduplication) influence observable ``deduplication effects''?
-\item \textbf{RQ4 (Measurability):} Which measurable signals can be used to infer deduplication-like behavior in a black-box deployment (storage consumption over time, ingestion latency/throughput, deletion behavior), and what are the limitations?
-\end{itemize}
-
-\section{Structure of the document}
-
-Chapter~\ref{ch:terminology} clarifies the terminology and separates deduplication from compression, compaction and semantic constraints. Chapter~\ref{ch:dedupsystems} surveys deduplication approaches across system classes (relational DBMS, object storage, time series DBMS, log/stream systems). Chapter~\ref{ch:dbmechanisms} then zooms in on internal mechanisms of the selected systems and provides a feature matrix. Chapter~\ref{ch:experiment} describes the experimental setup, datasets and measurement protocol. Finally, Chapter~\ref{ch:conclusion} summarizes the current state, limitations and an outlook.
+Moreover, deduplication helps shorten backup windows and improve the overall performance of storage and backup systems. In the \emph{Introduction} of this paper, the motivation and goals of deduplication are first outlined. Next, the terminology is clarified and distinguished from related concepts (such as compression). A brief historical overview shows how deduplication techniques have evolved from the earliest approaches to current systems. Building on that, a \emph{taxonomy} is presented that introduces various forms and strategies of deduplication – from hash-based and content-aware methods, through different granularities (file-, block-, and chunk-level), to inline and post-process deduplication. In the main part, typical application areas of deduplication in different data storage systems are examined: in relational database systems, in object-based storage, in time series databases, as well as in scalable systems like Apache Kafka and Hadoop. Finally, an initial evaluation of the presented approaches is provided and open challenges are derived, from which the research goal of the further work is formulated.
 
 \chapter{Terminology and Differentiation}
-\label{ch:terminology}
 \label{ch:begriffe}
 Fundamentally, deduplication describes a data processing process that identifies redundant or duplicate data and avoids storing or transmitting them more than once. The system scans data for identical segments and replaces repetitions with references to a single stored original. This reduces the total amount of data to be stored or transmitted without losing any information. Deduplication can be considered a form of data compression, however it differs from classic compression methods: whereas, for example, LZ77/LZ78 compression algorithms look for redundancy \emph{within} individual files and replace it with a shorter encoding, deduplication works \emph{across file boundaries} or on larger data sets. Thus, deduplication can, for instance, detect identical blocks or files even if they appear in different files or backups, which classical compression generally cannot achieve~\cite{Paulo2014,Fu2025}.
 
-A related term is *Single Instance Storage* (SIS). In SIS, out of multiple identical files only a single instance is stored. SIS therefore operates at the full file level and eliminates duplicate files. Deduplication in the stricter sense usually works at a finer granularity, namely at the block or chunk level within files, in order to also remove partial duplicates (e.g. the same pieces in two different files). The boundary is fluid: SIS can be seen as a special case of deduplication, limited to the granularity of whole objects.
+A related term is \emph{Single Instance Storage} (SIS). In SIS, out of multiple identical files only a single instance is stored. SIS therefore operates at the full file level and eliminates duplicate files. Deduplication in the stricter sense usually works at a finer granularity, namely at the block or chunk level within files, in order to also remove partial duplicates (e.g. the same pieces in two different files). The boundary is fluid: SIS can be seen as a special case of deduplication, limited to the granularity of whole objects.
 
-It is important to distinguish this from *data cleansing* or *duplicate detection* in databases: those deal with identifying and consolidating semantically identical records (e.g. the same person under different customer entries). The deduplication addressed here, by contrast, operates at the byte or block level in storage systems and file collections, regardless of the semantics of the data. It should also be noted that the effectiveness of deduplication algorithms depends strongly on the nature of the data – highly unique or already encrypted data naturally offer little potential for savings.
+It is important to distinguish this from \emph{data cleansing} or \emph{duplicate detection} in databases: those deal with identifying and consolidating semantically identical records (e.g. the same person under different customer entries). The deduplication addressed here, by contrast, operates at the byte or block level in storage systems and file collections, regardless of the semantics of the data. It should also be noted that the effectiveness of deduplication algorithms depends strongly on the nature of the data – highly unique or already encrypted data naturally offer little potential for savings.
 
 In summary: deduplication detects identical data blocks and stores them only once. It complements other storage optimizations like compression without replacing them – often both are used together (first deduplicating large repetitions, then compressing the unique data). The next section introduces the historical roots and key developments in this area.
 
@@ -101,11 +86,11 @@ In summary: deduplication detects identical data blocks and stores them only onc
 \label{ch:historie}
 The beginnings of modern deduplication date back to the early 2000s, driven by the challenges of rapidly growing backup data volumes. One of the first influential systems was the Low-Bandwidth File System (LBFS) by Muthitacharoen et al.~\cite{Muthitacharoen2001}. LBFS introduced deduplication at the file system level to accelerate file transfers over slow networks: similar file content was recognized by matching blocks so that redundant data did not have to be transmitted again. As a result, LBFS reduced bandwidth requirements by more than an order of magnitude compared to traditional network file systems.
 
-Shortly thereafter, Quinlan and Dorward~\cite{Quinlan2002} presented *Venti*, an archive-oriented storage system that was based on content-addressable storage. Each data block was given a unique hash as an address; duplicate blocks could thus be identified and merged into a single copy. Venti established the principle of the \emph{write-once store} – once stored, blocks are kept immutable and, upon recurring, only referenced. This concept influenced numerous subsequent backup and archiving solutions.
+Shortly thereafter, Quinlan and Dorward~\cite{Quinlan2002} presented \emph{Venti}, an archive-oriented storage system that was based on content-addressable storage. Each data block was given a unique hash as an address; duplicate blocks could thus be identified and merged into a single copy. Venti established the principle of the \emph{write-once store} – once stored, blocks are kept immutable and, upon recurring, only referenced. This concept influenced numerous subsequent backup and archiving solutions.
 
-In the mid-2000s, deduplication became popular in the commercial space, notably through the company *Data Domain*. Their file system DDFS set new standards by delivering high-speed deduplication for enterprise backups. A seminal publication by Zhu et al.~\cite{Zhu2008} describes three key techniques by which DDFS overcame the “disk bottleneck”: (1) a compact in-memory index (\emph{Summary Vector}) to quickly classify new data blocks as known or new, (2) a segmented storage layout (\emph{Stream-Informed Segment Layout}) that improves the physical locality of related blocks on disk, and (3) \emph{Locality Preserved Caching}, which keeps the fingerprints of recently deduplicated blocks in cache. With these optimizations, DDFS was able to avoid over 99\,\% of the disk accesses that would otherwise be necessary and thus achieve throughput rates of over 100~MB/s on commodity hardware. This was the first demonstration that inline deduplication is practical even at very high data rates, which paved the way for widespread use in backup appliances.
+In the mid-2000s, deduplication became popular in the commercial space, notably through the company \emph{Data Domain}. Their file system DDFS set new standards by delivering high-speed deduplication for enterprise backups. A seminal publication by Zhu et al.~\cite{Zhu2008} describes three key techniques by which DDFS overcame the “disk bottleneck”: (1) a compact in-memory index (\emph{Summary Vector}) to quickly classify new data blocks as known or new, (2) a segmented storage layout (\emph{Stream-Informed Segment Layout}) that improves the physical locality of related blocks on disk, and (3) \emph{Locality Preserved Caching}, which keeps the fingerprints of recently deduplicated blocks in cache. With these optimizations, DDFS was able to avoid over 99\,\% of the disk accesses that would otherwise be necessary and thus achieve throughput rates of over 100~MB/s on commodity hardware. This was the first demonstration that inline deduplication is practical even at very high data rates, which paved the way for widespread use in backup appliances.
 
-In the 2010s, focus increasingly shifted to primary storage and performance aspects. It was recognized early that techniques proven in backup contexts are only of limited applicability to live systems, since here latency and fragmentation are critical. An important contribution in this context is *iDedup* by Srinivasan et al.~\cite{Srinivasan2012}. This system introduced deduplication into primary storage workloads (such as virtual machines and databases), but with a *latency-sensitive* approach. iDedup deduplicates only selected data areas with high redundancy and uses local grouping (\emph{spatial locality}) to keep the fragmentation caused by deduplication low. Additionally, metadata such as hash indexes are cached in memory to avoid extra disk accesses. The evaluation showed that iDedup still achieved about 60--70\,\% of the maximum possible space savings, while increasing latency by only 2--4\,\% and incurring less than 5\,\% CPU overhead. iDedup thus demonstrated that a reasonable trade-off between space savings and performance is possible for production primary storage.
+In the 2010s, focus increasingly shifted to primary storage and performance aspects. It was recognized early that techniques proven in backup contexts are only of limited applicability to live systems, since here latency and fragmentation are critical. An important contribution in this context is \emph{iDedup} by Srinivasan et al.~\cite{Srinivasan2012}. This system introduced deduplication into primary storage workloads (such as virtual machines and databases), but with a \emph{latency-sensitive} approach. iDedup deduplicates only selected data areas with high redundancy and uses local grouping (\emph{spatial locality}) to keep the fragmentation caused by deduplication low. Additionally, metadata such as hash indexes are cached in memory to avoid extra disk accesses. The evaluation showed that iDedup still achieved about 60--70\,\% of the maximum possible space savings, while increasing latency by only 2--4\,\% and incurring less than 5\,\% CPU overhead. iDedup thus demonstrated that a reasonable trade-off between space savings and performance is possible for production primary storage.
 
 In parallel, continuous improvements to the deduplication algorithms themselves have been explored. A central element is \emph{chunking}, i.e. splitting data streams into blocks. As early as LBFS, variable block sizes using \emph{Rabin fingerprints} were employed to detect shifted content despite offsets. In subsequent years, more efficient chunking methods were developed. A milestone is \emph{FastCDC} by Xia et al.~\cite{Xia2016}. FastCDC significantly accelerated the hitherto computation-intensive content-defined chunking, among other things by simplifying hash checks and skipping regions at runtime. In tests, FastCDC was about 10 times faster than the classical Rabin-based method, yet achieved nearly the same deduplication ratio. Such algorithms are essential to make deduplication feasible on a large scale with acceptable overhead.
 
@@ -130,7 +115,6 @@ Deduplication methods can be classified according to several criteria. The follo
 Besides the above categories, there are other technical distinctions (such as the type of indexing: inline index in RAM vs. chunk stores on SSD, use of Bloom filters for pre-selection, etc.). However, the aspects mentioned are the fundamental ones for classifying deduplication approaches. The following overview now looks at concrete areas of application in which deduplication is used, and what particular considerations arise in each.
 
 \chapter{Deduplication in Various Data Storage Systems}
-\label{ch:dedupsystems}
 \label{ch:bereiche}
 In the following, four important categories of data storage systems are examined where deduplication is used or can be used. For each area, typical sources of redundant data and known deduplication approaches are presented.
 
@@ -187,8 +171,8 @@ In summary, one can say: time series databases use deduplication primarily as a 
 By \emph{scalable systems} we refer here to, on the one hand, distributed log-streaming platforms like Apache Kafka, and on the other hand, big data ecosystems like Hadoop (especially HDFS and MapReduce). Both are special cases in that they combine data storage with certain redundancy principles.
 
 \textbf{Apache Kafka} is a distributed event streaming platform that stores messages in \emph{topics}. Kafka itself, in normal operation, does not perform any content deduplication of the stored messages – every message produced is replicated to all broker replicas and stored there. Redundancy here arises mainly from the intentional replication (typically Kafka keeps each message in $r$ copies for fault tolerance). This redundancy is intentional and should not be deduplicated, as otherwise the fault tolerance would be lost. Nevertheless, on a higher level there are aspects:
-- Kafka offers the option of \textbf{log compaction}~\cite{Confluent2023}: For compacted topics, Kafka retains only the latest message per key and gradually deletes older versions of the same key. This is a form of deduplication on a key basis: if, for example, for user~123 multiple update events exist, after compaction only the last (most recent) event remains in the log, the earlier ones are eventually removed as obsolete. Log compaction thus ensures that the log represents a kind of ``snapshot of the latest state'' per key. Important: it does not guarantee that only one message per key is present at all times, but in the long run duplicate keys are cleaned up. For storage efficiency, this means that for example a constantly updated configuration value will not forever occupy space for all intermediate states, but only the current value persists. Especially for use cases like \emph{state replication} (event sourcing) this is essential. However, compaction only removes older versions of a key, *not* two identical messages with different keys.
-- On the producer/consumer side, Kafka’s \textbf{exactly-once semantics} (EOS) ensure that messages are not processed multiple times. Kafka achieves this through \emph{idempotent producers} and transactions. This prevents duplicates in the sense that a producer, upon reconnecting, does not accidentally post the same record twice. EOS addresses the *processing* of events; at the storage level duplicates can temporarily occur, but are effectively ignored via consumer offsets and transactions. Should the same message end up in the log twice, a consumer could deduplicate by checking, for example, a unique event ID. However, this scheme has to be implemented in the application logic. In short: Kafka provides mechanisms to avoid *logical* double processing, but it stores everything that is sent in.
+- Kafka offers the option of \textbf{log compaction}~\cite{Confluent2023}: For compacted topics, Kafka retains only the latest message per key and gradually deletes older versions of the same key. This is a form of deduplication on a key basis: if, for example, for user~123 multiple update events exist, after compaction only the last (most recent) event remains in the log, the earlier ones are eventually removed as obsolete. Log compaction thus ensures that the log represents a kind of ``snapshot of the latest state'' per key. Important: it does not guarantee that only one message per key is present at all times, but in the long run duplicate keys are cleaned up. For storage efficiency, this means that for example a constantly updated configuration value will not forever occupy space for all intermediate states, but only the current value persists. Especially for use cases like \emph{state replication} (event sourcing) this is essential. However, compaction only removes older versions of a key, \emph{not} two identical messages with different keys.
+- On the producer/consumer side, Kafka’s \textbf{exactly-once semantics} (EOS) ensure that messages are not processed multiple times. Kafka achieves this through \emph{idempotent producers} and transactions. This prevents duplicates in the sense that a producer, upon reconnecting, does not accidentally post the same record twice. EOS addresses the \emph{processing} of events; at the storage level duplicates can temporarily occur, but are effectively ignored via consumer offsets and transactions. Should the same message end up in the log twice, a consumer could deduplicate by checking, for example, a unique event ID. However, this scheme has to be implemented in the application logic. In short: Kafka provides mechanisms to avoid \emph{logical} double processing, but it stores everything that is sent in.
 
 One could imagine a feature where Kafka on the broker side recognizes identical payloads and deduplicates them, but this is not implemented in practice – partly because messages in Kafka need not be exactly identical to be considered duplicates (they could have different offsets that you cannot simply merge, since Kafka must guarantee a sequential commit log).
 
@@ -197,513 +181,549 @@ One could imagine a feature where Kafka on the broker side recognizes identical 
 - MapReduce jobs often produce intermediate results (spill files, shuffle data) that can have partly identical contents. Usually, however, these are short-lived and distributed, and not deduplicated.
 - Hadoop is often used as a platform for backup solutions (keyword \emph{disk-to-disk backup on HDFS}). Some commercial backup products write their deduplicated data as chunk objects to HDFS. In such cases, deduplication happens in the application layer (the backup software), and HDFS then simply stores already deduplicated chunks.
 
-Research has looked at some approaches to provide deduplication *within* HDFS. One example is \textbf{Extreme Binning} (Bhagwat et al.), which can be applied to distributed file systems, or the approach by Wei et al. (2010) with \emph{ChunkStash}, which moved chunk indices to SSD to keep deduplication fast. For Hadoop there were prototypes where a deduplicating overlay file system (e.g. Datamesh or IBM ProtecTIER) was placed beneath HDFS, so that HDFS itself didn’t need to change.
+Research has looked at some approaches to provide deduplication \emph{within} HDFS. One example is \textbf{Extreme Binning} (Bhagwat et al.), which can be applied to distributed file systems, or the approach by Wei et al. (2010) with \emph{ChunkStash}, which moved chunk indices to SSD to keep deduplication fast. For Hadoop there were prototypes where a deduplicating overlay file system (e.g. Datamesh or IBM ProtecTIER) was placed beneath HDFS, so that HDFS itself didn’t need to change.
 
 In the big data context, often \textbf{application-level deduplication} is what’s needed: for example, in data cleaning one wants to remove duplicate records (the same row in a large collection). That is more of a ``data cleansing'' aspect, not at the byte level. MapReduce jobs can perform such duplicate detection via mappers/reducers (e.g. using a \texttt{distinct} or \texttt{group by}): – Hadoop itself provides the infrastructure (hashing by key in the shuffle phase can be seen as a deduplicating grouping, since identical keys are brought together:).
 
-From an infrastructure perspective, deduplicated storage in Hadoop is of interest mainly for \textbf{backup-on-Hadoop} solutions: here Hadoop is used as a cost-effective, scalable backup target. To avoid storing massive amounts of identical data, vendors combine it with deduplication. For example, *Veritas NetBackup* or *Cloudera* store deduplicated backup images on HDFS; the deduplication is done by their software. 
+From an infrastructure perspective, deduplicated storage in Hadoop is of interest mainly for \textbf{backup-on-Hadoop} solutions: here Hadoop is used as a cost-effective, scalable backup target. To avoid storing massive amounts of identical data, vendors combine it with deduplication. For example, \emph{Veritas NetBackup} or \emph{Cloudera} store deduplicated backup images on HDFS; the deduplication is done by their software. 
 
 Native support in HDFS has not been merged into the mainline, likely due to complexity (HDFS replication and erasure coding somewhat conflict with the concept of globally managing deduplicated blocks).
 
 In conclusion: Kafka and Hadoop themselves do not perform general content deduplication, as in both systems replication is a central feature and deduplication is largely left to higher layers or special cases. However, they do benefit from deduplicating approaches in their ecosystem – for example, log compaction in Kafka for key states, or deduplicating backup solutions on HDFS. This shows that deduplication in scalable architectures is feasible, but it is usually built in specifically (e.g. as compacting logs or external tools) rather than storing all data blocks generically deduplicated.
 
 
-\chapter{Database-Internal Mechanisms and Deduplication Feature Matrix}
-\label{ch:dbmechanisms}
 
-The classical literature on deduplication focuses on backup and storage appliances that operate on files or blocks and remove \emph{byte-identical} data chunks \cite{Muthitacharoen2001,Quinlan2002,Zhu2008}. In contrast, the systems evaluated in this project are \emph{data management systems} (DBMS, object storage, log/stream platforms) which introduce additional layers of semantics, indexing and transactional guarantees. This chapter therefore maps the storage-centric concept of deduplication to the internal mechanisms of the selected systems and derives a feature matrix that later guides the empirical evaluation.
+\section{Core Feature Matrix View}
+\label{sec:core-matrix}
 
-\section{Deduplication layers in a modern data stack}
-
-For the purpose of this analysis, the term ``deduplication'' is decomposed into four layers. This helps to avoid false conclusions (e.g., observing that storage does not shrink does \emph{not} necessarily mean that a system provides no semantic deduplication):
-
-\begin{enumerate}
-\item \textbf{Application / Data model layer (semantic):} Uniqueness constraints, idempotent APIs and upsert semantics prevent duplicates by key or by business rules. This reduces \emph{logical} redundancy but may still store multiple physical versions internally.
-\item \textbf{Database engine layer (structural):} Internal merge processes or index-level techniques can collapse duplicates \emph{within} the engine. Examples are log compaction in Kafka or merge-tree based ``replacing'' in ClickHouse.
-\item \textbf{Encoding / compression layer (physical):} Compression and dictionary encoding reduce repeated patterns but do not rely on exact chunk equality. Compression is therefore adjacent but distinct from deduplication \cite{SNIADedupCompression2010}.
-\item \textbf{Storage layer (block/file):} Block-level deduplication in file systems or storage appliances stores identical blocks once and references them. The present testbed (Longhorn replicated block storage) is \emph{not} configured to provide storage-layer deduplication; thus observed savings must originate from higher layers \cite{LonghornMetrics2026}.
-\end{enumerate}
-
-\section{Potential duplication hot spots in database architectures}
-
-Even without explicit deduplication features, several architectural components influence redundancy and therefore the measurable ``deduplication ratio'':
-
-\begin{itemize}
-\item \textbf{Storage engine representation:} Row stores (heap files, B-trees) and LSM-based engines keep data in different persistent forms. LSM compaction merges sorted runs over time, which can remove overwritten keys but introduces temporary duplication across levels \cite{ONeil1996LSM}.
-\item \textbf{MVCC versions and write-ahead logging:} Multi-version concurrency control keeps multiple tuple versions until vacuum/compaction, and WAL/redo logs add additional redundancy for durability \cite{PostgresMVCC}.
-\item \textbf{Index structures:} Index pages can contain repeated keys or pointers; recent engines introduce index-level deduplication for space efficiency (e.g., posting-list deduplication in PostgreSQL B-trees) \cite{PostgresBtree}.
-\item \textbf{Replication:} Replication factors (application-level, DB-level, or storage-level) deliberately multiply stored data for availability. In this project, replication is part of the experimental design and must be separated from deduplication effects.
-\end{itemize}
-
-\section{System-specific mechanisms}
-
-\subsection{PostgreSQL (heap storage with MVCC)}
-
-PostgreSQL stores table data in heap pages and uses MVCC to provide transactional isolation \cite{PostgresMVCC}. As a consequence, updates can create multiple physical versions of a row until vacuum reclaims dead tuples. Large attributes can be moved out-of-line and optionally compressed via TOAST \cite{PostgresTOAST}. Regarding deduplication, PostgreSQL provides:
-
-\begin{itemize}
-\item \textbf{Semantic deduplication:} primary keys/unique constraints and upsert (\texttt{INSERT ... ON CONFLICT}) can prevent duplicates at the logical level \cite{PostgresInsertOnConflict}.
-\item \textbf{Index-level space deduplication:} B-tree indexes can deduplicate duplicate key values via posting lists, reducing index bloat for low-cardinality or repeated keys \cite{PostgresBtree}.
-\item \textbf{No storage-layer deduplication:} the engine does not provide block-level deduplication across tuples or tables by content. Therefore, identical \texttt{BYTEA} payloads inserted into different rows are expected to occupy separate physical space (modulo compression).
-\end{itemize}
-
-\subsection{MariaDB / InnoDB (row store with page compression)}
-
-MariaDB (with InnoDB) is a row-oriented storage engine with transactional guarantees. Like other InnoDB-derived engines it can reduce physical redundancy through page compression (hole punching) on supported file systems \cite{MariaDBPageCompression2026}. Semantic deduplication is available through unique constraints and idempotent write patterns such as \texttt{INSERT ... ON DUPLICATE KEY UPDATE} \cite{MariaDBInsertOnDuplicate2026}. In contrast to storage appliances, InnoDB does not implement general content-addressable deduplication across rows.
-
-\subsection{CockroachDB (distributed SQL on an LSM-based storage engine)}
-
-CockroachDB is a distributed SQL database. Its storage layer is based on an LSM architecture (Pebble/RocksDB family) and uses MVCC for transactional semantics \cite{TaftEtAl2020CockroachDB,CockroachDBStorageLayer2026}. In such engines, redundant representations arise from multiple versions and from the compaction process itself \cite{ONeil1996LSM}. Deduplication in the strict sense is not a primary feature; rather, the system relies on semantic uniqueness (constraints) and on LSM merges that eventually remove overwritten keys.
-
-\subsection{ClickHouse (columnar merge-tree family)}
-
-ClickHouse is a column-oriented DBMS optimised for analytics. The MergeTree family stores data in immutable parts which are merged in the background. Redundancy reduction occurs via strong compression and encodings (e.g., dictionary encodings for low-cardinality columns) \cite{ClickHouseLowCardinality}. In addition, ClickHouse provides engine-level, \emph{eventual} duplicate elimination:
-
-\begin{itemize}
-\item \textbf{ReplacingMergeTree:} can keep the most recent version of a row per primary key during merge operations; duplicates may exist until merges complete \cite{ClickHouseReplacingMergeTree}.
-\item \textbf{Insert retry deduplication:} ClickHouse can deduplicate \emph{repeated inserts} (e.g., from retries) within a configured window, which is relevant for idempotent pipelines \cite{ClickHouseDedupRetries}.
-\end{itemize}
-
-\subsection{Apache Kafka (log with optional key-based compaction)}
-
-Kafka stores records in an append-only log segmented on disk. Compression can be enabled at the message level, but it does not deduplicate equal messages. ``Log compaction'' provides an engine-level, key-based deduplication mode: it retains the latest record for each key and removes older versions during compaction \cite{KafkaDesignCompaction}. Kafka producers can also be configured for idempotence to reduce duplicates introduced by retries at the client/protocol level \cite{KafkaProducerConfigs}.
-
-\subsection{MinIO (object storage)}
-
-MinIO is an S3-compatible object store. Objects are addressed by key and can be overwritten; this can be seen as semantic uniqueness by key. However, MinIO explicitly does \emph{not} implement general content-based deduplication \cite{MinIODedupeBlog2024}. Therefore, uploading the same object under different keys is expected to consume additional physical space, while overwriting the same key replaces the previous object version (depending on versioning configuration).
-
-\subsection{Redis (baseline key-value store)}
-
-Redis provides an in-memory key-value model with optional persistence mechanisms (RDB snapshots, AOF). Similar to other key-value stores, semantic deduplication is achieved by key overwrites. Redis does not implement content-addressable deduplication across values; its storage efficiency is dominated by data structure overhead and persistence format \cite{RedisPersistence2026}.
-
-\subsection{Redcomponent / Comdare-DB (experimental system)}
-
-The ``Redcomponent'' database (internal prototype) is treated as a black-box system in this study. Public documentation about its storage format and redundancy behavior is limited. The planned approach is therefore to infer deduplication-like effects empirically by observing storage usage and deletion behavior under controlled duplicate workloads.
-
-\section{Feature matrix}
-
-Table~\ref{tab:feature-matrix} summarises the deduplication-relevant features in a coarse, comparable way. The symbols indicate:
-
-\begin{itemize}
-\item \textbf{\checkmark}: feature exists and is available in standard configurations,
-\item \textbf{\textasciitilde}: feature exists in limited form or is eventual/background-driven,
-\item \textbf{\texttimes}: feature is not provided (or not relevant),
-\item \textbf{?}: unknown / to be determined empirically.
-\end{itemize}
+A central deliverable of this work is a structured comparison of \emph{deduplication-like} mechanisms across the evaluated systems. Table~\ref{tab:core-feature-matrix} provides a compact view of the most relevant feature categories; the exhaustive matrix is available in Appendix~\ref{app:feature-matrix}.
 
 \begin{table}[h]
 \centering
-\caption{Deduplication-related features by system (qualitative overview).}
-\label{tab:feature-matrix}
-\begin{tabular}{lcccccc}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccccccc}
 \toprule
-\textbf{System} &
-\textbf{Semantic} &
-\textbf{Engine dedup} &
-\textbf{Idempotent ingest} &
-\textbf{Compression} &
-\textbf{Storage dedup} &
-\textbf{Notes} \\
+\textbf{Feature} & \textbf{PostgreSQL} & \textbf{MariaDB} & \textbf{ClickHouse} & \textbf{Cockroach} & \textbf{Redis} & \textbf{Kafka} & \textbf{MinIO} \\
 \midrule
-PostgreSQL & \checkmark & \textasciitilde & \checkmark & \checkmark & \texttimes & Index dedup only \\
-MariaDB/InnoDB & \checkmark & \texttimes & \checkmark & \textasciitilde & \texttimes & Page compression \\
-CockroachDB & \checkmark & \textasciitilde & \checkmark & \textasciitilde & \texttimes & LSM/MVCC effects \\
-ClickHouse & \textasciitilde & \textasciitilde & \checkmark & \checkmark & \texttimes & ReplacingMergeTree \\
-Kafka & \textasciitilde & \checkmark & \checkmark & \textasciitilde & \texttimes & Log compaction by key \\
-MinIO & \checkmark & \texttimes & \textasciitilde & \texttimes & \texttimes & No content dedup \\
-Redis & \checkmark & \texttimes & \checkmark & \texttimes & \texttimes & Key overwrite \\
-Redcomponent/Comdare & ? & ? & ? & ? & ? & Black-box \\
+Insert-time duplicate suppression (idempotency / overwrite) & Indirect & Indirect & Partial & Indirect & Indirect & Indirect & Indirect \\
+Row/key-level deduplication (merge/compaction semantics)    & Indirect & Indirect & Partial & Indirect & Indirect & Full     & Missing \\
+Index-level duplicate reduction                             & Full     & Missing  & N/A     & N/A      & N/A      & N/A      & N/A \\
+Compression (on-disk / in-log)                              & Full     & Full     & Full    & Full     & Partial  & Full     & Partial \\
+Explicit space reclamation (vacuum/optimize/GC)             & Partial  & Partial  & Partial & Full     & N/A      & Indirect & Indirect \\
 \bottomrule
 \end{tabular}
+\caption{Compact feature matrix (Full / Partial / Indirect / Missing / N/A).}
+\label{tab:core-feature-matrix}
 \end{table}
 
-The feature matrix is intentionally coarse. The empirical study in Chapter~\ref{ch:experiment} focuses on observable effects (storage usage over time, throughput/latency, deletion behavior) and interprets them in the light of this mechanism analysis.
 
 
-
-\chapter{Experimental Design and Measurement Plan}
+\chapter{Experimental Setup and Measurement Plan}
 \label{ch:experiment}
 
-This chapter translates the guiding question \emph{``What is deduplication at the core?''} into a reproducible, measurable experiment on a modern cloud-native testbed. The intent is not to \emph{assume} deduplication is present in a database or storage stack, but to \emph{detect} and \emph{quantify} whether duplicate payloads lead to reduced physical storage consumption (and under which conditions).
+This chapter specifies the empirical part of the module deliverable: a reproducible, automated experiment that complements the literature review with measurable evidence on \emph{physical} (and deduplication-like) behavior in database systems. The focus is not limited to \enquote{classic} content-addressed deduplication, but also includes mechanisms that can \emph{effectively} reduce redundancy (e.g., merge policies, log compaction, TTL/GC, or compression), even if they were primarily designed for other purposes.
 
-\section{Testbed and storage configuration}
+\section{Testbed Hardware and Network}
+\label{sec:testbed-hardware}
 
-\subsection{Hardware and virtualisation baseline}
+The experimental platform is a small-scale on-premise cluster built from four identical single-board servers:
 
-The empirical part of this project is executed on a small, reproducible cluster built from four identical edge nodes (Odroid~H4, Intel~N97 class CPU). Two nodes run Proxmox VE on bare metal, two nodes run Ubuntu Desktop on bare metal. On each physical node, a Talos OS virtual machine is deployed, resulting in a four-node Kubernetes cluster spanning all devices.
-
-This mixed ``bare metal + VM'' setup is intentional: it reflects realistic lab constraints (heterogeneous host environments) while keeping the Kubernetes layer uniform and reproducible. All experiment automation is executed \emph{inside} the cluster to ensure that the measurement pipeline is part of the tested system---an important limitation discussed later.
-
-\subsection{Kubernetes cluster and workloads}
-
-Each system under test is deployed as an isolated workload (typically a StatefulSet) with:
-\begin{itemize}
-    \item one dedicated PersistentVolumeClaim (PVC) of 100\,GiB per system,
-    \item a replica count of 4 for database pods (where supported) to align with the four-node cluster,
-    \item separate controller/operator components (also deployed redundantly where applicable).
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{Nodes:} 4$\times$ ODROID-H4 Ultra with an Intel Core i3-N305 (8 cores / 8 threads, Alder Lake-N class) and 16\,GB RAM each. \cite{HardkernelOdroidH4Ultra2026}
+  \item \textbf{Storage:} Each node provides a dedicated 2\,TB Samsung 860 (SATA) SSD for the experiment workloads. \cite{Samsung860EvoDatasheet2026}
+  \item \textbf{Network:} Each node is equipped with 2.5\,GbE, but the switch limits the effective per-port bandwidth to 1\,Gb/s. The closest matching model is a Cisco Business CBS350-8FP-2G (8$\times$GE + 2$\times$ combo uplinks). \cite{CiscoCBS350Datasheet2026}
 \end{itemize}
 
-In addition to the databases, the cluster hosts a self-managed GitLab instance and GitLab Runners. The CI pipeline triggers the experiment batches, performs data ingestion via the C++ experiment driver, and stores the resulting measurement tables back into the Git repository for later inspection and visualization.
+Two nodes run \textbf{Proxmox} (bare metal) and two run \textbf{Ubuntu Desktop} (bare metal). All four hosts run one Talos OS virtual machine each; these four VMs form one Kubernetes cluster. This mixed-host setup is a deliberate \emph{realism constraint}: I/O contention and virtualization overhead differ between Proxmox and Ubuntu, and the experiment design therefore treats node placement and affinity as first-class factors.
 
-\subsection{Storage layer: Longhorn replicated block storage}
+In addition, each node contains a 32\,GB \textbf{swap partition} on SSD. The experiment datasets are configured to stay well below the 16\,GB RAM boundary to avoid uncontrolled swapping effects during the benchmark. Swap exists mainly because the machines are also used to compile large software projects outside of the experiment context.
 
-PVCs are provisioned via a Longhorn StorageClass. Longhorn implements distributed \emph{block storage} for Kubernetes by running an engine component and placing multiple volume \emph{replicas} on different nodes. A replica count $N=4$ is configured (``replica 4 over 4 nodes''), so that each volume's written blocks are synchronously replicated to four nodes~\cite{LonghornConcepts2026}.
+\section{Software Stack and Versions}
+\label{sec:testbed-software}
 
-Longhorn is thin-provisioned: physical storage usage grows with written blocks, but it does \emph{not} automatically shrink when files are deleted, because block storage cannot infer which filesystem blocks became free. Therefore, post-delete measurements require explicit filesystem discard/TRIM and/or table/segment rewrites/compaction (depending on the system) to make space reclamation observable~\cite{LonghornConcepts2026}.
+The stack is chosen to make the benchmark \emph{fully automated}, reproducible, and observable:
 
-\paragraph{Storage measurement.}
-Two complementary perspectives are recorded for each test step:
-
-\begin{itemize}
-    \item \textbf{Logical size} reported by the system under test (e.g., database-reported relation/table sizes, internal ``bytes on disk'' counters).
-    \item \textbf{Physical size} as observed at the storage layer via Longhorn metrics. Longhorn exposes Prometheus metrics such as \texttt{longhorn\_volume\_actual\_size\_bytes}, described as the actual space used by each replica of a volume~\cite{LonghornMetrics2026}. For a volume with $N$ replicas, the cluster-wide physical footprint can be approximated by summing this metric over all replicas.
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{Talos OS:} v1.12.4 \cite{TalosRelease1124}
+  \item \textbf{Kubernetes:} v1.34.0 (Talos-managed cluster)
+  \item \textbf{Longhorn:} v1.11.0 as the distributed block storage layer for database PVCs \cite{LonghornRelease1110,LonghornConcepts2026}
+  \item \textbf{GitLab:} v18.8.1 and \textbf{GitLab Runner:} v18.8.0 to execute the benchmark pipeline on-cluster \cite{GitLabRelease1881,GitLabRunner1880}
+  \item \textbf{Apache Kafka:} v4.2.0 as the time-series log sink for measurement and metadata events \cite{KafkaRelease420}
 \end{itemize}
 
-\subsection{Automation and monitoring pipeline}
+Longhorn exposes \texttt{longhorn\_volume\_actual\_size\_bytes} via Prometheus, which is used to sample \emph{physical} volume growth over time at high frequency. \cite{LonghornMetrics2026}
 
-The experiment workflow is fully automated:
-\begin{enumerate}
-    \item A GitLab CI pipeline selects a system, dataset type, dataset size, and duplication level.
-    \item The C++ experiment driver ingests the dataset into the system under test and records throughput and latency.
-    \item In parallel, a metrics collector samples storage usage (100\,ms interval for Longhorn-based size measurement) and pushes measurement records to a Kafka topic dedicated to experiment metadata and time series.
-    \item After a test phase completes, the database is reset to a clean state, and the next batch starts.
-    \item Results are written back to the Git repository and visualized in Grafana (CSV-based dashboards) for inspection and comparison.
+\section{Automation Pipeline and Measurement Architecture}
+\label{sec:pipeline}
+
+The experiment is executed as a GitLab CI pipeline running inside the Kubernetes cluster. At a high level, each run follows the same pattern:
+
+\begin{enumerate}[itemsep=0.35em]
+  \item \textbf{(Re)configure DB variant:} apply the database-specific settings under test (e.g., compaction policy, TTL, storage mode).
+  \item \textbf{Reset:} create a dedicated \texttt{lab\_user} schema / bucket / topic for the run, and reset it after the run without touching customer data. All systems are accessed with the dedicated LDAP account \texttt{lab\_user} to isolate the experiment from production/customer credentials. Cleanup is executed as an explicit pipeline stage (GitLab Runner YAML): the lab-only schemas/topics/buckets are dropped and recreated after each run.
+  \item \textbf{Load:} inject a dataset batch (bulk stage + incremental stage).
+  \item \textbf{Measure:} sample size-over-time, throughput, and latency (DB-side timing when available; otherwise end-to-end).
+  \item \textbf{Delete + reclaim:} execute deletion variants and explicitly trigger maintenance (vacuum/optimize/compaction) where possible.
+  \item \textbf{Export:} write CSV artefacts back into the GitLab repository (run-ID tagged). Grafana dashboards read the committed CSV files directly from the repository.
 \end{enumerate}
 
-GitLab Runner provides the execution substrate for the pipeline jobs on Kubernetes~\cite{GitLabRunnerKubernetesExecutor2026}. Grafana dashboards can be configured to read static CSV/JSON tables from a repository via dedicated data source plugins (e.g., Infinity/CSV)~\cite{GrafanaInfinityDatasource2026}.
+A dedicated C++ measurement application runs as a Kubernetes job/pod on the same cluster. For network realism, the measurer is scheduled on a node that is different from the primary/controller pod of the system under test whenever possible (node affinity), so that traffic traverses the cluster network. It emits (i) high-frequency storage samples and (ii) per-operation latency/throughput events into a dedicated Kafka topic. Persisting the measurement stream separately makes the pipeline resilient against job restarts and enables post-hoc analysis.
 
-\section{Systems under test}
+\begin{figure}[h]
+  \centering
+  \begin{tikzpicture}[x=1cm,y=1cm]
+    \node[draw,rounded corners,align=center] (gitlab) at (0,0) {GitLab CI\\(pipeline)};
+    \node[draw,rounded corners,align=center] (loader) at (4,0) {Data loader\\jobs};
+    \node[draw,rounded corners,align=center] (db) at (8,0) {DB pods\\(replica 4)};
+    \node[draw,rounded corners,align=center] (meas) at (4,-2.2) {C++ measurer\\(K8s job)};
+    \node[draw,rounded corners,align=center] (kafka) at (8,-2.2) {Kafka topic\\metrics + metadata};
+    \node[draw,rounded corners,align=center] (repo) at (0,-2.2) {GitLab repo\\CSV artefacts};
+    \node[draw,rounded corners,align=center] (grafana) at (0,-4.4) {Grafana\\dashboards};
 
-The experiment focuses on a small set of systems that represent different architectures and different ``places'' where deduplication-like effects could occur. The current cluster integrates the following systems as Kubernetes workloads:
+    \draw[->] (gitlab) -- (loader);
+    \draw[->] (loader) -- (db);
+    \draw[->] (meas) -- (kafka);
+    \draw[->] (meas) -- (repo);
+    \draw[->] (repo) -- (grafana);
+    \draw[->,dashed] (db) -- (meas);
+  \end{tikzpicture}
+  \caption{Benchmark control and measurement flow. The dashed arrow indicates that the measurer observes the DB via API calls and storage metrics, but does not control the DB logic directly.}
+  \label{fig:pipeline}
+\end{figure}
 
-\begin{itemize}
-    \item \textbf{PostgreSQL} (relational DBMS, heap storage with MVCC)~\cite{PostgresMVCC}.
-    \item \textbf{MariaDB/InnoDB} (relational DBMS, row store with page-level compression options)~\cite{MariaDBPageCompression2026}.
-    \item \textbf{CockroachDB} (distributed SQL on an LSM-based storage engine)~\cite{TaftEtAl2020CockroachDB,CockroachDBStorageLayer2026}.
-    \item \textbf{ClickHouse} (column-oriented analytical DBMS with strong compression and merge-tree background processing)~\cite{SchulzeEtAl2024ClickHouse,ClickHouseLowCardinality}.
-    \item \textbf{Apache Kafka} (distributed log / streaming platform). Topic-level retention and compaction are controlled by \\texttt{cleanup.policy} and segment settings; log compaction provides key-based, eventual duplicate elimination~\cite{KafkaDesignCompaction}.
-    \item \textbf{MinIO} (S3-compatible object storage)~\cite{MinIODedupeBlog2024}.
-    \item \textbf{Redis} (in-memory key-value store baseline)~\cite{RedisPersistence2026}.
+\section{Systems Under Test}
+\label{sec:sut}
+
+The pipeline includes the following systems. All are deployed with four replicas and placed evenly across the four nodes. Persistent volumes are provisioned via Longhorn.
+
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{PostgreSQL} (relational, MVCC, TOAST) \cite{PostgreSQLToast2026,PostgreSQLVacuum2026}
+  \item \textbf{MariaDB/InnoDB} (relational, page-based) \cite{MariaDBCompression2026,MariaDBOptimize2026}
+  \item \textbf{ClickHouse} (columnar, MergeTree family) \cite{ClickHouseReplacingMergeTree2026,ClickHouseCompressionCodecs2026}
+  \item \textbf{CockroachDB} (distributed SQL, MVCC, LSM/Pebble) \cite{CockroachGCTTL2026,CockroachRowTTL2026}
+  \item \textbf{Redis} (in-memory key/value, overwrite semantics) \cite{RedisRDBCompression2026}
+  \item \textbf{Apache Kafka} (append-only log, log compaction) \cite{KafkaCompactionDocs2026}
+  \item \textbf{MinIO} (S3-compatible object storage; no native content dedup) \cite{MinIOErasureCoding2026,MinIOGitHub2026}
+  \item \textbf{ComdareDB} (custom research prototype; planned for a later iteration)
 \end{itemize}
 
-In addition, the project originally targeted an experimental system (\textbf{Redcomponent / Comdare-DB}). At the time of writing, its connector and automation integration are not yet complete. It therefore remains part of the \emph{planned} comparison and will be treated as a black box once integration is available.
+\section{Dataset Definition and Duplicate Construction}
+\label{sec:dataset}
 
-\section{Data sets and payload types}
+\paragraph{Duplicate definition.}
+A \emph{duplicate} is defined as a \textbf{byte-identical payload} (hash-identical). For JSON payloads, a single canonical serialization is used (stable key order, no whitespace variation) to guarantee byte equality.
 
-The goal is to cover payload types that are (a) easy to insert reproducibly, (b) representative for real workloads, and (c) allow controlled duplication. In addition to already available GitHub logs, bank transactions, and synthetic random numbers, we add the following public, reproducible sources:
+\paragraph{Duplicate ratios.}
+For each dataset type and size, the workload is generated with duplicate ratios of \textbf{0\%, 50\%, 90\%, 95\%, and 99\%}. This covers both moderate duplication and the extreme regimes in which deduplication-like mechanisms may become visible in physical storage curves.
 
-The already available GitHub logs can be treated as event-stream data in the style of the public GitHub timeline (e.g., GH Archive)~\cite{GHArchive2026}.
+\paragraph{Placement.}
+For each ratio, two placements are executed:
+(i) duplicates \emph{within} the same schema/topic/bucket, and
+(ii) duplicates \emph{across} distinct schemas/topics/buckets.
+This explicitly tests whether any system performs cross-container sharing (rare in general-purpose databases).
 
-\paragraph{Images (large binary objects).}
-NASA provides a large catalog of imagery and permits broad reuse of NASA-produced media~\cite{NASAMediaGuidelines2026}. As an example of a single large file with stable download links, the Hubble Ultra Deep Field image is provided in high resolution (e.g., \texttt{.tif}) on NASA's portal~\cite{NASAUltraDeepField2026}. For scalability, additional NASA imagery can be retrieved via the NASA Image and Video Library~\cite{NASAImagesLibrary2026}.
+\paragraph{Dataset sizes.}
+The primary volume targets are \textbf{1\,GB, 5\,GB, and 10\,GB} per run (logical payload volume).
 
-\paragraph{Video (very large binary objects).}
-For reproducible and legally reusable video payloads, open-licensed Blender Foundation movies are available as downloadable files, e.g., \emph{Big Buck Bunny}~\cite{WikimediaBigBuckBunny2026}, \emph{Sintel}~\cite{WikimediaSintel2026}, and \emph{Tears of Steel}~\cite{WikimediaTearsOfSteel2026}. These sources provide fixed file metadata (size, format, resolution) and multiple resolutions.
+\paragraph{Data types and sources.}
+The benchmark mixes synthetic and real-world data to cover typical storage patterns:
 
-\paragraph{Full text (large textual payloads).}
-Public-domain novels are available from Project Gutenberg~\cite{ProjectGutenbergTerms2026}. For reproducibility, we define a fixed list of Gutenberg IDs (e.g., \texttt{1342} for \emph{Pride and Prejudice}, \texttt{2701} for \emph{Moby-Dick}) and store the plain-text \texttt{.txt} variants.
-
-\paragraph{Additional SQL data types.}
-Beyond timestamps, numeric values, and strings/VARCHAR, two further SQL-relevant types are included:
-\begin{itemize}
-    \item \textbf{UUID / GUID} identifiers (high-entropy keys; representative for distributed systems).
-    \item \textbf{JSON / JSONB} payloads (semi-structured metadata, common in modern applications).
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{Structured:} time-series tuples, random numeric payloads, and transaction-like rows (SQL-friendly).
+  \item \textbf{Semi-structured:} GitHub event logs (JSON) derived from GH Archive. \cite{GHArchive2026}
+  \item \textbf{Unstructured:} public-domain text corpora (Project Gutenberg) and media files (images/videos). \cite{ProjectGutenbergTerms2026,NASAMediaGuidelines2026,BlenderOpenMovies2026,KaggleDatasets2026}
 \end{itemize}
 
-\section{Workload definition and experimental procedure}
+\section{Workload Stages and DB-Specific Variants}
+\label{sec:workload}
 
-The experiment is structured into three stages that directly mirror the measurement requirements: (i) insert, (ii) insert per-file, (iii) delete per-file. All stages are executed for multiple \emph{duplication levels} to isolate deduplication effects from compression effects.
+Each run consists of staged actions to make the time evolution of storage visible:
 
-\subsection{Controlled duplication levels}
-
-For each dataset, three dataset variants are generated:
-\begin{itemize}
-    \item \textbf{U0 (unique):} no intentional duplicates.
-    \item \textbf{U50:} 50\,\% duplicates (every second record/object is a byte-identical copy of a previous payload but with a different primary key/object name).
-    \item \textbf{U90:} 90\,\% duplicates (highly redundant workload).
-\end{itemize}
-This construction ensures that \emph{deduplication} (if present) can be observed as sub-linear growth in physical storage with increasing duplication.
-
-\subsection{Stage 1: Bulk insertion in a ``natural'' schema}
-
-\begin{enumerate}
-    \item \textbf{Create schema/topic/bucket.} Create tables for structured data (timestamps, numerics, strings, JSON), create Kafka topics, and create MinIO buckets.
-    \item \textbf{Bulk load.} Load each dataset variant (U0/U50/U90) in the most idiomatic way:
-    \begin{itemize}
-        \item SQL systems: bulk insert/COPY/LOAD operations into relational/columnar tables.
-        \item Kafka: produce messages (keyed by UUID; value is payload bytes).
-        \item MinIO: upload objects (object name derived from UUID; content is payload bytes).
+\begin{description}[style=nextline, leftmargin=1.5cm, labelwidth=1.3cm, itemsep=0.4em]
+  \item[Stage 1] \textbf{Bulk ingest:} one-shot import of a batch (fast path when available, e.g., PostgreSQL \texttt{COPY}).
+  \item[Stage 2] \textbf{Incremental ingest:} many small inserts/puts to emulate streaming ingestion and to make compaction/merge effects observable.
+  \item[Stage 3] \textbf{Deletion variants:}
+    \begin{itemize}[itemsep=0.2em]
+      \item \emph{Logical delete} (DELETE / tombstones) without shrink,
+      \item \emph{Truncate}-style reset (where supported),
+      \item \emph{Drop and recreate} of the dedicated lab schema/topic/bucket (soft reset; PVCs remain).
     \end{itemize}
-    \item \textbf{Measure.} Record wall-clock ingest time $T_\text{bulk}$ and compute ingest throughput (bytes/s). Capture Longhorn metrics \texttt{longhorn\_volume\_actual\_size\_bytes} before and after the load.
-\end{enumerate}
+  \item[Stage 4] \textbf{Refill after delete:} re-ingest to test whether physical space is reclaimed or merely logically freed.
+\end{description}
 
-\subsection{Stage 2: Per-file insertion as single records/objects/messages}
+\paragraph{Database-specific switches.}
+The literature review indicates that \enquote{deduplication} frequently shows up as a side effect of maintenance. Therefore, a small set of DB-specific variants is tested:
 
-This stage isolates \emph{object granularity} effects by inserting each file as one atomic unit.
-
-\begin{enumerate}
-    \item \textbf{Represent each file explicitly.} For SQL databases create a table such as
-    \[
-      \texttt{files(id UUID PRIMARY KEY, mime TEXT, size\_bytes BIGINT, sha256 BYTEA, payload BYTEA)}.
-    \]
-    \item \textbf{Insert one file per transaction/request.} Insert each file individually (U0/U50/U90), measuring per-file latency and overall throughput.
-    \item \textbf{Measure deduplication.} Compute logical bytes written $B_\text{logical}=\sum_i |payload_i|$. Derive physical growth $B_\text{phys}$ from Longhorn metrics. An effective deduplication ratio can be reported as
-    \[
-      \mathrm{EDR} = \frac{B_\text{logical}}{B_\text{phys}/N},
-    \]
-    where $N=4$ is the replica count. Values $\mathrm{EDR}\approx 1$ indicate that the physical footprint grows roughly proportional to the logical bytes (after accounting for replication). Values $\mathrm{EDR}>1$ indicate sublinear physical growth and therefore effective redundancy reduction. In the present setup (no storage-layer deduplication), such effects can only originate from database/engine mechanisms and/or compression/encoding; to isolate duplicate-elimination effects, $\mathrm{EDR}$ is compared across duplication levels within the same system and payload type.
-\end{enumerate}
-
-\subsection{Stage 3: Per-file deletion and post-delete reclamation}
-
-The deletion stage measures whether and how quickly a system can reclaim space once duplicates are removed.
-
-\begin{enumerate}
-    \item \textbf{Delete one file at a time.} Delete each file (record/object/message key) individually.
-    \item \textbf{Run mandatory maintenance steps.} To make space reclamation measurable, execute system-specific maintenance:
-    \begin{itemize}
-        \item PostgreSQL: \texttt{VACUUM FULL} rewrites tables and can return unused space to the OS, but requires an exclusive lock~\cite{PostgresVacuum2026}.
-        \item Kafka: deletion is governed by retention and/or compaction (\texttt{cleanup.policy}); therefore, post-delete measurements must be taken after the configured retention/compaction has run~\cite{KafkaTopicConfig2026}.
-        \item MinIO: delete objects and verify bucket size changes.
-        \item Other SQL systems: run the closest equivalent compaction/optimize procedure where available.
-    \end{itemize}
-    \item \textbf{Re-measure physical usage.} Capture Longhorn metrics again. Because block storage cannot infer which blocks are free, ensure filesystem discard/TRIM is executed before measuring final physical sizes~\cite{LonghornConcepts2026}.
-\end{enumerate}
-
-\paragraph{Primary outputs.}
-The experiment produces (i) ingest throughput per system and data type, (ii) physical storage growth curves over duplication level (U0/U50/U90), and (iii) post-delete reclamation behavior. Together, these measurements provide an empirical answer to whether deduplication is a \emph{database feature}, a \emph{storage-layer feature}, or largely \emph{absent} in the tested configurations.
-
-
-
-\subsection{Experiment matrix and planned run count}
-
-The full measurement campaign is defined by a Cartesian product of factors:
-
-\begin{itemize}
-    \item $|S|$: number of systems under test,
-    \item $|T|$: number of payload types (SQL types and object formats),
-    \item $|Z|$: number of dataset size points,
-    \item $|D|$: number of duplication levels ($U0/U50/U90$),
-    \item $|P|$: number of phases (load, per-item insert, per-item delete + maintenance),
-    \item $|R|$: repetitions per configuration.
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{PostgreSQL:} TOAST compression/storage mode enabled vs. disabled (EXTENDED vs. EXTERNAL where applicable) \cite{PostgreSQLToast2026}; and \texttt{VACUUM} vs. \texttt{VACUUM FULL} for reclamation behavior \cite{PostgreSQLVacuum2026}.
+  \item \textbf{ClickHouse:} sequential evaluation of MergeTree-family engines, including (at least) \texttt{MergeTree} (baseline) and \texttt{ReplacingMergeTree} (merge-time dedup). \cite{ClickHouseReplacingMergeTree2026}
+  \item \textbf{CockroachDB:} MVCC GC TTL settings (\texttt{gc.ttlseconds}) and row-level TTL jobs as alternative deletion semantics. \cite{CockroachGCTTL2026,CockroachRowTTL2026}
+  \item \textbf{Kafka:} baseline delete retention vs. aggressive log compaction (\texttt{cleanup.policy=compact}) as \enquote{deduplication in the broader sense}. \cite{KafkaCompactionDocs2026}
+  \item \textbf{MariaDB:} best-practice compression configuration per datatype (page/table compression), compared to a baseline without compression where feasible. \cite{MariaDBCompression2026}
 \end{itemize}
 
-The resulting number of experiment runs is:
-\[
-N_{\text{runs}} = |S|\cdot|T|\cdot|Z|\cdot|D|\cdot|P|\cdot|R|.
-\]
+Kafka compaction must be configured aggressively (segment sizing and cleaner thresholds) to ensure that compaction happens within experiment time. Relevant topic and broker parameters are taken from the official documentation. \cite{KafkaTopicConfig2026}
 
-At the time of writing, the automation pipeline is implemented and validated with smoke tests. The exact values for $|Z|$ and $|R|$ will be fixed before the final measurement campaign; the run log template is provided in Appendix~\ref{app:runlog}.
+\section{Cache Scenarios and Reset Strategy}
+\label{sec:cache}
 
+Each run is executed twice:
+\textbf{cold-cache} and \textbf{warm-cache}.
 
-
-\chapter{Current Status, Risks, and Next Steps}
-\label{ch:status}
-
-This chapter consolidates the current state of the project after the literature review and the design of the experimental testbed. It also documents practical risks and remaining gaps identified in the provided implementation, which are intentionally kept brief and are meant as an outlook for further work.
-
-\section{What the literature already suggests}
-
-Across system classes, the literature indicates that \emph{physical} deduplication (content-addressable chunking) is most prominent in backup and storage systems \cite{Muthitacharoen2001,Quinlan2002,Zhu2008,Srinivasan2012}. In database engines, redundancy is often \emph{intentional}: MVCC, logging, indexing and replication add physical duplicates to guarantee correctness and availability \cite{PostgresMVCC,TaftEtAl2020CockroachDB}. Consequently, ``deduplication'' in DBMS contexts is frequently either:
-
-\begin{itemize}
-    \item \textbf{semantic:} preventing duplicates by key (constraints, upsert semantics), or
-    \item \textbf{eventual/structural:} removing older versions during merge/compaction processes (Kafka log compaction, merge-tree engines).
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{Cold cache:} the DB pod(s) for the system under test are restarted to clear DB-level caches. For ClickHouse, optional explicit cache drop commands (\texttt{SYSTEM DROP ... CACHE}) exist but a pod restart is used for uniformity. \cite{ClickHouseDropCaches2026}
+  \item \textbf{Warm cache:} the same run is repeated immediately without restart; this captures the best-case steady-state behavior.
 \end{itemize}
 
-This supports the working hypothesis that the empirical study will likely observe strong redundancy reduction only for systems that explicitly implement an engine-level duplicate elimination mechanism (Kafka compaction, ClickHouse replacing merges), while pure row stores (PostgreSQL, MariaDB) will primarily show compression effects but not content-based deduplication.
+OS page cache dropping is not required by the cold-cache definition in this work; however, the infrastructure supports privileged DaemonSets for node-local cache operations if needed.
 
-\section{Interpretation hypotheses for the experiment}
+\section{Metrics and Statistical Treatment}
+\label{sec:metrics}
 
-Given the feature matrix (Table~\ref{tab:feature-matrix}), the following qualitative outcomes are expected:
+Database research commonly reports throughput and latency distributions, not only means. This benchmark therefore records:
 
-\begin{itemize}
-    \item \textbf{Kafka:} For key-based workloads, physical storage may grow during ingestion but shrink/flatten after background log compaction. The timing depends on segment and compaction configuration \cite{KafkaDesignCompaction}.
-    \item \textbf{ClickHouse:} Duplicate elimination (ReplacingMergeTree) is expected to be \emph{eventual} and to depend on merge scheduling; deduplication-like effects may appear only after merges \cite{ClickHouseReplacingMergeTree}.
-    \item \textbf{PostgreSQL and MariaDB:} Duplicate prevention can be expressed semantically via constraints/upsert. However, inserting identical payloads as separate rows is expected to consume separate physical space (modulo compression/TOAST/page compression) \cite{PostgresTOAST,MariaDBPageCompression2026}.
-    \item \textbf{MinIO:} Uploading identical objects under different keys is expected to increase physical usage because MinIO does not perform content-based deduplication \cite{MinIODedupeBlog2024}.
+\begin{itemize}[itemsep=0.25em]
+  \item \textbf{Throughput:} objects/s and MB/s, both for Stage~1 and Stage~2 (combined and separated).
+  \item \textbf{Latency distribution:} mean, max, and percentiles p50/p90/p95/p99 per operation type. \cite{Cooper2010YCSB}
+  \item \textbf{Storage footprint:} size-over-time sampled at 100\,ms using Longhorn actual volume size. \cite{LonghornMetrics2026}
 \end{itemize}
 
-\section{Implementation status and identified gaps (brief)}
+\paragraph{Effective Data Reduction (EDR).}
+To expose replication overhead explicitly, two related ratios are used:
 
-A review of the provided implementation and CI pipeline configuration indicates that the main building blocks are in place (dataset generator, connectors, Prometheus-based storage measurement, Kafka-based metric logging, GitLab-driven automation). The following gaps and risks should be addressed before the final measurement campaign:
+\begin{align}
+  \mathrm{EDR}_{\mathrm{cluster}} &= \frac{B_{\mathrm{logical}}}{B_{\mathrm{physical,cluster}}} \label{eq:edr-cluster}\\
+  \mathrm{EDR}_{\mathrm{replica}} &= \frac{B_{\mathrm{logical}}}{B_{\mathrm{physical,cluster}} / R} \label{eq:edr-replica}
+\end{align}
 
-\begin{itemize}
-    \item \textbf{CPU affinity / isolation:} The design goal is to reduce measurement overhead on the small CPUs (N97 class) via CPU affinity, but the current C++ implementation does not yet pin the measurement process to dedicated cores. This can bias latency measurements under load.
-    \item \textbf{Time synchronisation:} Latency and time-series storage sampling require consistent clocks across nodes. A documented time-sync mechanism (NTP/chrony inside VMs or host-level) is not yet captured in the write-up.
-    \item \textbf{Dataset coverage:} The dataset generator currently focuses on synthetic binary/text/JSON payloads. Planned public datasets (images/video/large text corpora) are referenced, but ingestion pipelines for these payloads are not yet fully integrated.
-    \item \textbf{Experimental system integration:} The connector for the Redcomponent/Comdare-DB is incomplete; therefore this system cannot yet be included in automated runs.
-    \item \textbf{Background processes:} Some systems require explicit waiting/triggering for compaction/merge/vacuum to make space reclamation visible. A robust ``wait until stable'' condition should be defined per system.
+where $B_{\mathrm{logical}}$ is the logical payload volume inserted once by the client, $B_{\mathrm{physical,cluster}}$ is the total physical footprint across all replicas and storage replicas, and $R$ denotes the effective replication factor (application-level replicas, multiplied by storage-level replicas when applicable). In the current setup, the application-level replica count is 4 and Longhorn is configured with 4 storage replicas, so the effective factor can reach $R=16$ when all layers replicate the same bytes. All overheads (metadata, indices, WAL/logs, compaction artefacts) remain included in $B_{\mathrm{physical,cluster}}$ because they are natural properties of the systems under test. $\mathrm{EDR}_{\mathrm{cluster}}$ therefore answers the question \enquote{How many logical bytes do we get per physical byte in the real cluster?}, while $\mathrm{EDR}_{\mathrm{replica}}$ normalizes out replication to make storage-engine effects comparable.
+
+\paragraph{Repetition and averaging.}
+Every point in the run matrix is executed \textbf{three times}. Plots show both the raw trajectories and the averaged curve per configuration; for latency/throughput, mean values and percentile bands are computed across the three repetitions.
+
+\section{Run Matrix and Practical Scope}
+\label{sec:run-matrix}
+
+A full-factorial plan is defined by:
+
+\begin{itemize}[itemsep=0.2em]
+  \item dataset sizes $\{1,5,10\}$\,GB,
+  \item duplicate ratios $\{0,50,90,95,99\}\%$,
+  \item placement $\{\text{within},\text{across}\}$,
+  \item cache state $\{\text{cold},\text{warm}\}$,
+  \item repetitions $=3$,
+  \item and DB-specific variants (maintenance/TTL/engine/compaction settings).
 \end{itemize}
 
-These gaps are suitable as a short outlook section in the thesis and as concrete engineering tasks for the upcoming week.
+The base matrix (without DB-specific variants) already yields $3 \cdot 5 \cdot 2 \cdot 2 \cdot 3 = 180$ runs per system. DB-specific variants multiply this number. To keep the project tractable, compression is treated primarily as a \emph{documented capability} in the feature matrix and only as an experimental dimension where it is directly tied to deduplication-like behavior (e.g., PostgreSQL TOAST storage mode, Kafka compaction, ClickHouse merge engines).
 
-\section{Immediate next steps}
 
-The next development step is to freeze the experiment matrix (payload types, size points, duplication levels, repetitions) and to execute the full run log. The appendix provides templates to record each run consistently and to transfer the results into the final evaluation chapter.
 
 \chapter{Conclusion and Outlook}
 \label{ch:conclusion}
 
-\section{What deduplication means in the core}
+Deduplication is often presented as a single storage feature, but the literature and the systems survey show that \textbf{redundancy reduction} in real database stacks is distributed across multiple layers: API semantics (upsert/overwrite), engine-level data structures (index layout, MVCC history), background maintenance (vacuum/compaction/merge), and storage subsystems. Classic block-level deduplication (content-addressed chunk sharing) is rare inside general-purpose databases; instead, most systems achieve \emph{deduplication-like} effects indirectly---or not at all.
 
-In the most general form, \textbf{deduplication} is the act of reducing redundancy by mapping \emph{equal content under a defined equality predicate} to a single stored representation and reusing it via references. This requires (i) a notion of equality (byte-identical chunks, equal keys, equal semantic objects) and (ii) an indirection mechanism (content-addressed storage, indexes, compaction rules). In contrast, \textbf{compression} reduces redundancy by encoding patterns more compactly without necessarily preserving chunk identity~\cite{SNIADedupCompression2010}. Many systems combine both.
+\section{What deduplication means in this work}
 
-\section{Implications for modern databases}
+This report uses \emph{physical deduplication} as the guiding notion: whether identical payload bytes lead to shared or eliminated physical representations, and under which conditions this happens. Compression is treated as a related but distinct mechanism: it reduces the footprint of each object instance, while deduplication removes redundant \emph{copies} across objects.
 
-For modern DBMS and data platforms, deduplication is not a universal primitive. Instead, redundancy reduction and redundancy \emph{creation} coexist:
+\section{Answering the research questions}
 
-\begin{itemize}
-    \item \textbf{Semantic deduplication} is widely available (keys, constraints, idempotent writes) and is often the correct tool to prevent duplicate facts.
-    \item \textbf{Engine-level eventual deduplication} exists in selected architectures (Kafka compaction, merge-tree based replacement) and is highly configuration- and workload-dependent.
-    \item \textbf{Physical chunk-level deduplication} is typically implemented below the DBMS (backup systems, storage appliances) and is deliberately absent in many database engines due to complexity and performance trade-offs.
+The consolidated literature review and the feature matrix (Appendix~\ref{app:feature-matrix}) make three points explicit:
+
+\begin{enumerate}[itemsep=0.3em]
+  \item \textbf{Deduplication is layer-specific.} Mechanisms such as Kafka log compaction or ClickHouse ReplacingMergeTree are \emph{semantic} and operate on keys/rows; they do not imply block-level sharing. Engine-level background work (vacuum, merge, GC) is therefore central to interpreting measured size-over-time curves.
+  \item \textbf{Replication dominates physical footprint.} On small clusters with multiple replication layers (DB replicas and storage replicas), the physically consumed bytes may exceed logical payload volume by an order of magnitude. Reporting $\mathrm{EDR}_{\mathrm{cluster}}$ and $\mathrm{EDR}_{\mathrm{replica}}$ side-by-side avoids misleading conclusions.
+  \item \textbf{Deletion is not reclamation.} Many databases implement deletion as tombstones or MVCC versioning. Physical space reclamation depends on compaction/vacuum/GC timing and may be delayed or incomplete under the constraint of \enquote{soft resets} (PVCs cannot be destroyed because customer data co-exists on the same systems).
+\end{enumerate}
+
+\section{Outlook and open engineering items}
+
+The current benchmark pipeline already supports end-to-end automation and high-frequency size sampling, but several extensions are planned to close remaining gaps:
+
+\begin{itemize}[itemsep=0.25em]
+  \item Extend the workload generator from duplication grades (U0/U50/U90) to the full target set (0/50/90/95/99\%).
+  \item Implement explicit DB-side maintenance variants (e.g., PostgreSQL \texttt{VACUUM FULL}, ClickHouse \texttt{OPTIMIZE FINAL}) and TTL/GC configurations as first-class pipeline dimensions.
+  \item Add systematic cache-reset procedures per DB (where supported) and quantify the impact of pod restarts versus explicit cache-drop commands.
+  \item Integrate the custom \textbf{ComdareDB} prototype once it is ready, and compare its physical deduplication behavior to the established systems under identical workloads.
+  \item Evaluate CPU affinity pinning (measurer vs. DB pods) as an optional mitigation for measurement overhead on small hardware.
 \end{itemize}
 
-This project operationalises these distinctions into a feature matrix and a reproducible measurement protocol on a constrained but realistic cluster testbed.
-
-\section{Outlook}
-
-The empirical study described in this document can be extended in several directions:
-
-\begin{itemize}
-    \item broadening dataset realism (public image/video corpora, large text),
-    \item adding stronger isolation (CPU affinity, dedicated measurement nodes),
-    \item expanding the system set (additional time-series and LSM-based engines),
-    \item integrating the experimental Redcomponent/Comdare-DB into the automated pipeline.
-\end{itemize}
+Overall, the combination of a consolidated survey and a reproducible experiment framework provides a basis to move from \enquote{deduplication as a buzzword} to \textbf{deduplication as a measurable property} of real database stacks.
 
 \appendix
 
-\chapter{Experiment run log template}
-\label{app:runlog}
+\chapter{Exhaustive Feature Matrix}
+\label{app:feature-matrix}
 
-Table~\ref{tab:runlog} is a template to record each executed configuration. Values can be filled manually or generated automatically by the pipeline.
+This appendix provides the detailed feature matrix requested by the supervisor. Each feature is classified as:
 
+\begin{description}[itemsep=0.2em]
+  \item[Full] documented and generally available in the system.
+  \item[Partial] available only for specific engines/modes, or eventual/limited in scope.
+  \item[Indirect] not designed as deduplication, but can reduce redundancy via semantics (overwrite/upsert) or background behavior.
+  \item[Missing] not supported.
+  \item[N/A] not applicable for this system type.
+\end{description}
+
+\begin{center}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{p{4.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}p{1.2cm}}
+\caption{Deduplication-related feature matrix (core systems).}\label{tab:feature-matrix}\\
+\toprule
+\textbf{Feature category} &
+\textbf{PostgreSQL} &
+\textbf{MariaDB} &
+\textbf{ClickHouse} &
+\textbf{CockroachDB} &
+\textbf{Redis} &
+\textbf{Kafka} &
+\textbf{MinIO} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Feature category} &
+\textbf{PostgreSQL} &
+\textbf{MariaDB} &
+\textbf{ClickHouse} &
+\textbf{CockroachDB} &
+\textbf{Redis} &
+\textbf{Kafka} &
+\textbf{MinIO} \\
+\midrule
+\endhead
+\midrule
+\multicolumn{8}{r}{\emph{continued on next page}}\\
+\endfoot
+\bottomrule
+\endlastfoot
+
+\textbf{Storage engine model (high-level)} &
+MVCC, heap + B-tree &
+InnoDB pages + B-tree &
+Columnar parts + merges &
+MVCC on LSM (Pebble) &
+In-memory structures &
+Append-only log segments &
+Object storage \\
+\addlinespace
+
+\textbf{Insert-time duplicate suppression (idempotency tokens)} &
+Indirect (UPSERT/UNIQUE) &
+Indirect (UPSERT/UNIQUE) &
+Partial (replicated insert dedup) &
+Indirect (UPSERT/UNIQUE) &
+Indirect (overwrite key) &
+Indirect (idempotent producer) &
+Indirect (overwrite object key) \\
+\addlinespace
+
+\textbf{Row-level/record-level deduplication} &
+Indirect (constraints) &
+Indirect (constraints) &
+Partial (ReplacingMergeTree, merge-time) &
+Indirect (constraints) &
+Indirect (overwrite) &
+N/A &
+Missing \\
+\addlinespace
+
+\textbf{Key-based compaction (keep last value)} &
+N/A &
+N/A &
+Partial (ReplacingMergeTree semantics) &
+N/A &
+Indirect (overwrite) &
+Full (log compaction) &
+Missing \\
+\addlinespace
+
+\textbf{Index-level duplicate reduction} &
+Full (B-tree dedup) &
+Missing &
+N/A &
+N/A &
+N/A &
+N/A &
+N/A \\
+\addlinespace
+
+\textbf{Built-in compression on stored data} &
+Full (TOAST) &
+Full (InnoDB/page) &
+Full (codecs) &
+Full (SSTable compression) &
+Partial (RDB snapshot) &
+Full (record batch) &
+Partial (optional; not dedup) \\
+\addlinespace
+
+\textbf{Background compaction / merge} &
+Partial (VACUUM) &
+Partial (purge/OPTIMIZE) &
+Full (MergeTree merges) &
+Full (LSM compaction) &
+N/A &
+Full (segment cleaning) &
+N/A \\
+\addlinespace
+
+\textbf{Explicit \enquote{shrink} operation} &
+Partial (VACUUM FULL) &
+Partial (OPTIMIZE TABLE) &
+Partial (\texttt{OPTIMIZE}) &
+Indirect (compaction/GC) &
+N/A &
+Indirect (segment delete) &
+Indirect (delete objects) \\
+\addlinespace
+
+\textbf{TTL/retention affecting physical storage} &
+Indirect (partition retention) &
+Indirect (event scheduler) &
+Partial (TTL on tables) &
+Full (row TTL + GC TTL) &
+N/A &
+Full (retention + tombstones) &
+Partial (lifecycle) \\
+\addlinespace
+
+\textbf{Cross-schema/topic/bucket deduplication} &
+Missing &
+Missing &
+Missing &
+Missing &
+Missing &
+Missing &
+Missing \\
+\addlinespace
+
+\textbf{Cache reset for cold-cache runs} &
+Restart pod &
+Restart pod &
+Restart pod / SYSTEM DROP CACHE &
+Restart node/pod &
+Restart pod &
+Restart broker/pod &
+Restart pod \\
+\addlinespace
+
+\end{longtable}
+\end{center}
+
+\chapter{DB-Specific Reset, Maintenance, and Measurement Commands}
+\label{app:db-commands}
+
+This appendix is intended as a \emph{fill-in} reference: each subsection lists the commands (or API queries) to (i) reset the lab dataset without touching customer data, (ii) trigger maintenance/compaction, (iii) clear caches where possible, and (iv) query internal size statistics (in addition to Longhorn volume size).
+
+\section{PostgreSQL}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): \texttt{DROP SCHEMA lab\_user CASCADE; CREATE SCHEMA lab\_user;}
+  \item Truncate variant: \texttt{TRUNCATE TABLE ...;}
+  \item Maintenance: \texttt{VACUUM (ANALYZE);} vs. \texttt{VACUUM FULL;} \cite{PostgreSQLVacuum2026}
+  \item TOAST mode toggle: column storage \texttt{EXTENDED} vs. \texttt{EXTERNAL} \cite{PostgreSQLToast2026}
+  \item Internal size queries: \texttt{pg\_database\_size}, \texttt{pg\_total\_relation\_size} (per schema/table)
+\end{itemize}
+
+\section{MariaDB / InnoDB}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): \texttt{DROP DATABASE lab\_db; CREATE DATABASE lab\_db;} (or drop individual tables if DB-level is not allowed)
+  \item Maintenance: \texttt{OPTIMIZE TABLE ...;} \cite{MariaDBOptimize2026}
+  \item Compression toggles: InnoDB page/table compression settings (best-practice per datatype). \cite{MariaDBCompression2026}
+  \item Internal size queries: \texttt{information\_schema.TABLES} (data\_length/index\_length) per table
+\end{itemize}
+
+\section{ClickHouse}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): \texttt{DROP TABLE ...;} / \texttt{TRUNCATE TABLE ...;}
+  \item Merge/compaction trigger: \texttt{OPTIMIZE TABLE ... FINAL;} (engine dependent)
+  \item Dedup engine: \texttt{ReplacingMergeTree} (merge-time row replacement). \cite{ClickHouseReplacingMergeTree2026}
+  \item Cache drop (optional): \texttt{SYSTEM DROP MARK CACHE;} and \texttt{SYSTEM DROP UNCOMPRESSED CACHE;} \cite{ClickHouseDropCaches2026}
+  \item Internal size queries: \texttt{system.parts}, \texttt{system.tables}, \texttt{system.columns}
+\end{itemize}
+
+\section{CockroachDB}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): \texttt{DROP TABLE ...;} / \texttt{TRUNCATE ...;} (schema-scoped)
+  \item GC TTL: \texttt{gc.ttlseconds} influences MVCC history retention. \cite{CockroachGCTTL2026}
+  \item Row-level TTL: configure \texttt{ttl} on tables and observe background TTL jobs. \cite{CockroachRowTTL2026}
+  \item Internal size queries: \texttt{SHOW RANGES}, \texttt{crdb\_internal} tables, or admin endpoints (where available)
+\end{itemize}
+
+\section{Kafka}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): delete and recreate topic, or delete records to a given offset.
+  \item Compaction policy: \texttt{cleanup.policy=compact} plus aggressive cleaner parameters. \cite{KafkaCompactionDocs2026,KafkaTopicConfig2026}
+  \item Internal size queries: broker log directory size; topic/partition offsets; segment file inspection
+\end{itemize}
+
+\section{Redis}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): \texttt{FLUSHDB;} (lab DB index) or key-prefix deletion
+  \item Persistence compression: RDB snapshot compression option (\texttt{rdbcompression}). \cite{RedisRDBCompression2026}
+\end{itemize}
+
+\section{MinIO}
+\begin{itemize}[itemsep=0.2em]
+  \item Reset (soft): delete objects in lab bucket; keep customer buckets untouched.
+  \item No native content deduplication; redundancy is managed via erasure coding/replication. \cite{MinIOErasureCoding2026,MinIOGitHub2026}
+\end{itemize}
+
+\chapter{Measurement Appendix Templates}
+\label{app:templates}
+
+The following tables are templates to be filled with measured values (or generated from the CSV artefacts). They focus on the core outcome metrics: storage footprint (EDR) and latency/throughput.
+
+\section{EDR overview (cluster-level)}
 \begin{table}[h]
 \centering
-\caption{Run log template (one row per executed run).}
-\label{tab:runlog}
-\begin{tabularx}{\textwidth}{l l l l l r r l X}
+\small
+\begin{tabular}{lcccccc}
 \toprule
-\textbf{Run ID} & \textbf{Date} & \textbf{System} & \textbf{Payload} & \textbf{Dataset} & \textbf{Size (GiB)} & \textbf{Dup.} & \textbf{Phase} & \textbf{Notes} \\
+\textbf{System} & \textbf{1GB} & \textbf{5GB} & \textbf{10GB} & \textbf{Dup 0\%} & \textbf{Dup 95\%} & \textbf{Dup 99\%} \\
 \midrule
-R001 &  &  &  &  &  &  &  &  \\
-R002 &  &  &  &  &  &  &  &  \\
-R003 &  &  &  &  &  &  &  &  \\
+PostgreSQL &  &  &  &  &  &  \\
+MariaDB    &  &  &  &  &  &  \\
+ClickHouse &  &  &  &  &  &  \\
+Cockroach  &  &  &  &  &  &  \\
+Redis      &  &  &  &  &  &  \\
+Kafka      &  &  &  &  &  &  \\
+MinIO      &  &  &  &  &  &  \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
+\caption{Template for $\mathrm{EDR}_{\mathrm{cluster}}$ (Eq.~\ref{eq:edr-cluster}). Fill with measured values.}
 \end{table}
 
-\chapter{Measurement tables template}
-
-This appendix provides minimal tables for reporting the measured outputs. For each system and payload type, report logical size, physical Longhorn size, throughput and latency distributions for each phase.
-
+\section{Latency percentiles (example template)}
 \begin{table}[h]
 \centering
-\caption{Results template (fill for each system $\times$ payload $\times$ duplication level).}
-\label{tab:results-template}
-\begin{tabularx}{\textwidth}{l l l r r r r}
+\small
+\begin{tabular}{lcccccc}
 \toprule
-\textbf{System} & \textbf{Payload} & \textbf{Dup.} &
-\textbf{Logical (GiB)} & \textbf{Physical (GiB)} &
-\textbf{Throughput (MB/s)} & \textbf{P95 latency (ms)} \\
+\textbf{System} & \textbf{p50} & \textbf{p90} & \textbf{p95} & \textbf{p99} & \textbf{max} & \textbf{mean} \\
 \midrule
- &  & U0  &  &  &  &  \\
- &  & U50 &  &  &  &  \\
- &  & U90 &  &  &  &  \\
+PostgreSQL (insert) &  &  &  &  &  &  \\
+MariaDB (insert)    &  &  &  &  &  &  \\
+ClickHouse (insert) &  &  &  &  &  &  \\
+Cockroach (insert)  &  &  &  &  &  &  \\
+Redis (set)         &  &  &  &  &  &  \\
+Kafka (produce)     &  &  &  &  &  &  \\
+MinIO (put)         &  &  &  &  &  &  \\
 \bottomrule
-\end{tabularx}
+\end{tabular}
+\caption{Template for latency distribution reporting (cold-cache, 10\,GB, dup 0\%). Extend by workload stage and duplicate ratios as needed.}
 \end{table}
 
+\section{CSV schema}
+\begin{verbatim}
+timestamp,run_id,system,variant,data_type,data_size_gb,dup_ratio,placement,cache_state,stage,
+replica_id,metric,value,unit
+\end{verbatim}
 
-\begin{table}[h]
-\centering
-\caption{Per-phase size evolution template (fill for each system and dataset).}
-\label{tab:phase-sizes}
-\begin{tabularx}{\textwidth}{l l l r r r}
-\toprule
-\textbf{System} & \textbf{Payload} & \textbf{Dup.} &
-\textbf{Phase} & \textbf{Logical (GiB)} & \textbf{Physical (GiB)} \\
-\midrule
- &  &  & Pre-load (baseline) &  &  \\
- &  &  & Post-load &  &  \\
- &  &  & Post-insert &  &  \\
- &  &  & Post-delete &  &  \\
- &  &  & Post-maintenance (vacuum/compaction/TRIM) &  &  \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{Latency distribution template (write workloads).}
-\label{tab:latency-template}
-\begin{tabularx}{\textwidth}{l l l r r r r}
-\toprule
-\textbf{System} & \textbf{Payload} & \textbf{Dup.} &
-\textbf{P50 (ms)} & \textbf{P95 (ms)} & \textbf{P99 (ms)} & \textbf{Max (ms)} \\
-\midrule
- &  & U0  &  &  &  &  \\
- &  & U50 &  &  &  &  \\
- &  & U90 &  &  &  &  \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{Throughput template (ingest).}
-\label{tab:throughput-template}
-\begin{tabularx}{\textwidth}{l l l r r}
-\toprule
-\textbf{System} & \textbf{Payload} & \textbf{Dup.} &
-\textbf{MB/s} & \textbf{Ops/s} \\
-\midrule
- &  & U0  &  &  \\
- &  & U50 &  &  \\
- &  & U90 &  &  \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\begin{table}[h]
-\centering
-\caption{Configuration snapshot template (record the effective knobs per run).}
-\label{tab:config-snapshot}
-\begin{tabularx}{\textwidth}{l l X}
-\toprule
-\textbf{System} & \textbf{Parameter} & \textbf{Value / Notes} \\
-\midrule
-PostgreSQL & \texttt{shared\_buffers}, \texttt{wal\_level}, \texttt{fillfactor}, \ldots &  \\
-MariaDB & \texttt{innodb\_compression\_*}, \texttt{innodb\_flush\_*}, \ldots &  \\
-Kafka & \texttt{cleanup.policy}, segment size, retention, \ldots &  \\
-ClickHouse & engine (MergeTree/ReplacingMergeTree), merge settings, \ldots &  \\
-CockroachDB & storage settings, compaction, \ldots &  \\
-MinIO & erasure coding / versioning, \ldots &  \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-
-\chapter{Cluster setup summary}
-
-This appendix summarises the current lab setup in a compact form.
-
-\begin{table}[h]
-\centering
-\caption{Hardware and software setup (high-level).}
-\label{tab:cluster-setup}
-\begin{tabularx}{\textwidth}{l l l X}
-\toprule
-\textbf{Node} & \textbf{Host OS} & \textbf{VM OS} & \textbf{Role / Notes} \\
-\midrule
-Odroid H4 \#1 & Proxmox (bare metal) & Talos VM & Kubernetes worker/control-plane \\
-Odroid H4 \#2 & Proxmox (bare metal) & Talos VM & Kubernetes worker/control-plane \\
-Odroid H4 \#3 & Ubuntu Desktop (bare metal) & Talos VM & Kubernetes worker/control-plane \\
-Odroid H4 \#4 & Ubuntu Desktop (bare metal) & Talos VM & Kubernetes worker/control-plane \\
-\bottomrule
-\end{tabularx}
-\end{table}
+\noindent The \texttt{run\_id} encodes all dimensions (system, variant, dataset, cache state, placement, repetition) so that Grafana can group and compare runs reliably.
 
 
 

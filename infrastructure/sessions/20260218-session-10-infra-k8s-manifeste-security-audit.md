@@ -78,7 +78,7 @@ Fuer Scripts mit Variablen: Lokal schreiben → SCP → auf pve1 ausfuehren.
 ## 3. DATENBANK-CREDENTIALS (fuer Code-Agent)
 
 ### WICHTIG: Allgemeines Passwort
-**Alle Lab-User verwenden das Passwort: ` [CLUSTER-PW-REDACTED]`**
+**Alle Lab-User verwenden das Passwort: `[REDACTED]`**
 Samba AD UPN: `dedup-lab@comdare.de`
 
 ---
@@ -90,14 +90,14 @@ Samba AD UPN: `dedup-lab@comdare.de`
 | **Host** | `postgres-lb.databases.svc.cluster.local` |
 | **Port** | `5432` |
 | **User** | `dedup-lab` |
-| **Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Passwort** | `[REDACTED]` |
 | **Database** | `postgres` |
 | **Schema** | `dedup_lab` |
 | **Status** | EINGERICHTET + VERIFIZIERT |
 
 **Connection String:**
 ```
-postgresql://dedup-lab: [CLUSTER-PW-REDACTED]@postgres-lb.databases.svc.cluster.local:5432/postgres?options=-csearch_path=dedup_lab
+postgresql://dedup-lab:[REDACTED]@postgres-lb.databases.svc.cluster.local:5432/postgres?options=-csearch_path=dedup_lab
 ```
 
 **libpq Parameter (fuer C++):**
@@ -106,7 +106,7 @@ host=postgres-lb.databases.svc.cluster.local
 port=5432
 dbname=postgres
 user=dedup-lab
-password= [CLUSTER-PW-REDACTED]
+password=[REDACTED]
 options=-csearch_path=dedup_lab
 ```
 
@@ -150,14 +150,14 @@ CREATE TABLE chunks (
 | **Host** | `cockroachdb-public.cockroach-operator-system.svc.cluster.local` |
 | **Port** | `26257` |
 | **User** | `dedup_lab` (UNTERSTRICH, nicht Bindestrich!) |
-| **Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Passwort** | `[REDACTED]` |
 | **Database** | `dedup_lab` |
 | **TLS** | verify-full (Cluster-Zertifikate) |
 | **Status** | EINGERICHTET + VERIFIZIERT |
 
 **Connection String:**
 ```
-postgresql://dedup_lab: [CLUSTER-PW-REDACTED]@cockroachdb-public.cockroach-operator-system.svc.cluster.local:26257/dedup_lab?sslmode=verify-full
+postgresql://dedup_lab:[REDACTED]@cockroachdb-public.cockroach-operator-system.svc.cluster.local:26257/dedup_lab?sslmode=verify-full
 ```
 
 **ACHTUNG:** CockroachDB verwendet PostgreSQL-Protokoll (libpq kompatibel), aber:
@@ -190,7 +190,7 @@ dedup_lab     | root
 | **Host** | `redis-cluster.redis.svc.cluster.local` |
 | **Port** | `6379` |
 | **User** | `dedup-lab` |
-| **Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Passwort** | `[REDACTED]` |
 | **Key-Prefix** | `dedup:*` (NUR diese Keys erlaubt!) |
 | **Cluster Mode** | JA (4 Nodes) |
 | **Status** | EINGERICHTET + VERIFIZIERT |
@@ -202,7 +202,7 @@ redisClusterContext *cc = redisClusterContextInit();
 redisClusterSetOptionAddNodes(cc, "redis-cluster.redis.svc.cluster.local:6379");
 redisClusterConnect2(cc);
 // Auth mit Username + Passwort (Redis 6+ ACL)
-redisClusterCommand(cc, "AUTH dedup-lab  [CLUSTER-PW-REDACTED]");
+redisClusterCommand(cc, "AUTH dedup-lab [REDACTED]");
 ```
 
 **WICHTIG - Key-Naming:**
@@ -253,7 +253,7 @@ passwords: aef8678fb300a66...
 bootstrap.servers=kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094
 security.protocol=SASL_PLAINTEXT
 sasl.mechanism=SCRAM-SHA-512
-sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="dedup-lab" password=" [CLUSTER-PW-REDACTED]";
+sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="dedup-lab" password="[REDACTED]";
 ```
 
 **Connection ohne Auth (Port 9092):**
@@ -315,9 +315,9 @@ spec:
 | **Endpoint** | `minio-lb.minio.svc.cluster.local:9000` |
 | **Console** | `minio-lb.minio.svc.cluster.local:9001` |
 | **Root User** | `admin` |
-| **Root Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Root Passwort** | `[REDACTED]` |
 | **Lab User** | `dedup-lab` |
-| **Lab Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Lab Passwort** | `[REDACTED]` |
 | **Lab Policy** | `readwrite` |
 | **Lab Bucket** | `dedup-lab-data` |
 | **Status** | EINGERICHTET + VERIFIZIERT (Kontext 3) |
@@ -376,14 +376,14 @@ dedup-lab-results
 | **Host** | `mariadb.databases.svc.cluster.local` |
 | **Port** | `3306` |
 | **User** | `dedup-lab` |
-| **Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Passwort** | `[REDACTED]` |
 | **Database** | `dedup_lab` |
-| **Root Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Root Passwort** | `[REDACTED]` |
 | **Status** | Manifest bereit (`k8s/mariadb/statefulset.yaml`), NICHT deployed |
 
 **Connection String:**
 ```
-mysql://dedup-lab: [CLUSTER-PW-REDACTED]@mariadb.databases.svc.cluster.local:3306/dedup_lab
+mysql://dedup-lab:[REDACTED]@mariadb.databases.svc.cluster.local:3306/dedup_lab
 ```
 
 **libmariadb Parameter (fuer C++):**
@@ -392,7 +392,7 @@ MYSQL *conn = mysql_init(NULL);
 mysql_real_connect(conn,
     "mariadb.databases.svc.cluster.local",  // host
     "dedup-lab",                             // user
-    " [CLUSTER-PW-REDACTED]",                            // password
+    "[REDACTED]",                            // password
     "dedup_lab",                             // database
     3306,                                    // port
     NULL, 0);
@@ -416,13 +416,13 @@ kubectl apply -f k8s/mariadb/statefulset.yaml
 | **HTTP Endpoint** | `clickhouse.databases.svc.cluster.local:8123` |
 | **Native Endpoint** | `clickhouse.databases.svc.cluster.local:9000` |
 | **User** | `dedup_lab` |
-| **Passwort** | ` [CLUSTER-PW-REDACTED]` |
+| **Passwort** | `[REDACTED]` |
 | **Database** | `dedup_lab` |
 | **Status** | Manifest bereit (`k8s/clickhouse/statefulset.yaml`), NICHT deployed |
 
 **HTTP Connection (libcurl fuer C++):**
 ```
-POST http://clickhouse.databases.svc.cluster.local:8123/?database=dedup_lab&user=dedup_lab&password= [CLUSTER-PW-REDACTED]
+POST http://clickhouse.databases.svc.cluster.local:8123/?database=dedup_lab&user=dedup_lab&password=[REDACTED]
 Content-Type: text/plain
 
 SELECT 1
@@ -443,12 +443,12 @@ kubectl apply -f k8s/clickhouse/statefulset.yaml
 
 | AD User | Typ | Beschreibung | Passwort | Status |
 |---------|-----|-------------|----------|--------|
-| dedup-lab | Lab | Experiment-User fuer alle DBs |  [CLUSTER-PW-REDACTED] | AKTIV |
+| dedup-lab | Lab | Experiment-User fuer alle DBs | [REDACTED] | AKTIV |
 | postgres | Service | PostgreSQL Superuser | postgres123 | AKTIV |
-| minio-admin | Service | MinIO Root User |  [CLUSTER-PW-REDACTED] | AKTIV |
-| cockroach-root | Service | CockroachDB Root (TLS auth) |  [CLUSTER-PW-REDACTED] | AKTIV |
-| kafka-service | Service | Kafka Service Account |  [CLUSTER-PW-REDACTED] | AKTIV |
-| admin | Samba | Samba AD Admin |  [CLUSTER-PW-REDACTED] | AKTIV |
+| minio-admin | Service | MinIO Root User | [REDACTED] | AKTIV |
+| cockroach-root | Service | CockroachDB Root (TLS auth) | [REDACTED] | AKTIV |
+| kafka-service | Service | Kafka Service Account | [REDACTED] | AKTIV |
+| admin | Samba | Samba AD Admin | [REDACTED] | AKTIV |
 | Administrator | Samba | Built-in Admin | (unbekannt) | AKTIV |
 | Guest | Samba | Built-in Guest | - | DEAKTIVIERT |
 | krbtgt | Samba | Kerberos TGT | - | SYSTEM |
@@ -505,14 +505,14 @@ kubectl apply -f k8s/clickhouse/statefulset.yaml
 **Kafka K8s Secret erstellt:**
 ```bash
 kubectl create secret generic dedup-lab-kafka-password -n kafka \
-  --from-literal=password=' [CLUSTER-PW-REDACTED]'
+  --from-literal=password='[REDACTED]'
 ```
 
 **Samba AD:** kafka-service User erstellt.
 
 ### 5.2 MinIO dedup-lab User (ERLEDIGT)
 
-**Herausforderung:** Passwort ` [CLUSTER-PW-REDACTED]` enthaelt `]` und `!` → Shell-Escaping-Hoelle
+**Herausforderung:** Passwort `[REDACTED]` enthaelt `]` und `!` → Shell-Escaping-Hoelle
 durch PowerShell → SSH → kubectl → mc CLI Kette.
 
 **Loesung:** Script lokal geschrieben → SCP nach pve1 → dort ausgefuehrt:
@@ -581,7 +581,7 @@ die Datenbanken auf die Samba AD."
 ```
 MINIO_IDENTITY_LDAP_SERVER_ADDR=samba-ad-lb.samba-ad.svc.cluster.local:389
 MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN=CN=admin,CN=Users,DC=comdare,DC=de
-MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD= [CLUSTER-PW-REDACTED]
+MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD=[REDACTED]
 MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN=CN=Users,DC=comdare,DC=de
 MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER=(&(objectClass=person)(sAMAccountName=%s))
 MINIO_IDENTITY_LDAP_GROUP_SEARCH_BASE_DN=CN=Users,DC=comdare,DC=de
@@ -688,7 +688,7 @@ struct DatabaseConfig {
     std::string pg_host = "postgres-lb.databases.svc.cluster.local";
     int pg_port = 5432;
     std::string pg_user = "dedup-lab";
-    std::string pg_password = " [CLUSTER-PW-REDACTED]";
+    std::string pg_password = "[REDACTED]";
     std::string pg_database = "postgres";
     std::string pg_schema = "dedup_lab";
 
@@ -696,20 +696,20 @@ struct DatabaseConfig {
     std::string crdb_host = "cockroachdb-public.cockroach-operator-system.svc.cluster.local";
     int crdb_port = 26257;
     std::string crdb_user = "dedup_lab";  // UNTERSTRICH!
-    std::string crdb_password = " [CLUSTER-PW-REDACTED]";
+    std::string crdb_password = "[REDACTED]";
     std::string crdb_database = "dedup_lab";
 
     // Redis
     std::string redis_host = "redis-cluster.redis.svc.cluster.local";
     int redis_port = 6379;
     std::string redis_user = "dedup-lab";
-    std::string redis_password = " [CLUSTER-PW-REDACTED]";
+    std::string redis_password = "[REDACTED]";
     std::string redis_key_prefix = "dedup:";  // PFLICHT!
 
     // Kafka (AKTUALISIERT: jetzt mit Auth auf Port 9094)
     std::string kafka_bootstrap = "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094";
     std::string kafka_user = "dedup-lab";
-    std::string kafka_password = " [CLUSTER-PW-REDACTED]";
+    std::string kafka_password = "[REDACTED]";
     std::string kafka_sasl_mechanism = "SCRAM-SHA-512";
     std::string kafka_topic_prefix = "dedup-lab-";
 
@@ -724,7 +724,7 @@ struct DatabaseConfig {
     std::string mariadb_host = "mariadb.databases.svc.cluster.local";
     int mariadb_port = 3306;
     std::string mariadb_user = "dedup-lab";
-    std::string mariadb_password = " [CLUSTER-PW-REDACTED]";
+    std::string mariadb_password = "[REDACTED]";
     std::string mariadb_database = "dedup_lab";
 
     // ClickHouse (nach Deploy)
@@ -732,7 +732,7 @@ struct DatabaseConfig {
     int clickhouse_http_port = 8123;
     int clickhouse_native_port = 9000;
     std::string clickhouse_user = "dedup_lab";
-    std::string clickhouse_password = " [CLUSTER-PW-REDACTED]";
+    std::string clickhouse_password = "[REDACTED]";
     std::string clickhouse_database = "dedup_lab";
 };
 ```
@@ -746,7 +746,7 @@ rd_kafka_conf_set(conf, "bootstrap.servers",
 rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT", NULL, 0);
 rd_kafka_conf_set(conf, "sasl.mechanism", "SCRAM-SHA-512", NULL, 0);
 rd_kafka_conf_set(conf, "sasl.username", "dedup-lab", NULL, 0);
-rd_kafka_conf_set(conf, "sasl.password", " [CLUSTER-PW-REDACTED]", NULL, 0);
+rd_kafka_conf_set(conf, "sasl.password", "[REDACTED]", NULL, 0);
 ```
 
 ### 9.3 MinIO Client Config (AKTUALISIERT)
@@ -849,7 +849,7 @@ kubectl get pods -n kafka
 kubectl exec -n databases postgres-ha-0 -- psql -U dedup-lab -d postgres -c 'SET search_path TO dedup_lab; \dt'
 
 # Redis als Lab-User:
-kubectl exec -n redis redis-cluster-0 -- redis-cli --user dedup-lab -a ' [CLUSTER-PW-REDACTED]' SET dedup:test hello
+kubectl exec -n redis redis-cluster-0 -- redis-cli --user dedup-lab -a '[REDACTED]' SET dedup:test hello
 
 # CockroachDB als Lab-User:
 kubectl exec -n cockroach-operator-system cockroachdb-0 -- \
@@ -915,7 +915,7 @@ ssh root@192.168.178.44 'kubectl port-forward -n databases postgres-ha-0 5432:54
 
 | Quelle | TCP 389 | LDAP Bind |
 |--------|---------|-----------|
-| MinIO Pod | OK | OK (admin@comdare.de /  [CLUSTER-PW-REDACTED]) |
+| MinIO Pod | OK | OK (admin@comdare.de / [REDACTED]) |
 | PostgreSQL Pod | OK | nicht getestet |
 | CockroachDB Pod | OK | nicht getestet |
 | pve1 (Bare Metal) | FAIL | N/A (nicht im K8s Netz) |
@@ -923,7 +923,7 @@ ssh root@192.168.178.44 'kubectl port-forward -n databases postgres-ha-0 5432:54
 ### Samba AD Credentials VERIFIZIERT
 
 - **Bind DN:** `CN=admin,CN=Users,DC=comdare,DC=de` oder `admin@comdare.de` → FUNKTIONIERT
-- **Passwort:** ` [CLUSTER-PW-REDACTED]` (OHNE Backslash!) → FUNKTIONIERT
+- **Passwort:** `[REDACTED]` (OHNE Backslash!) → FUNKTIONIERT
 - **K8s Secret:** ` [CLUSTER-PW-REDACTED]` (MIT Backslash, Shell-Escaping-Artefakt)
 - **Cluster2026!** → FUNKTIONIERT NICHT MEHR
 - **CN=Administrator** → Anderer User, anderes Passwort
@@ -936,7 +936,7 @@ das verwendet und dann nicht mehr rein kommt."
 **Services die Samba AD verwenden:**
 1. GitLab LDAP (bind_dn + password aus Helm Values/K8s Secret)
 2. CoreDNS Forward (kein Auth, nur DNS)
-3. MinIO LDAP (GERADE konfiguriert mit  [CLUSTER-PW-REDACTED])
+3. MinIO LDAP (GERADE konfiguriert mit [REDACTED])
 
 ### MinIO LDAP: CONFIG GESETZT, RESTART NOETIG
 
@@ -991,7 +991,7 @@ host    all    dedup-lab    0.0.0.0/0    ldap ldapserver=samba-ad-lb.samba-ad.sv
 - CockroachDB v24.3.0 hat **KEIN natives LDAP** (erst ab v25.1 experimentell)
 - Alternative: HBA `password` Auth fuer `dedup_lab` User
 - IPv4 + IPv6 Regeln gesetzt (::1 Verbindung beachten!)
-- Passwort fuer dedup_lab war NICHT gesetzt (has_password=false) → jetzt ` [CLUSTER-PW-REDACTED]`
+- Passwort fuer dedup_lab war NICHT gesetzt (has_password=false) → jetzt `[REDACTED]`
 - **Login-Test ERFOLGREICH** (via URL mit URL-encoded Passwort)
 
 ```
@@ -1037,30 +1037,30 @@ host all all ::/0 cert-password
 
 ### Offene LDAP-Aufgaben (aktualisiert Kontext 5b)
 
-1. ~~GitLab LDAP Bind-Password pruefen~~ → ERLEDIGT (verwendet ` [CLUSTER-PW-REDACTED]` via `gitlab-ldap-password` Secret)
-2. ~~Passwort-Angleichung~~ → ERLEDIGT: Alle Services verwenden bereits ` [CLUSTER-PW-REDACTED]`
+1. ~~GitLab LDAP Bind-Password pruefen~~ → ERLEDIGT (verwendet `[REDACTED]` via `gitlab-ldap-password` Secret)
+2. ~~Passwort-Angleichung~~ → ERLEDIGT: Alle Services verwenden bereits `[REDACTED]`
 3. ~~MinIO LDAP Access Key~~ → ERLEDIGT: `dedup-lab-s3` / `dedup-lab-s3-secret` (LDAP-gebunden)
 4. ~~MinIO LDAP Policy~~ → ERLEDIGT: `readwrite` an `cn=Dedup Lab,cn=Users,dc=comdare,dc=de`
 5. CockroachDB → v25.1+ Upgrade fuer natives LDAP (ZUKUNFT)
 
 ### Passwort-Audit Ergebnis (Kontext 5b)
 
-**ALLE Services verwenden ` [CLUSTER-PW-REDACTED]`:**
+**ALLE Services verwenden `[REDACTED]`:**
 
 | Service | Secret/Config | Passwort | Status |
 |---------|--------------|----------|--------|
-| Samba AD admin (LDAP bind) | samba-ad-credentials |  [CLUSTER-PW-REDACTED] | GEFIXT (Backslash entfernt) |
-| GitLab LDAP bind | gitlab-ldap-password |  [CLUSTER-PW-REDACTED] | OK |
-| GitLab root | gitlab-initial-root-password |  [CLUSTER-PW-REDACTED] | OK |
-| GitLab PostgreSQL | gitlab-postgresql-password |  [CLUSTER-PW-REDACTED] | OK |
-| MinIO root | minio-credentials |  [CLUSTER-PW-REDACTED] | OK |
-| MinIO LDAP bind | mc admin config identity_ldap |  [CLUSTER-PW-REDACTED] | OK |
-| PostgreSQL dedup-lab | LDAP (Samba AD) |  [CLUSTER-PW-REDACTED] | OK |
-| CockroachDB dedup_lab | HBA password |  [CLUSTER-PW-REDACTED] | OK |
-| Kafka dedup-lab | dedup-lab-kafka-password |  [CLUSTER-PW-REDACTED] | OK |
-| Redis dedup-lab | ACL |  [CLUSTER-PW-REDACTED] | OK |
+| Samba AD admin (LDAP bind) | samba-ad-credentials | [REDACTED] | GEFIXT (Backslash entfernt) |
+| GitLab LDAP bind | gitlab-ldap-password | [REDACTED] | OK |
+| GitLab root | gitlab-initial-root-password | [REDACTED] | OK |
+| GitLab PostgreSQL | gitlab-postgresql-password | [REDACTED] | OK |
+| MinIO root | minio-credentials | [REDACTED] | OK |
+| MinIO LDAP bind | mc admin config identity_ldap | [REDACTED] | OK |
+| PostgreSQL dedup-lab | LDAP (Samba AD) | [REDACTED] | OK |
+| CockroachDB dedup_lab | HBA password | [REDACTED] | OK |
+| Kafka dedup-lab | dedup-lab-kafka-password | [REDACTED] | OK |
+| Redis dedup-lab | ACL | [REDACTED] | OK |
 
-**K8s Secret Fix:** `samba-ad-credentials` admin-password korrigiert: ` [CLUSTER-PW-REDACTED]` → ` [CLUSTER-PW-REDACTED]`
+**K8s Secret Fix:** `samba-ad-credentials` admin-password korrigiert: ` [CLUSTER-PW-REDACTED]` → `[REDACTED]`
 
 ### MinIO LDAP Access Key (Kontext 5b)
 

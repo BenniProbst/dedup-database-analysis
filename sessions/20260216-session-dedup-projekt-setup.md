@@ -332,7 +332,7 @@
 
 ```
 # Auf Samba AD Controller anlegen:
-samba-tool user add dedup-lab ' [CLUSTER-PW-REDACTED]' --description="Dedup Research Lab User"
+samba-tool user add dedup-lab '[REDACTED]' --description="Dedup Research Lab User"
 samba-tool group addmembers "Database Admins" dedup-lab  # NICHT! Nur DB-Lab-Rechte!
 # Separate Gruppe:
 samba-tool group add "Research Lab"
@@ -408,7 +408,7 @@ samba-tool group addmembers "Research Lab" dedup-lab
 - **SID:** S-1-5-21-1633907924-69945966-2584419805-1111
 - **Gruppe:** "Research Lab" erstellt + dedup-lab hinzugefuegt
 - **DN:** CN=Dedup Lab,CN=Users,DC=comdare,DC=de
-- **Passwort:**  [CLUSTER-PW-REDACTED]
+- **Passwort:** [REDACTED]
 - **Credentials:** gespeichert in `credentials.env` (in .gitignore!)
 
 #### 3. Schema-Isolation TEILWEISE EINGERICHTET
@@ -460,7 +460,7 @@ samba-tool group addmembers "Research Lab" dedup-lab
 - **Secrets:** `cockroachdb-ca`, `cockroachdb-node`, `cockroachdb-root`
 
 #### 2. CockroachDB Lab-User mit Passwort
-- `CREATE USER "dedup_lab" WITH PASSWORD ' [CLUSTER-PW-REDACTED]'` — jetzt im TLS-Modus moeglich!
+- `CREATE USER "dedup_lab" WITH PASSWORD '[REDACTED]'` — jetzt im TLS-Modus moeglich!
 - `GRANT ALL ON DATABASE dedup_lab TO "dedup_lab"`
 
 #### 3. Redis Connector Fix (DB 15 → Key-Prefix)
@@ -617,7 +617,7 @@ samba-tool group addmembers "Research Lab" dedup-lab
 ### GitLab API via pve1 (funktionierender Aufruf)
 ```bash
 ssh pve1 "curl -sk -X POST 'http://10.0.40.5/api/v4/projects' \
-  --header 'PRIVATE-TOKEN:  [GITLAB-TOKEN-REDACTED]' \
+  --header 'PRIVATE-TOKEN: [REDACTED-GITLAB-TOKEN]' \
   --data-urlencode 'name=PROJEKTNAME' \
   --data-urlencode 'namespace_id=24' \
   --data-urlencode 'visibility=private'"
