@@ -83,7 +83,7 @@ data:
           "pvc_name": "data-mariadb-0",
           "k8s_namespace": "databases",
           "max_experiment_bytes": 0,
-          "_comment": "50 GiB Longhorn PVC, replica 4. TODO: deploy to K8s cluster."
+          "_comment": "50 GiB Longhorn PVC, replica 4. Deployed as StatefulSet."
         },
         {
           "system": "clickhouse",
@@ -95,7 +95,7 @@ data:
           "pvc_name": "data-clickhouse-0",
           "k8s_namespace": "databases",
           "max_experiment_bytes": 0,
-          "_comment": "50 GiB Longhorn PVC, replica 4. TODO: deploy to K8s cluster."
+          "_comment": "50 GiB Longhorn PVC, replica 4, HTTP API. Deployed as StatefulSet."
         }
       ],
 
@@ -132,7 +132,7 @@ data:
       },
 
       "grafana": {
-        "url": "http://kube-prometheus-stack-grafana.monitoring.svc.cluster.local:80",
+        "url": "http://pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091",
         "dashboard_uid": "dedup-experiment-v1"
       },
 

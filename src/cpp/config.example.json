@@ -67,7 +67,7 @@
         },
         {
             "system": "mariadb",
-            "host": "mariadb-lb.databases.svc.cluster.local",
+            "host": "mariadb.databases.svc.cluster.local",
             "port": 3306,
             "user": "dedup-lab",
             "password": "",
@@ -76,11 +76,11 @@
             "pvc_name": "data-mariadb-0",
             "k8s_namespace": "databases",
             "max_experiment_bytes": 0,
-            "_comment": "50 GiB Longhorn PVC, replica 4. TODO: deploy to K8s cluster."
+            "_comment": "50 GiB Longhorn PVC, replica 4. Deployed: 4 replicas (StatefulSet)."
         },
         {
             "system": "clickhouse",
-            "host": "clickhouse-lb.databases.svc.cluster.local",
+            "host": "clickhouse.databases.svc.cluster.local",
             "port": 8123,
             "user": "dedup-lab",
             "password": "",
@@ -89,7 +89,7 @@
             "pvc_name": "data-clickhouse-0",
             "k8s_namespace": "databases",
             "max_experiment_bytes": 0,
-            "_comment": "50 GiB Longhorn PVC, replica 4, HTTP API. TODO: deploy to K8s cluster."
+            "_comment": "50 GiB Longhorn PVC, replica 4, HTTP API. Deployed: 4 replicas (StatefulSet)."
         },
         {
             "system": "comdare-db",
@@ -135,14 +135,14 @@
 
     "prometheus": {
         "url": "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090",
-        "_comment": "TODO: deploy kube-prometheus-stack to monitoring namespace"
+        "_comment": "kube-prometheus-stack deployed to monitoring namespace."
     },
 
     "grafana": {
-        "url": "",
+        "url": "http://pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091",
         "api_key": "",
         "dashboard_uid": "",
-        "_comment": "TODO: deploy Grafana with experiment dashboard"
+        "_comment": "URL points to Pushgateway — C++ pushes metrics there, Prometheus scrapes it."
     },
 
     "metrics_trace": {

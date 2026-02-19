@@ -85,7 +85,7 @@ prometheus:
       - job_name: pushgateway
         honor_labels: true
         static_configs:
-          - targets: ["kube-prometheus-stack-pushgateway.monitoring.svc.cluster.local:9091"]
+          - targets: ["pushgateway-prometheus-pushgateway.monitoring.svc.cluster.local:9091"]
 
   # Resource limits (N97 is limited)
   resources:
