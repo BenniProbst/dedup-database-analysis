@@ -226,7 +226,95 @@ KOMPLETT implementiert (Session 12). 864 Konfigurationen:
 ### Git-Status
 ```
 Branch:       development
-Letzter Commit: 227f71d (fix: pushgateway endpoints + service hostnames)
-Remote:       GitLab (1315 skipped) + GitHub (both synced)
+Letzter Commit: f785311 (docs: session 13)
+Remote:       GitLab (1316 skipped) + GitHub (both synced)
 Pipeline:     Skipped (nur Config-Aenderungen, keine C++/LaTeX)
 ```
+
+---
+
+## 10. Experiment-DB Shutdown (User-Anweisung: Leistung fuer andere Aufgaben)
+
+### Analyse: Produktion vs. Experiment
+
+| Namespace | Memory Req | Produktion? | Entscheidung |
+|-----------|-----------|-------------|--------------|
+| gitlab | 11.454 Mi | JA (GitLab) | Laufen lassen |
+| kafka | 12.672 Mi | 0 Consumer | TODO: User entscheidet |
+| databases (PG) | 4.096 Mi | JA (GitLab DB) | Laufen lassen |
+| databases (MariaDB) | 2.048 Mi | NUR Experiment | **Heruntergefahren** |
+| databases (ClickHouse) | 2.048 Mi | NUR Experiment | **Heruntergefahren** |
+| cockroach | 8.224 Mi | Geteilt/Produktion | Laufen lassen |
+| redis (redis ns) | 2.048 Mi | NUR Experiment | **Heruntergefahren** |
+| minio | 2.048 Mi | JA (GitLab) | Laufen lassen |
+| monitoring | 448 Mi | NUR Experiment | **Heruntergefahren** |
+
+**Wichtige Erkenntnis:** GitLab hat EIGENEN Redis (`redis-gitlab-*` in `gitlab` Namespace).
+Der `redis-cluster` im `redis` Namespace ist rein experimentell!
+
+### Ausgefuehrte Befehle
+```bash
+# MariaDB, ClickHouse, Redis (experiment) → 0 Replicas
+kubectl scale statefulset mariadb clickhouse -n databases --replicas=0
+kubectl scale statefulset redis-cluster -n redis --replicas=0
+
+# Monitoring komplett → 0 Replicas
+kubectl scale deployment kube-prometheus-stack-grafana \
+  kube-prometheus-stack-kube-state-metrics \
+  kube-prometheus-stack-operator \
+  pushgateway-prometheus-pushgateway -n monitoring --replicas=0
+kubectl scale statefulset alertmanager-kube-prometheus-stack-alertmanager \
+  prometheus-kube-prometheus-stack-prometheus -n monitoring --replicas=0
+# Node Exporter DaemonSet: nodeSelector auf non-existing gesetzt
+```
+
+### Freigegebene Ressourcen
+- **~6.6 Gi Memory Requests** sofort frei (MariaDB+ClickHouse+Redis+Monitoring)
+- **~12 Gi Limits** zusaetzlich frei
+- PVCs bleiben erhalten (alle Daten sicher)
+- Kafka (12.4 Gi) offen — User-Entscheidung ausstehend
+
+### Wiederherstellen
+```bash
+kubectl scale statefulset mariadb -n databases --replicas=4
+kubectl scale statefulset clickhouse -n databases --replicas=4
+kubectl scale statefulset redis-cluster -n redis --replicas=4
+kubectl scale deployment kube-prometheus-stack-grafana \
+  kube-prometheus-stack-kube-state-metrics \
+  kube-prometheus-stack-operator \
+  pushgateway-prometheus-pushgateway -n monitoring --replicas=1
+kubectl scale statefulset alertmanager-kube-prometheus-stack-alertmanager \
+  prometheus-kube-prometheus-stack-prometheus -n monitoring --replicas=1
+kubectl patch daemonset kube-prometheus-stack-prometheus-node-exporter \
+  -n monitoring --type=json \
+  -p='[{"op":"remove","path":"/spec/template/spec/nodeSelector/non-existing"}]'
+```
+
+---
+
+## 11. Session-Ende Zusammenfassung
+
+### Commits (2)
+```
+227f71d fix: correct pushgateway endpoints and service hostnames
+f785311 docs: session 13 — monitoring stack deploy, Longhorn fix, config corrections
+```
+
+### Erledigte Aufgaben
+1. Longhorn Engine Image fix → MariaDB 4/4 Running
+2. Prometheus Monitoring Stack deployed (server-side apply)
+3. Pushgateway separat deployed
+4. Config-Korrekturen (Pushgateway-Endpunkte, Service-Namen)
+5. DB-User verifiziert (MariaDB + ClickHouse)
+6. Experiment-DBs heruntergefahren (User-Anweisung: Leistung)
+
+### Aktiver Cluster-Zustand (Session-Ende)
+- PostgreSQL HA: 4/4 Running (GitLab Produktion)
+- CockroachDB: 4/4 Running (Produktion geteilt)
+- MinIO: 4/4 Running (GitLab Artifacts)
+- Kafka: 8/8 Running (0 Consumer, TODO: herunterfahren?)
+- GitLab Redis: 4/4 Running
+- **MariaDB: 0/0 (SUSPENDED)**
+- **ClickHouse: 0/0 (SUSPENDED)**
+- **Redis experiment: 0/0 (SUSPENDED)**
+- **Monitoring: 0/0 (SUSPENDED)**
