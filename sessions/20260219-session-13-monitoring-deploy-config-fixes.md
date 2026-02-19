@@ -208,11 +208,12 @@ KOMPLETT implementiert (Session 12). 864 Konfigurationen:
 9 Payload-Typen x 8 Systeme x 3 Dup-Grades x 4 Stages
 
 ### Naechste Schritte (priorisiert)
-1. **Monitoring pruefen** — Prometheus/Grafana/Alertmanager Running?
-2. **Erster Dry-Run** — Verbindungstests zu allen 7 DBs
-3. **Erster Experimentlauf** — Pipeline 3 (manual trigger)
-4. **doku.tex Phase 2** — Abschnitte fuer DuckDB, Cassandra, MongoDB
-5. **P1 Features** — DB-Varianten (TOAST, RMT, TTL, compaction)
+1. **Experiment-Infra wiederherstellen** — Restore-Befehle oben ausfuehren
+2. **Monitoring pruefen** — Prometheus/Grafana/Alertmanager Running?
+3. **Erster Dry-Run** — Verbindungstests zu allen 7 DBs
+4. **Erster Experimentlauf** — Pipeline 3 (manual trigger)
+5. **doku.tex Phase 2** — Abschnitte fuer DuckDB, Cassandra, MongoDB
+6. **P1 Features** — DB-Varianten (TOAST, RMT, TTL, compaction)
 
 ### Kritische Dateipfade
 | Was | Pfad |
@@ -226,9 +227,9 @@ KOMPLETT implementiert (Session 12). 864 Konfigurationen:
 ### Git-Status
 ```
 Branch:       development
-Letzter Commit: f785311 (docs: session 13)
-Remote:       GitLab (1316 skipped) + GitHub (both synced)
-Pipeline:     Skipped (nur Config-Aenderungen, keine C++/LaTeX)
+Letzter Commit: (session 13 final — Kafka shutdown + Redis PVC resize)
+Remote:       GitLab + GitHub
+Pipeline:     Skipped (nur Config/Docs-Aenderungen)
 ```
 
 ---
@@ -240,7 +241,7 @@ Pipeline:     Skipped (nur Config-Aenderungen, keine C++/LaTeX)
 | Namespace | Memory Req | Produktion? | Entscheidung |
 |-----------|-----------|-------------|--------------|
 | gitlab | 11.454 Mi | JA (GitLab) | Laufen lassen |
-| kafka | 12.672 Mi | 0 Consumer | TODO: User entscheidet |
+| kafka | 12.672 Mi | 0 Consumer | **Heruntergefahren** |
 | databases (PG) | 4.096 Mi | JA (GitLab DB) | Laufen lassen |
 | databases (MariaDB) | 2.048 Mi | NUR Experiment | **Heruntergefahren** |
 | databases (ClickHouse) | 2.048 Mi | NUR Experiment | **Heruntergefahren** |
@@ -266,19 +267,47 @@ kubectl scale deployment kube-prometheus-stack-grafana \
 kubectl scale statefulset alertmanager-kube-prometheus-stack-alertmanager \
   prometheus-kube-prometheus-stack-prometheus -n monitoring --replicas=0
 # Node Exporter DaemonSet: nodeSelector auf non-existing gesetzt
+
+# Kafka (Strimzi — kein StatefulSet, benoetigt spezielle Behandlung)
+kubectl annotate kafka kafka-cluster -n kafka strimzi.io/pause-reconciliation=true --overwrite
+kubectl scale deploy strimzi-cluster-operator -n kafka --replicas=0
+kubectl delete pods -n kafka --all --grace-period=30
+kubectl scale deploy kafka-cluster-entity-operator -n kafka --replicas=0
+```
+
+### Redis PVC Resize (25Gi → 20Gi)
+K8s PVCs koennen NICHT geschrumpft werden. Daher: Delete + Recreate.
+```bash
+# 1. Alte 4x 25Gi PVCs geloescht
+kubectl delete pvc -n redis -l app.kubernetes.io/name=redis-cluster
+
+# 2. StatefulSet exportiert, auf 20Gi geaendert, neu erstellt
+kubectl get statefulset redis-cluster -n redis -o json > /tmp/redis-sts.json
+# volumeClaimTemplates.spec.resources.requests.storage: "25Gi" → "20Gi"
+kubectl delete statefulset redis-cluster -n redis --cascade=orphan
+kubectl apply -f /tmp/redis-sts-20gi.json
+
+# Ergebnis: 4x 20Gi PVCs auf longhorn-database StorageClass
 ```
 
 ### Freigegebene Ressourcen
-- **~6.6 Gi Memory Requests** sofort frei (MariaDB+ClickHouse+Redis+Monitoring)
-- **~12 Gi Limits** zusaetzlich frei
-- PVCs bleiben erhalten (alle Daten sicher)
-- Kafka (12.4 Gi) offen — User-Entscheidung ausstehend
+- **~19 Gi Memory Requests** sofort frei (MariaDB+ClickHouse+Redis+Monitoring+Kafka)
+- **~30 Gi Limits** zusaetzlich frei
+- PVCs bleiben erhalten (alle Daten sicher, Redis neu auf 20Gi)
 
 ### Wiederherstellen
 ```bash
+# Datenbanken
 kubectl scale statefulset mariadb -n databases --replicas=4
 kubectl scale statefulset clickhouse -n databases --replicas=4
 kubectl scale statefulset redis-cluster -n redis --replicas=4
+
+# Kafka (Strimzi)
+kubectl scale deploy strimzi-cluster-operator -n kafka --replicas=1
+kubectl annotate kafka kafka-cluster -n kafka strimzi.io/pause-reconciliation- --overwrite
+kubectl scale deploy kafka-cluster-entity-operator -n kafka --replicas=1
+
+# Monitoring
 kubectl scale deployment kube-prometheus-stack-grafana \
   kube-prometheus-stack-kube-state-metrics \
   kube-prometheus-stack-operator \
@@ -294,10 +323,11 @@ kubectl patch daemonset kube-prometheus-stack-prometheus-node-exporter \
 
 ## 11. Session-Ende Zusammenfassung
 
-### Commits (2)
+### Commits (3)
 ```
 227f71d fix: correct pushgateway endpoints and service hostnames
 f785311 docs: session 13 — monitoring stack deploy, Longhorn fix, config corrections
+e2da5cc docs: session 13 update — experiment DBs suspended for cluster performance
 ```
 
 ### Erledigte Aufgaben
@@ -307,14 +337,16 @@ f785311 docs: session 13 — monitoring stack deploy, Longhorn fix, config corre
 4. Config-Korrekturen (Pushgateway-Endpunkte, Service-Namen)
 5. DB-User verifiziert (MariaDB + ClickHouse)
 6. Experiment-DBs heruntergefahren (User-Anweisung: Leistung)
+7. Kafka heruntergefahren (Strimzi pause + operator scale 0 + pod delete)
+8. Redis PVCs resized: 4x 25Gi → 4x 20Gi (delete + recreate)
 
 ### Aktiver Cluster-Zustand (Session-Ende)
 - PostgreSQL HA: 4/4 Running (GitLab Produktion)
 - CockroachDB: 4/4 Running (Produktion geteilt)
 - MinIO: 4/4 Running (GitLab Artifacts)
-- Kafka: 8/8 Running (0 Consumer, TODO: herunterfahren?)
 - GitLab Redis: 4/4 Running
+- **Kafka: 0/0 (SUSPENDED — Strimzi paused, Operator 0)**
 - **MariaDB: 0/0 (SUSPENDED)**
 - **ClickHouse: 0/0 (SUSPENDED)**
-- **Redis experiment: 0/0 (SUSPENDED)**
+- **Redis experiment: 0/0 (SUSPENDED, PVCs resized 25→20Gi)**
 - **Monitoring: 0/0 (SUSPENDED)**
