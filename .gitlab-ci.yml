@@ -323,8 +323,14 @@ experiment:build:
       - build/dedup-test
     expire_in: 7 days
   rules:
-    - when: manual
-      allow_failure: true
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
 
 # Step 2: Run the actual experiment against production databases
 # IMPORTANT: after_script runs cleanup EVEN IF the main script fails/times out
