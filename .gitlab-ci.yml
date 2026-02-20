@@ -31,6 +31,7 @@ stages:
   - cpp-build
   - cpp-test
   - experiment-build
+  - experiment-preflight
   - experiment-run
   - experiment-cleanup
 
@@ -332,9 +333,232 @@ experiment:build:
         - "src/cpp/CMakeLists.txt"
         - ".gitlab-ci.yml"
 
-# Step 2: Run the actual experiment against production databases
-# IMPORTANT: after_script runs cleanup EVEN IF the main script fails/times out
-experiment:run:
+# Step 2: Pre-flight check -- verify all DB systems are reachable
+experiment:preflight:
+  <<: *cpp-default
+  stage: experiment-preflight
+  needs: ["experiment:build"]
+  timeout: 10 minutes
+  script:
+    - |
+      echo "================================================================="
+      echo "  PRE-FLIGHT: Verifying all 7 database systems"
+      echo "================================================================="
+      chmod +x build/dedup-test
+      FAIL=0
+
+      # PostgreSQL
+      apt-get install -y -qq postgresql-client > /dev/null 2>&1
+      if pg_isready -h postgres-lb.databases.svc.cluster.local -p 5432 -U dedup-lab -t 10; then
+        echo "  [OK] PostgreSQL"
+      else echo "  [FAIL] PostgreSQL"; FAIL=1; fi
+
+      # CockroachDB
+      if pg_isready -h cockroachdb-public.cockroach-operator-system.svc.cluster.local -p 26257 -U dedup_lab -t 10; then
+        echo "  [OK] CockroachDB"
+      else echo "  [FAIL] CockroachDB"; FAIL=1; fi
+
+      # Redis
+      if timeout 10 bash -c 'echo PING | nc -w5 redis-standalone.redis.svc.cluster.local 6379 | grep -q PONG' 2>/dev/null; then
+        echo "  [OK] Redis"
+      else echo "  [FAIL] Redis (PING check)"; FAIL=1; fi
+
+      # Kafka
+      if timeout 10 bash -c 'echo "" | nc -w5 kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local 9092' 2>/dev/null; then
+        echo "  [OK] Kafka"
+      else echo "  [WARN] Kafka (port check only)"; fi
+
+      # MinIO
+      if curl -sf -o /dev/null --connect-timeout 10 http://minio-lb.minio.svc.cluster.local:9000/minio/health/live; then
+        echo "  [OK] MinIO"
+      else echo "  [FAIL] MinIO"; FAIL=1; fi
+
+      # MariaDB
+      if timeout 10 bash -c 'echo "" | nc -w5 mariadb.databases.svc.cluster.local 3306' 2>/dev/null; then
+        echo "  [OK] MariaDB"
+      else echo "  [FAIL] MariaDB"; FAIL=1; fi
+
+      # ClickHouse
+      if curl -sf -o /dev/null --connect-timeout 10 "http://clickhouse.databases.svc.cluster.local:8123/ping"; then
+        echo "  [OK] ClickHouse"
+      else echo "  [FAIL] ClickHouse"; FAIL=1; fi
+
+      echo ""
+      if [ "$FAIL" -eq 0 ]; then
+        echo "=== PRE-FLIGHT PASSED: All systems reachable ==="
+      else
+        echo "=== PRE-FLIGHT FAILED: Some systems unreachable ==="
+        exit 1
+      fi
+  rules:
+    - when: manual
+      allow_failure: false
+
+# =============================================================================
+# Step 3: Per-DB sequential experiment jobs (3 repetitions each)
+# =============================================================================
+# Each job tests ONE database system with 3 repetitions (seeds 43, 44, 45).
+# Jobs are chained sequentially via needs: [previous_job].
+# The runner is pinned to the experiment node (talos-say-ls6) for isolation.
+#
+# Config JSON is generated inline per job. Each job has its own after_script
+# cleanup to guarantee lab schema removal even on failure.
+# =============================================================================
+
+# --- Hidden template for per-DB experiment jobs ---
+.experiment-per-db: &experiment-per-db
+  <<: *cpp-default
+  stage: experiment-run
+  timeout: 6 hours
+  variables:
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+  script:
+    - |
+      echo "================================================================="
+      echo "  EXPERIMENT: ${DB_SYSTEM} (${REPETITIONS} repetitions)"
+      echo "  Lab user: dedup-lab | Lab schema: ${LAB_SCHEMA}"
+      echo "================================================================="
+      chmod +x build/dedup-test
+      mkdir -p results/${DB_SYSTEM}
+
+      for RUN in $(seq 1 ${REPETITIONS}); do
+        RUN_SEED=$((42 + RUN))
+        echo ""
+        echo "===== Run ${RUN}/${REPETITIONS} (seed=${RUN_SEED}) ====="
+
+        # Generate datasets with varied seed
+        build/dedup-test --generate-data \
+          --data-dir /tmp/datasets \
+          --num-files "${NUM_FILES}" \
+          --seed "${RUN_SEED}" \
+          --verbose 2>&1
+
+        # Run experiment for this system only
+        build/dedup-test \
+          --systems "${DB_SYSTEM}" \
+          --grades "${DUP_GRADES}" \
+          --lab-schema "${LAB_SCHEMA}" \
+          --data-dir /tmp/datasets \
+          --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
+          --verbose 2>&1
+
+        echo "===== Run ${RUN} complete ====="
+        ls -la "results/${DB_SYSTEM}/run-${RUN}/" 2>/dev/null || true
+
+        # Cleanup between runs
+        build/dedup-test \
+          --cleanup-only \
+          --systems "${DB_SYSTEM}" \
+          --lab-schema "${LAB_SCHEMA}" \
+          --verbose 2>&1
+
+        echo "  Lab schema cleaned for next run"
+        sleep 15
+      done
+
+      echo ""
+      echo "=== ${DB_SYSTEM}: All ${REPETITIONS} runs complete ==="
+      du -sh results/${DB_SYSTEM}/
+  after_script:
+    - |
+      echo "=== AUTO-CLEANUP: ${DB_SYSTEM} lab schemas ==="
+      if [ -x build/dedup-test ]; then
+        apt-get update -qq 2>/dev/null
+        apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
+          libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
+        build/dedup-test --cleanup-only --systems "${DB_SYSTEM}" \
+          --lab-schema "${LAB_SCHEMA}" --verbose 2>&1
+      fi
+  artifacts:
+    paths:
+      - results/
+    expire_in: 365 days
+  rules:
+    - when: on_success
+
+experiment:postgresql:
+  <<: *experiment-per-db
+  needs: ["experiment:preflight", "experiment:build"]
+  variables:
+    DB_SYSTEM: postgresql
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+experiment:cockroachdb:
+  <<: *experiment-per-db
+  needs:
+    - job: experiment:postgresql
+      artifacts: true
+    - job: experiment:build
+      artifacts: true
+  variables:
+    DB_SYSTEM: cockroachdb
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+experiment:mariadb:
+  <<: *experiment-per-db
+  needs:
+    - job: experiment:cockroachdb
+      artifacts: true
+    - job: experiment:build
+      artifacts: true
+  variables:
+    DB_SYSTEM: mariadb
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+experiment:clickhouse:
+  <<: *experiment-per-db
+  needs:
+    - job: experiment:mariadb
+      artifacts: true
+    - job: experiment:build
+      artifacts: true
+  variables:
+    DB_SYSTEM: clickhouse
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+experiment:redis:
+  <<: *experiment-per-db
+  needs:
+    - job: experiment:clickhouse
+      artifacts: true
+    - job: experiment:build
+      artifacts: true
+  variables:
+    DB_SYSTEM: redis
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+experiment:kafka:
+  <<: *experiment-per-db
+  needs:
+    - job: experiment:redis
+      artifacts: true
+    - job: experiment:build
+      artifacts: true
+  variables:
+    DB_SYSTEM: kafka
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+experiment:minio:
+  <<: *experiment-per-db
+  needs:
+    - job: experiment:kafka
+      artifacts: true
+    - job: experiment:build
+      artifacts: true
+  variables:
+    DB_SYSTEM: minio
+    GIT_STRATEGY: clone
+    REPETITIONS: "3"
+
+# Legacy: Run ALL systems in one job (fallback, renamed)
+experiment:run-all:
   <<: *cpp-default
   stage: experiment-run
   needs: ["experiment:build"]
@@ -344,180 +568,35 @@ experiment:run:
   script:
     - |
       echo "================================================================="
-      echo "  REAL EXPERIMENT: Dedup Database Analysis"
-      echo "  WARNING: Connects to PRODUCTION databases via lab schemas!"
-      echo "  Lab user: dedup-lab (Samba AD)"
-      echo "  Lab schema: ${LAB_SCHEMA}"
+      echo "  LEGACY: All systems in one job"
       echo "================================================================="
-      echo ""
-      echo "Systems: ${SYSTEMS}"
-      echo "Grades: ${DUP_GRADES}"
-      echo "Replica count: ${REPLICA_COUNT}"
-      echo "Prometheus: ${PROMETHEUS_URL}"
-      echo ""
-
       chmod +x build/dedup-test
+      mkdir -p results
 
-      # --- Generate experiment config from CI variables ---
-      echo "=== Generating config.json from CI variables ==="
-      cat > /tmp/dedup-config.json << ENDCONF
-      {
-        "lab_user": "dedup-lab",
-        "lab_schema": "${LAB_SCHEMA}",
-        "data_dir": "/tmp/datasets",
-        "results_dir": "results",
-        "replica_count": ${REPLICA_COUNT},
-        "dry_run": false,
-        "databases": [
-          {
-            "system": "postgresql",
-            "host": "postgres-lb.databases.svc.cluster.local",
-            "port": 5432,
-            "user": "dedup-lab",
-            "password": "${DEDUP_PG_PASSWORD}",
-            "database": "postgres",
-            "lab_schema": "${LAB_SCHEMA}",
-            "pvc_name": "data-postgres-ha-0",
-            "k8s_namespace": "databases"
-          },
-          {
-            "system": "cockroachdb",
-            "host": "cockroachdb-public.cockroach-operator-system.svc.cluster.local",
-            "port": 26257,
-            "user": "dedup_lab",
-            "password": "${DEDUP_CRDB_PASSWORD}",
-            "database": "${LAB_SCHEMA}",
-            "lab_schema": "${LAB_SCHEMA}",
-            "pvc_name": "datadir-cockroachdb-0",
-            "k8s_namespace": "cockroach-operator-system"
-          },
-          {
-            "system": "redis",
-            "host": "redis-standalone.redis.svc.cluster.local",
-            "port": 6379,
-            "user": "dedup-lab",
-            "password": "${DEDUP_REDIS_PASSWORD}",
-            "pvc_name": "data-redis-cluster-0",
-            "k8s_namespace": "redis"
-          },
-          {
-            "system": "kafka",
-            "host": "${KAFKA_BOOTSTRAP}",
-            "port": 9092,
-            "lab_schema": "dedup-lab",
-            "pvc_name": "data-kafka-cluster-broker-0",
-            "k8s_namespace": "kafka"
-          },
-          {
-            "system": "minio",
-            "host": "minio-lb.minio.svc.cluster.local",
-            "port": 9000,
-            "user": "dedup-lab",
-            "password": "${DEDUP_MINIO_PASSWORD}",
-            "lab_schema": "dedup-lab",
-            "pvc_name": "",
-            "k8s_namespace": "minio"
-          },
-          {
-            "system": "mariadb",
-            "host": "mariadb.databases.svc.cluster.local",
-            "port": 3306,
-            "user": "dedup-lab",
-            "password": "${DEDUP_MARIADB_PASSWORD}",
-            "database": "${LAB_SCHEMA}",
-            "lab_schema": "${LAB_SCHEMA}",
-            "pvc_name": "",
-            "k8s_namespace": "databases"
-          },
-          {
-            "system": "clickhouse",
-            "host": "clickhouse.databases.svc.cluster.local",
-            "port": 8123,
-            "user": "dedup_lab",
-            "password": "${DEDUP_MARIADB_PASSWORD}",
-            "database": "${LAB_SCHEMA}",
-            "lab_schema": "${LAB_SCHEMA}",
-            "pvc_name": "",
-            "k8s_namespace": "databases"
-          }
-        ],
-        "dup_grades": ["U0", "U50", "U90"],
-        "prometheus": {
-          "url": "${PROMETHEUS_URL}"
-        },
-        "metrics_trace": {
-          "kafka_bootstrap": "${KAFKA_BOOTSTRAP}",
-          "kafka_topic": "dedup-lab-metrics",
-          "events_topic": "dedup-lab-events",
-          "sample_interval_ms": 100,
-          "enabled": true
-        },
-        "git_export": {
-          "remote_name": "origin",
-          "branch": "${CI_COMMIT_REF_NAME}",
-          "auto_push": true,
-          "ssl_verify": false
-        }
-      }
-      ENDCONF
-      echo "Config generated: /tmp/dedup-config.json"
-
-      # --- Set up git for results export (push before cleanup) ---
-      echo "=== Setting up git for results export ==="
-      git config user.email "dedup-ci@comdare.de"
-      git config user.name "Dedup CI Pipeline"
-      git remote set-url origin "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" || true
-
-      # --- Step 1: Generate test datasets ---
-      echo "=== Step 1: Generate datasets (${NUM_FILES} files x 3 grades) ==="
       build/dedup-test --generate-data \
         --data-dir /tmp/datasets \
         --num-files "${NUM_FILES}" \
         --seed "${SEED}" \
         --verbose 2>&1
 
-      # Verify dataset sizes
-      echo "=== Dataset summary ==="
-      du -sh /tmp/datasets/*/
-
-      # --- Step 2: Run experiment with config ---
-      echo "=== Step 2: Run experiment ==="
       build/dedup-test \
-        --config /tmp/dedup-config.json \
-        --data-dir /tmp/datasets \
         --systems "${SYSTEMS}" \
         --grades "${DUP_GRADES}" \
         --lab-schema "${LAB_SCHEMA}" \
+        --data-dir /tmp/datasets \
         --results-dir results \
         --verbose 2>&1
 
-      echo "=== Step 3: Results ==="
+      echo "=== Results ==="
       ls -la results/*.json 2>/dev/null || echo "No result files"
-      cat results/combined_results.json 2>/dev/null | head -200
-
-      echo "=== Experiment completed successfully ==="
-
-  # CRITICAL: after_script runs EVEN IF main script fails or times out
-  # This guarantees lab schemas are always cleaned up
   after_script:
     - |
-      echo "================================================================="
-      echo "  AUTO-CLEANUP: Dropping all lab schemas (runs on success+failure)"
-      echo "================================================================="
       if [ -x build/dedup-test ]; then
-        # Reinstall runtime deps (after_script runs in fresh shell)
         apt-get update -qq 2>/dev/null
         apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
           libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
-        build/dedup-test \
-          --cleanup-only \
-          --systems "${SYSTEMS}" \
-          --lab-schema "${LAB_SCHEMA}" \
-          --verbose 2>&1
-        echo "=== Auto-cleanup complete ==="
-      else
-        echo "WARNING: dedup-test binary not available for cleanup"
-        echo "Use experiment:cleanup job to manually clean up lab schemas"
+        build/dedup-test --cleanup-only --systems "${SYSTEMS}" \
+          --lab-schema "${LAB_SCHEMA}" --verbose 2>&1
       fi
   artifacts:
     paths:
