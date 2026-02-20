@@ -71,6 +71,12 @@ nlohmann::json snapshot(const DbConnection& conn) {
     j["timestamp_ms"] = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 
+#ifdef DEDUP_DRY_RUN
+    j["data"] = nlohmann::json::object();
+    j["dry_run"] = true;
+    return j;
+#endif
+
     try {
         nlohmann::json data;
         switch (conn.system) {

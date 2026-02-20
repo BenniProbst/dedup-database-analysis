@@ -123,6 +123,10 @@ void MetricsTrace::register_system(const DbConnection& conn,
 
 void MetricsTrace::start() {
     if (running_.load()) return;
+    if (dry_run_) {
+        LOG_INF("[metrics_trace] DRY RUN -- skipping background sampling thread");
+        return;
+    }
     running_.store(true);
     sampling_thread_ = std::thread(&MetricsTrace::sampling_loop, this);
     LOG_INF("[metrics_trace] Started (interval=%d ms, systems=%zu)",
