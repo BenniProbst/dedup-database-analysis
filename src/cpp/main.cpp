@@ -399,6 +399,9 @@ int main(int argc, char* argv[]) {
 
     // Export metrics + events from Kafka to CSV, then git push to GitLab
     // CRITICAL: Must complete BEFORE cleanup! Data is deleted after this.
+#ifdef DEDUP_DRY_RUN
+    LOG_INF("DRY RUN -- skipping export phase (no Kafka data produced)");
+#else
     if (cfg.metrics_trace.enabled) {
         LOG_INF("=== EXPORT PHASE (before cleanup) ===");
         dedup::ResultsExporter exporter(cfg.git_export, cfg.metrics_trace, results_dir);
@@ -408,6 +411,7 @@ int main(int argc, char* argv[]) {
             LOG_WRN("Proceeding with cleanup anyway (lab schemas will be dropped).");
         }
     }
+#endif
 
     // Final cleanup: drop all lab schemas
     LOG_INF("Final cleanup: dropping all lab schemas...");

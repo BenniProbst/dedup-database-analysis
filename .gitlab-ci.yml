@@ -248,7 +248,7 @@ cpp:full-dry-test:
         --results-dir results \
         --num-files 50 \
         --seed 42 \
-        --dry-run --verbose 2>&1
+        --dry-run 2>&1
       EXIT_CODE=$?
       set -e
       echo "=== Binary exit code: ${EXIT_CODE} ==="
@@ -310,7 +310,7 @@ experiment:build:
       echo "Compiler: $(gcc --version | head -1)"
       mkdir -p build && cd build
       cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
-      make -j$(nproc) dedup-test 2>&1
+      make -j4 dedup-test 2>&1
       echo "=== Binary ready ==="
       ls -lh dedup-test
       file dedup-test
