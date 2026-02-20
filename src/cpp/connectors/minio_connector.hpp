@@ -45,6 +45,7 @@ private:
                                  const std::string& payload_hash);
 
     // Setup an authenticated S3 request with proper headers
+    // Returns CURL* as void* to avoid #include <curl/curl.h> in header
     void* s3_setup_request(const std::string& method, const std::string& path,
                            const std::string& payload_hash,
                            struct curl_slist** out_headers);

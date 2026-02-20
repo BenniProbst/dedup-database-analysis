@@ -174,7 +174,7 @@ bool MinioConnector::is_connected() const { return connected_; }
 
 // ---- S3 API helpers ----
 
-CURL* MinioConnector::s3_setup_request(const std::string& method, const std::string& path,
+void* MinioConnector::s3_setup_request(const std::string& method, const std::string& path,
                                         const std::string& payload_hash,
                                         struct curl_slist** out_headers) {
     CURL* curl = curl_easy_init();

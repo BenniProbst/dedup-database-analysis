@@ -197,10 +197,11 @@ MeasureResult PostgresConnector::bulk_insert(const std::string& data_dir, DupGra
 
         // Compute SHA-256 fingerprint for dedup detection
         std::string sha256_hex = SHA256::hash_hex(buf.data(), fsize);
+        std::string fsize_str = std::to_string(fsize);
 
         const char* values[4] = {
             "application/octet-stream",
-            std::to_string(fsize).c_str(),
+            fsize_str.c_str(),
             sha256_hex.c_str(),
             buf.data()
         };

@@ -125,13 +125,16 @@ docker:build:
   before_script:
     - |
       apt-get update -qq
-      apt-get install -y -qq cmake libpq-dev libcurl4-openssl-dev \
+      apt-get install -y -qq --no-install-recommends \
+        cmake libpq-dev libcurl4-openssl-dev \
         libhiredis-dev librdkafka-dev nlohmann-json3-dev \
-        libmariadb-dev || true
+        libmariadb-dev \
+        && rm -rf /var/lib/apt/lists/*
 
 cpp:build:
   <<: *cpp-default
   stage: cpp-build
+  timeout: 30 minutes
   script:
     - |
       echo "=== C++ Build: dedup-integration-test v${CI_COMMIT_SHORT_SHA} ==="
@@ -168,6 +171,7 @@ cpp:build:
 cpp:smoke-test:
   <<: *cpp-default
   stage: cpp-test
+  timeout: 15 minutes
   needs: ["cpp:build"]
   script:
     - |
@@ -218,6 +222,7 @@ cpp:smoke-test:
 cpp:full-dry-test:
   <<: *cpp-default
   stage: cpp-test
+  timeout: 15 minutes
   needs: ["cpp:build"]
   script:
     - |
