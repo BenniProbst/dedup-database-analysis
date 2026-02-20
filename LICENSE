@@ -1,0 +1,131 @@
+End User License Agreement (EULA) — Per‑Seat License
+
+Product: Dedup Database Analysis (the "Software")
+Licensor: BEP Venture UG, Chemnitzer Strasse 69, Germany ("Licensor")
+Effective Date: 2026-02-20
+
+By downloading, installing, activating, or using the Software, you (the “Licensee”) agree to be bound by this End User License Agreement (this “Agreement”). If you are entering into this Agreement on behalf of an entity, you represent that you have authority to bind that entity. If you do not agree, do not install or use the Software.
+
+1. Definitions
+1.1 “Software” means the object‑code executable(s), libraries, and related components of CELM, including any Updates, Upgrades, bug fixes, patches, and tools delivered by Licensor, but excluding Third‑Party Components.
+1.2 “Documentation” means user guides, manuals, and online help provided by Licensor.
+1.3 “Authorized User” means an individual natural person (employee, contractor, or agent of Licensee) who is assigned a Seat and permitted to use the Software under this Agreement.
+1.4 “Seat” means the right for one Authorized User to use the Software, subject to the device limits and concurrent‑use restrictions in Section 2.3.
+1.5 “Update” means a release primarily containing bug fixes or minor enhancements; an “Upgrade” means a release with material new features, functionality, or compatibility changes.
+1.6 “Order Form” means a commercial ordering document (including online checkout) executed or accepted by the parties specifying Seats, term, fees, and support plan.
+1.7 “Third‑Party Components” means open‑source or third‑party software identified in the Documentation or an Open‑Source Notice file that may be bundled with or required by the Software.
+1.8 “Evaluation License” means a time‑limited, non‑production license solely for internal testing and evaluation.
+
+2. License Grant; Per‑Seat Scope; Delivery
+2.1 Grant. Subject to payment of fees and continuous compliance with this Agreement and the Order Form, Licensor grants Licensee a limited, non‑exclusive, non‑transferable (except as in Section 17.2), non‑sublicensable license to install and use the Software and Documentation solely for Licensee’s internal business purposes within the Territory (if any) specified in the Order Form.
+2.2 Per‑Seat Metric. Use is licensed strictly on a per‑Seat (named‑user) basis. Each Seat must be assigned to exactly one Authorized User (a “Named User”). Seats are not shared concurrently. Licensee may reassign a Seat to a different Named User no more than once every thirty (30) days, and only when the original user no longer uses the Software.
+2.3 Device Limit and Concurrency. Each Named User may install and activate the Software on up to two (2) devices (e.g., desktop and laptop) for that user’s exclusive use, provided that the Software is not used by more than one person at the same time per Seat. Virtual machines and remote desktop sessions count toward the device limit.
+2.4 Delivery and Activation. Delivery is electronic. The Software may require a license key, local license file, or online activation and may include technical protection measures (TPM). Licensee shall not circumvent or disable TPM.
+2.5 Evaluation License. If provided, the Evaluation License is for 14 days, non‑renewable unless agreed in writing, non‑production, and “AS IS.” Upon expiry or termination, Licensee must cease all use and delete the Software.
+
+3. Restrictions
+3.1 Object Code Only; No Sublicensing. The Software is licensed in object code only. Licensee shall not rent, lease, lend, sell, sublicense, assign, distribute, or host the Software for third parties, except as expressly permitted by this Agreement.
+3.2 No Reverse Engineering. Licensee shall not reverse engineer, decompile, or disassemble the Software or otherwise attempt to derive its source code, except to the limited extent permitted by mandatory law (e.g., EU Directive 2009/24/EC). Before exercising such rights, Licensee must request necessary interoperability information from Licensor.
+3.3 No Competitive Use. Licensee shall not use the Software to create, train, or validate a directly competing product or service.
+3.4 No Circumvention; No Modifications. Licensee shall not remove or bypass license controls, nor modify, translate, or create derivative works of the Software.
+3.5 High‑Risk Use. The Software is not designed for safety‑critical or high‑risk environments (e.g., medical life support, nuclear, aviation, or critical infrastructure). Such use is at Licensee’s sole risk.
+
+4. Ownership
+The Software and Documentation are licensed, not sold. Licensor and its licensors retain all rights, title, and interest, including all intellectual property rights. No rights are granted by implication.
+
+5. Third‑Party Components; Open‑Source Notices
+The Software may incorporate or require Third‑Party Components subject to their own licenses. Applicable notices and license terms are provided in the Open‑Source Notice file and are incorporated by reference. To the extent of any conflict with those third‑party terms, those terms control solely for the relevant component. No third‑party license grants rights to the Software itself.
+
+6. Fees, Taxes, and Payment
+6.1 Fees. Licensee shall pay the fees specified in the Order Form for the number of Seats and the corresponding term. Fees are non‑cancellable and non‑refundable except as expressly stated in this Agreement.
+6.2 Taxes. Fees are exclusive of taxes, duties, and similar charges. Licensee is responsible for applicable sales, value‑added, withholding, or other taxes (excluding taxes on Licensor’s net income).
+6.3 Late Payments. Overdue amounts may accrue interest at the lesser of 1.5% per month or the maximum rate permitted by law. Licensor may suspend the license for non‑payment after written notice.
+
+7. Support and Maintenance
+7.1 Plan. If a support and maintenance plan is purchased and stated on the Order Form, Licensor will provide Updates and reasonable technical support during the plan term, in accordance with Licensor’s then‑current Support Policy.
+7.2 Upgrades. Major Upgrades may require additional fees unless otherwise specified.
+7.3 Exclusions. Support excludes issues caused by unauthorized modifications, third‑party systems, or use contrary to the Documentation.
+
+8. Confidentiality
+8.1 Confidential Information. Non‑public information disclosed by one party to the other that is marked confidential or reasonably understood to be confidential (“Confidential Information”) shall be used only to perform this Agreement and protected with due care.
+8.2 Exceptions. Confidential Information does not include information that is publicly available, already known without breach, independently developed, or rightfully received from a third party without restriction.
+8.3 Compelled Disclosure. A party may disclose Confidential Information as required by law, with prompt notice to the other party (if legally permitted).
+
+9. Data Protection; Telemetry
+9.1 Personal Data. The Software processes business data and does not require personal data beyond licensing/activation metadata. If Licensee provides personal data, Licensee is the controller and must ensure lawful collection and processing.
+9.2 Telemetry. The Software may collect limited technical telemetry (e.g., version, activation status, error diagnostics) to improve stability and verify license compliance. Where required by law, Licensor will provide opt‑out mechanisms or obtain consent.
+
+10. Compliance; Export; Sanctions
+Licensee shall comply with all applicable laws, including export control and sanctions (e.g., EU, U.S.). Licensee represents that it is not a prohibited party and will not export or re‑export the Software to embargoed destinations or restricted end users.
+
+11. Limited Warranty; Disclaimer
+11.1 Limited Warranty. Licensor warrants that for thirty (30) days from initial delivery, the unmodified Software will substantially conform to the Documentation when used as recommended.
+11.2 Exclusive Remedy. For any breach of the above warranty, Licensor will, at its option and expense, (a) repair or replace the Software; or (b) refund prepaid, unused license fees for the affected term, whereupon the license for the non‑conforming Software terminates.
+11.3 Disclaimer. EXCEPT AS EXPRESSLY PROVIDED IN SECTION 11.1, THE SOFTWARE AND DOCUMENTATION ARE PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTIES OF ANY KIND, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING ANY WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON‑INFRINGEMENT.
+
+12. Limitation of Liability
+12.1 Indirect Damages. TO THE MAXIMUM EXTENT PERMITTED BY LAW, NEITHER PARTY IS LIABLE FOR INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING LOSS OF PROFITS, REVENUE, GOODWILL, OR DATA), EVEN IF ADVISED OF THE POSSIBILITY.
+12.2 Cap. LICENSOR’S AGGREGATE LIABILITY ARISING OUT OF OR RELATED TO THIS AGREEMENT SHALL NOT EXCEED THE AMOUNTS ACTUALLY PAID BY LICENSEE TO LICENSOR FOR SEATS UNDER THIS AGREEMENT DURING THE TWELVE (12) MONTHS PRIOR TO THE EVENT GIVING RISE TO LIABILITY.
+12.3 Mandatory Law. The limitations do not apply to liability that cannot be excluded or limited by applicable law (e.g., willful misconduct, personal injury due to negligence).
+
+13. Indemnification by Licensee
+Licensee shall defend, indemnify, and hold harmless Licensor against claims arising from (a) Licensee’s breach of this Agreement; (b) combination of the Software with items not supplied by Licensor if the claim would not arise but for that combination; or (c) Licensee’s data or use in violation of law.
+
+14. Audit
+Upon at least ten (10) business days’ prior written notice, and no more than once per twelve (12) months (unless good‑faith suspicion of breach), Licensor may audit Licensee’s use of the Software during normal business hours and in a manner that minimizes disruption. If an audit reveals under‑licensing, Licensee will promptly purchase additional Seats and pay reasonable audit costs if the shortfall exceeds five percent (5%).
+
+15. Term; Termination; Suspension
+15.1 Term. The license term (perpetual or subscription) is specified in the Order Form.
+15.2 Termination for Cause. Either party may terminate this Agreement upon written notice if the other party materially breaches and fails to cure within thirty (30) days (ten (10) days for payment).
+15.3 Effect of Termination. Upon termination or expiration, Licensee must cease all use, uninstall, and delete the Software and Confidential Information, and certify deletion upon request. Sections that by their nature should survive (including Sections 3–5, 8–12, 14–19) will survive.
+15.4 Suspension. Licensor may suspend the license for material breaches (e.g., non‑payment, anti‑circumvention) after notice.
+
+16. Government End Users (if applicable)
+The Software is “commercial computer software.” If acquired by or on behalf of a government, use, duplication, or disclosure is subject to this Agreement.
+
+17. Assignment; Change of Control
+17.1 No Assignment. Licensee may not assign this Agreement, by operation of law or otherwise, without Licensor’s prior written consent.
+17.2 Permitted Transfer. Notwithstanding Section 17.1, Licensee may assign this Agreement in connection with a merger, acquisition, or sale of substantially all assets, provided: (a) the assignee is not a competitor of Licensor; (b) Licensee gives prior written notice; and (c) all fees are fully paid and Seat counts are not exceeded.
+17.3 Binding Effect. Any permitted assignment binds successors.
+
+18. Notices
+Notices must be in writing and delivered by recognized courier or email with confirmation, to the contacts on the Order Form (or updated addresses). Notices are deemed received upon delivery confirmation (or two business days after dispatch for courier).
+
+19. Governing Law; Venue; Language
+This Agreement is governed by the laws of Germany, without regard to conflict‑of‑law rules. Exclusive venue is Dresden, Germany, and the parties consent to personal jurisdiction there. The governing language of this Agreement is English; translations are for convenience only.
+
+20. General
+20.1 Entire Agreement; Order of Precedence. This Agreement, together with the Order Form and any referenced policies (e.g., Support Policy, Open‑Source Notice), constitutes the entire agreement and supersedes prior agreements. If there is a conflict, the Order Form controls, followed by this Agreement, then referenced policies.
+20.2 Amendments; Waivers. Amendments must be in writing and signed (including e‑signature). Failure to enforce any provision is not a waiver.
+20.3 Severability. If any provision is invalid, the remainder remains in effect; the parties will replace the invalid provision with a valid one that most closely reflects the original intent.
+20.4 Force Majeure. Neither party is liable for delays or failure due to causes beyond reasonable control (e.g., natural disasters, war, labor disputes, internet or utility failures).
+20.5 Publicity. Licensor may use Licensee’s name and logo as a customer reference unless Licensee opts out in writing.
+20.6 Independent Contractors. The parties are independent contractors; no agency, partnership, or joint venture is created.
+
+Exhibit A — Support Policy (Summary; if purchased)
+• Coverage: Business days 09:00–17:00 (Europe/Dresden).
+• Contact: bep.venture.ug@gmail.com.
+• Response Targets: P1 (critical): 1 business day; P2: 2 business days; P3: 5 business days.
+• Included: Installation assistance, usage guidance, bug fixes (Updates).
+• Excluded: Custom development, third‑party environments, unsupported platforms. Professional services available under a separate Statement of Work.
+
+Exhibit B — Open‑Source Notice (Example Placeholder)
+The Software may include or interface with the following Third‑Party Components under their respective licenses:
+
+• [e.g., GoogleTest — BSD‑3‑Clause]
+• [e.g., Other libraries as needed]
+
+Full license texts are provided in the Open‑Source Notice file. No rights to the Software are granted by these third‑party licenses.
+
+Exhibit C — Per‑Seat License Details (Illustrative)
+• Named‑User Seats: One natural person per Seat.
+• Device Limit: Up to two (2) devices per Named User; no concurrent use beyond the number of Seats purchased.
+• Reassignment: Allowed no more than once every thirty (30) days and only if the original user ceases use.
+• Non‑Production Use: Separate non‑production Seats may be required unless otherwise stated on the Order Form.
+• Activation: License key or online activation required. Licensee shall keep keys confidential.
+
+ACCEPTED AND AGREED:
+Licensor: BEP Venture UG                Licensee: [Entity Name]
+Name: Benjamin-Elias Probst             Name: __________________________
+Title: CEO                              Title: __________________________
+Date: 2025-10-20                        Date: __________________________
