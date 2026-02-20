@@ -475,8 +475,8 @@ experiment:run:
       if [ -x build/dedup-test ]; then
         # Reinstall runtime deps (after_script runs in fresh shell)
         apt-get update -qq 2>/dev/null
-        apt-get install -y -qq libpq5 libcurl4 libhiredis0.14 \
-          librdkafka1 libmariadb3 2>/dev/null || true
+        apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
+          libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
         build/dedup-test \
           --cleanup-only \
           --systems "${SYSTEMS}" \

@@ -36,7 +36,7 @@ FROM debian:bookworm-slim
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
     libpq5 \
     libcurl4 \
-    libhiredis0.14 \
+    libhiredis1.1.0 \
     librdkafka1 \
     libmariadb3 \
     ca-certificates \
