@@ -113,7 +113,6 @@ docker:build:
     - changes:
         - Dockerfile
         - .dockerignore
-        - "src/cpp/**"
       when: manual
       allow_failure: true
 
