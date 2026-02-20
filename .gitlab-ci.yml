@@ -308,6 +308,7 @@ cpp:full-dry-test:
 experiment:build:
   <<: *cpp-default
   stage: experiment-build
+  needs: []
   script:
     - |
       echo "=== Experiment Build: dedup-test v${CI_COMMIT_SHORT_SHA} ==="
