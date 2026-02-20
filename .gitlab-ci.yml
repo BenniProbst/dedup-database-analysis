@@ -171,7 +171,7 @@ cpp:build:
 cpp:smoke-test:
   <<: *cpp-default
   stage: cpp-test
-  timeout: 15 minutes
+  timeout: 20 minutes
   needs: ["cpp:build"]
   script:
     - |

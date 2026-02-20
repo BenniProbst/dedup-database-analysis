@@ -198,8 +198,13 @@ ExperimentResult DataLoader::run_stage(
     }
 
     // Wait for Longhorn metrics to propagate (storage-level async replication)
+    // Skip in dry-run mode (no real storage operations, no metrics to settle)
+#ifdef DEDUP_DRY_RUN
+    LOG_DBG("DRY RUN: skipping 15s Longhorn settle wait");
+#else
     LOG_INF("Waiting 15s for Longhorn metrics to settle...");
     std::this_thread::sleep_for(std::chrono::seconds(15));
+#endif
 
     // ---- AFTER measurements ----
     result.logical_size_after = connector.get_logical_size_bytes();
