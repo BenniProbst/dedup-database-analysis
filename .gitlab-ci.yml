@@ -127,6 +127,7 @@ docker:build:
   image: gcc:14-bookworm
   before_script:
     - |
+      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
       apt-get update -qq
       apt-get install -y -qq --no-install-recommends \
         cmake libpq-dev libcurl4-openssl-dev \
@@ -464,6 +465,7 @@ experiment:preflight:
     - |
       echo "=== AUTO-CLEANUP: ${DB_SYSTEM} lab schemas ==="
       if [ -x build/dedup-test ]; then
+        echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
         apt-get update -qq 2>/dev/null
         apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
           libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
@@ -592,6 +594,7 @@ experiment:run-all:
   after_script:
     - |
       if [ -x build/dedup-test ]; then
+        echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
         apt-get update -qq 2>/dev/null
         apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
           libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
