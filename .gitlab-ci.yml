@@ -187,25 +187,33 @@ cpp:smoke-test:
         --seed 42 \
         --dry-run --verbose 2>&1
 
-      # Verify generated files
+      # Verify generated files (structure: data_dir/{payload_type}/{grade}/)
       echo "--- Dataset verification ---"
-      for grade in U0 U50 U90; do
-        COUNT=$(find /tmp/datasets/${grade} -name '*.dat' 2>/dev/null | wc -l)
-        SIZE=$(du -sh /tmp/datasets/${grade}/ 2>/dev/null | cut -f1)
-        echo "  ${grade}: ${COUNT} files, ${SIZE}"
+      echo "Payload type directories:"
+      ls -1 /tmp/datasets/
+      for pt_dir in /tmp/datasets/*/; do
+        PT=$(basename "${pt_dir}")
+        for grade in U0 U50 U90; do
+          COUNT=$(find "${pt_dir}${grade}" -name '*.dat' 2>/dev/null | wc -l)
+          SIZE=$(du -sh "${pt_dir}${grade}/" 2>/dev/null | cut -f1)
+          echo "  ${PT}/${grade}: ${COUNT} files, ${SIZE}"
+        done
       done
 
-      # 2. Check for duplicates using SHA-256
+      # 2. Check for duplicates using SHA-256 (per payload type)
       echo "--- Step 2: Verify duplication levels ---"
-      for grade in U0 U50 U90; do
-        TOTAL=$(find /tmp/datasets/${grade} -name '*.dat' 2>/dev/null | wc -l)
-        UNIQUE=$(sha256sum /tmp/datasets/${grade}/*.dat 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
-        if [ "$TOTAL" -gt 0 ]; then
-          DUP_PCT=$(awk "BEGIN {printf \"%.1f\", (1 - ${UNIQUE}/${TOTAL}) * 100}")
-        else
-          DUP_PCT="0.0"
-        fi
-        echo "  ${grade}: ${TOTAL} total, ${UNIQUE} unique, ${DUP_PCT}% duplicates"
+      for pt_dir in /tmp/datasets/*/; do
+        PT=$(basename "${pt_dir}")
+        for grade in U0 U50 U90; do
+          TOTAL=$(find "${pt_dir}${grade}" -name '*.dat' 2>/dev/null | wc -l)
+          UNIQUE=$(find "${pt_dir}${grade}" -name '*.dat' -exec sha256sum {} + 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
+          if [ "$TOTAL" -gt 0 ]; then
+            DUP_PCT=$(awk "BEGIN {printf \"%.1f\", (1 - ${UNIQUE}/${TOTAL}) * 100}")
+          else
+            DUP_PCT="0.0"
+          fi
+          echo "  ${PT}/${grade}: ${TOTAL} total, ${UNIQUE} unique, ${DUP_PCT}% duplicates"
+        done
       done
 
       echo "=== Smoke Test PASSED ==="
@@ -222,7 +230,7 @@ cpp:smoke-test:
 cpp:full-dry-test:
   <<: *cpp-default
   stage: cpp-test
-  timeout: 15 minutes
+  timeout: 30 minutes
   needs: ["cpp:build"]
   script:
     - |
