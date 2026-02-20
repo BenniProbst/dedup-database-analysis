@@ -237,21 +237,17 @@ cpp:full-dry-test:
       echo "=== Full Dry Test: All Systems x All Grades ==="
       chmod +x build/dedup-smoke-test
 
-      # Generate datasets first
+      # Generate datasets + run full experiment simulation in one invocation
+      # (--generate-data generates data, then proceeds to experiment)
       build/dedup-smoke-test --generate-data \
         --data-dir /tmp/datasets \
+        --results-dir results \
         --num-files 50 \
         --seed 42 \
         --dry-run 2>&1
 
-      # Run full experiment simulation
-      echo "--- Full experiment (dry-run) ---"
-      build/dedup-smoke-test \
-        --data-dir /tmp/datasets \
-        --results-dir results \
-        --dry-run --verbose 2>&1
-
       echo "--- Results ---"
+      ls -la results/*.json 2>/dev/null || echo "No result files"
       cat results/combined_results.json 2>/dev/null | head -100
 
       echo "--- Help output ---"
