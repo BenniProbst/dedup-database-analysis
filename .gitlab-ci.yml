@@ -392,8 +392,14 @@ experiment:preflight:
         exit 1
       fi
   rules:
-    - when: manual
-      allow_failure: false
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
 
 # =============================================================================
 # Step 3: Per-DB sequential experiment jobs (3 repetitions each)
