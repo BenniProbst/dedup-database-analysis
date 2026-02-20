@@ -38,6 +38,8 @@ std::string ClickHouseConnector::http_query(const std::string& sql) {
     if (!curl) return "";
 
     std::string url = endpoint_ + "/?database=" + database_;
+    if (!user_.empty()) url += "&user=" + user_;
+    if (!password_.empty()) url += "&password=" + password_;
     std::string response;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -65,6 +67,8 @@ bool ClickHouseConnector::http_exec(const std::string& sql) {
 bool ClickHouseConnector::connect(const DbConnection& conn) {
     endpoint_ = "http://" + conn.host + ":" + std::to_string(conn.port);
     database_ = conn.lab_schema.empty() ? "dedup_lab" : conn.lab_schema;
+    user_ = conn.user;
+    password_ = conn.password;
 
 #ifdef DEDUP_DRY_RUN
     LOG_INF("[clickhouse] DRY RUN: simulating connection to %s", endpoint_.c_str());

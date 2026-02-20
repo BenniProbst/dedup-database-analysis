@@ -334,9 +334,9 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
          "dedup_lab", "", "dedup_lab", "dedup_lab",
          "datadir-cockroachdb-0", "cockroach-operator-system", CRDB_EXPERIMENT_LIMIT},
 
-        // Redis: 50 GiB Longhorn PVC, cluster mode, key prefix dedup:*
-        {DbSystem::REDIS, "redis-cluster.redis.svc.cluster.local", 6379,
-         "", "", "", "",
+        // Redis: 50 GiB Longhorn PVC, standalone mode, ACL auth, key prefix dedup:*
+        {DbSystem::REDIS, "redis-standalone.redis.svc.cluster.local", 6379,
+         "dedup-lab", "", "", "",
          "data-redis-cluster-0", "redis", 0},
 
         // Kafka: 50 GiB Longhorn PVC per broker, topic prefix dedup-lab-*

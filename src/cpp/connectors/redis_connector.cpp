@@ -27,6 +27,32 @@ bool RedisConnector::connect(const DbConnection& conn) {
     }
     ctx_ = c;
 
+    // Authenticate if credentials are provided (Redis 6+ ACL)
+    if (!conn.user.empty() && !conn.password.empty()) {
+        auto* auth = static_cast<redisReply*>(
+            redisCommand(c, "AUTH %s %s", conn.user.c_str(), conn.password.c_str()));
+        if (!auth || auth->type == REDIS_REPLY_ERROR) {
+            LOG_ERR("[redis] ACL AUTH failed: %s", auth ? auth->str : "null");
+            if (auth) freeReplyObject(auth);
+            redisFree(c);
+            ctx_ = nullptr;
+            return false;
+        }
+        freeReplyObject(auth);
+        LOG_INF("[redis] Authenticated as user '%s'", conn.user.c_str());
+    } else if (!conn.password.empty()) {
+        auto* auth = static_cast<redisReply*>(
+            redisCommand(c, "AUTH %s", conn.password.c_str()));
+        if (!auth || auth->type == REDIS_REPLY_ERROR) {
+            LOG_ERR("[redis] AUTH failed: %s", auth ? auth->str : "null");
+            if (auth) freeReplyObject(auth);
+            redisFree(c);
+            ctx_ = nullptr;
+            return false;
+        }
+        freeReplyObject(auth);
+    }
+
     // Cluster mode: no SELECT, use key-prefix "dedup:" for lab isolation
     // Verify connectivity with PING
     auto* reply = static_cast<redisReply*>(redisCommand(c, "PING"));

@@ -393,8 +393,9 @@ experiment:run:
           },
           {
             "system": "redis",
-            "host": "redis-cluster.redis.svc.cluster.local",
+            "host": "redis-standalone.redis.svc.cluster.local",
             "port": 6379,
+            "user": "dedup-lab",
             "password": "${DEDUP_REDIS_PASSWORD}",
             "pvc_name": "data-redis-cluster-0",
             "k8s_namespace": "redis"
@@ -432,6 +433,9 @@ experiment:run:
             "system": "clickhouse",
             "host": "clickhouse.databases.svc.cluster.local",
             "port": 8123,
+            "user": "dedup_lab",
+            "password": "${DEDUP_MARIADB_PASSWORD}",
+            "database": "${LAB_SCHEMA}",
             "lab_schema": "${LAB_SCHEMA}",
             "pvc_name": "",
             "k8s_namespace": "databases"

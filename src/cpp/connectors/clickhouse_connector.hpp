@@ -32,6 +32,8 @@ public:
 private:
     std::string endpoint_;    // HTTP API endpoint (http://host:8123)
     std::string database_;
+    std::string user_;        // ClickHouse user (e.g. dedup_lab)
+    std::string password_;    // ClickHouse password
     bool connected_ = false;
 
     // HTTP query helper using libcurl
