@@ -95,12 +95,14 @@ std::vector<char> DatasetGenerator::generate_json(size_t approx_size) {
     // Add padding data to reach target size
     oss << "  \"metadata\": {\n";
     oss << "    \"tags\": [";
-    size_t current = oss.str().size();
+    size_t current = static_cast<size_t>(oss.tellp());
+    bool first_tag = true;
     while (current < approx_size - 50) {
-        if (current > oss.str().size() - 5)  // not first
+        if (!first_tag)
             oss << ", ";
+        first_tag = false;
         oss << "\"tag_" << (next_u64() % 1000) << "\"";
-        current = oss.str().size();
+        current = static_cast<size_t>(oss.tellp());
     }
     oss << "],\n";
     oss << "    \"version\": " << (next_u64() % 100) << "\n";
@@ -205,7 +207,7 @@ std::vector<char> DatasetGenerator::generate_jsonb_document(size_t approx_size) 
     oss << "  \"payload\": {\n";
 
     // Variable-depth nested properties to reach target size
-    size_t current = oss.str().size();
+    size_t current = static_cast<size_t>(oss.tellp());
     int depth = 0;
     while (current < approx_size - 100) {
         if (depth > 0 && next_u64() % 4 == 0) {
@@ -223,7 +225,7 @@ std::vector<char> DatasetGenerator::generate_jsonb_document(size_t approx_size) 
             else oss << (static_cast<double>(next_u64() % 100000) / 100.0);
             oss << ",\n";
         }
-        current = oss.str().size();
+        current = static_cast<size_t>(oss.tellp());
     }
     while (depth-- > 0) oss << "    },\n";
     oss << "    \"checksum\": \"" << std::hex << next_u64() << std::dec << "\"\n";
