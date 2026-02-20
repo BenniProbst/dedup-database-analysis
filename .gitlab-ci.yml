@@ -10,9 +10,12 @@
 #         Lab schemas are created before and dropped after each experiment.
 #         Automatic cleanup via after_script guarantees no orphaned data.
 #
-# Cluster: 4 Worker Nodes (Intel N97), Talos v1.11.6, K8s v1.34.0
+# Cluster: 4 Worker Nodes (Intel N97), Talos v1.12.4, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
 # Runner: GitLab K8s Runner (ID 6, tag: kubernetes)
+# Scheduling: LeastAllocated via runner ConfigMap (global for all projects).
+#   Runner sets cpu_request=2000m so K8s scheduler properly considers node load.
+#   TopologySpreadConstraints spread concurrent jobs across nodes.
 #
 # Required CI/CD Variables (Settings > CI/CD > Variables, MASKED):
 #   DEDUP_PG_PASSWORD       - PostgreSQL lab user password
@@ -145,10 +148,10 @@ cpp:build:
       cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
 
       echo "=== Building dedup-test ==="
-      make -j$(nproc) dedup-test 2>&1
+      make -j4 dedup-test 2>&1
 
       echo "=== Building dedup-smoke-test ==="
-      make -j$(nproc) dedup-smoke-test 2>&1
+      make -j4 dedup-smoke-test 2>&1
 
       echo "=== Build artifacts ==="
       ls -lh dedup-test dedup-smoke-test
