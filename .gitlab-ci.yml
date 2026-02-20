@@ -239,22 +239,29 @@ cpp:full-dry-test:
     - |
       echo "=== Full Dry Test: All Systems x All Grades ==="
       chmod +x build/dedup-smoke-test
+      mkdir -p results
 
-      # Generate datasets + run full experiment simulation in one invocation
-      # (--generate-data generates data, then proceeds to experiment)
+      # Redirect full output to log file (keeps CI trace small, avoids 500 errors)
       set +e
       build/dedup-smoke-test --generate-data \
         --data-dir /tmp/datasets \
         --results-dir results \
         --num-files 50 \
         --seed 42 \
-        --dry-run 2>&1
-      EXIT_CODE=$?
+        --dry-run 2>&1 | tee results/full-dry-test.log | tail -200
+      EXIT_CODE=${PIPESTATUS[0]}
       set -e
+
+      echo ""
       echo "=== Binary exit code: ${EXIT_CODE} ==="
+      echo "=== Log file: $(wc -l < results/full-dry-test.log) lines, $(wc -c < results/full-dry-test.log) bytes ==="
 
       if [ "$EXIT_CODE" -ne 0 ]; then
         echo "ERROR: dedup-smoke-test exited with code ${EXIT_CODE}"
+        echo "--- First 50 lines of log ---"
+        head -50 results/full-dry-test.log
+        echo "--- Last 100 lines of log ---"
+        tail -100 results/full-dry-test.log
         echo "--- dmesg (last 10 lines, check for OOM/segfault) ---"
         dmesg 2>/dev/null | tail -10 || true
         exit ${EXIT_CODE}
@@ -262,10 +269,7 @@ cpp:full-dry-test:
 
       echo "--- Results ---"
       ls -la results/*.json 2>/dev/null || echo "No result files"
-      cat results/combined_results.json 2>/dev/null | head -100
-
-      echo "--- Help output ---"
-      build/dedup-smoke-test --help
+      head -100 results/combined_results.json 2>/dev/null || true
 
       echo "=== Full Dry Test PASSED ==="
   artifacts:
