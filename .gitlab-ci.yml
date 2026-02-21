@@ -313,6 +313,8 @@ cpp:full-dry-test:
 # on Pipeline 2 artifacts which may have expired or not exist)
 experiment:build:
   <<: *cpp-default
+  tags:
+    - experiment
   stage: experiment-build
   needs: []
   script:
