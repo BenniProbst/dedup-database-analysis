@@ -12,7 +12,7 @@
 #
 # Cluster: 4 Worker Nodes (Intel N97), Talos v1.12.4, K8s v1.34.0
 # Storage: Longhorn (Replica 4, thin-provisioned)
-# Runner: GitLab K8s Runner (ID 6, tag: kubernetes)
+# Runners: K8s pool (IDs 6,15,16 tag: kubernetes) + Experiment (ID 17, tag: experiment)
 # Scheduling: LeastAllocated via runner ConfigMap (global for all projects).
 #   Runner sets cpu_request=2000m so K8s scheduler properly considers node load.
 #   TopologySpreadConstraints spread concurrent jobs across nodes.
