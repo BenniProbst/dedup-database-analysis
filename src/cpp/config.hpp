@@ -16,6 +16,7 @@
 // =============================================================================
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -323,20 +324,32 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
     // 50 GiB CockroachDB experiment limit (125 GiB PVC shared with production)
     constexpr int64_t CRDB_EXPERIMENT_LIMIT = static_cast<int64_t>(50) * 1024 * 1024 * 1024;
 
+    // Read passwords from CI/CD environment variables (masked in GitLab)
+    auto env_or = [](const char* name, const char* fallback) -> std::string {
+        const char* v = std::getenv(name);
+        return (v && v[0]) ? v : fallback;
+    };
+
+    std::string pg_pass    = env_or("DEDUP_PG_PASSWORD", "");
+    std::string crdb_pass  = env_or("DEDUP_CRDB_PASSWORD", "");
+    std::string redis_pass = env_or("DEDUP_REDIS_PASSWORD", "");
+    std::string maria_pass = env_or("DEDUP_MARIADB_PASSWORD", "");
+    std::string minio_pass = env_or("DEDUP_MINIO_PASSWORD", "");
+
     cfg.databases = {
         // PostgreSQL: 50 GiB Longhorn PVC, replica 4
         {DbSystem::POSTGRESQL, "postgres-lb.databases.svc.cluster.local", 5432,
-         cfg.lab_user, "", "postgres", "dedup_lab",
+         cfg.lab_user, pg_pass, "postgres", "dedup_lab",
          "data-postgres-ha-0", "databases", 0},
 
         // CockroachDB: 125 GiB PVC (production!), experiments limited to 50 GiB
         {DbSystem::COCKROACHDB, "cockroachdb-public.cockroach-operator-system.svc.cluster.local", 26257,
-         "dedup_lab", "", "dedup_lab", "dedup_lab",
+         "dedup_lab", crdb_pass, "dedup_lab", "dedup_lab",
          "datadir-cockroachdb-0", "cockroach-operator-system", CRDB_EXPERIMENT_LIMIT},
 
         // Redis: 50 GiB Longhorn PVC, standalone mode, ACL auth, key prefix dedup:*
         {DbSystem::REDIS, "redis-standalone.redis.svc.cluster.local", 6379,
-         "dedup-lab", "", "", "",
+         "dedup-lab", redis_pass, "", "",
          "data-redis-cluster-0", "redis", 0},
 
         // Kafka: 50 GiB Longhorn PVC per broker, topic prefix dedup-lab-*
@@ -346,12 +359,12 @@ inline ExperimentConfig ExperimentConfig::default_k8s_config() {
 
         // MinIO: Direct Disk (NO Longhorn PVC), LDAP Access Key
         {DbSystem::MINIO, "minio-lb.minio.svc.cluster.local", 9000,
-         "dedup-lab-s3", "", "", "dedup-lab",
+         "dedup-lab-s3", minio_pass, "", "dedup-lab",
          "", "minio", 0},
 
         // MariaDB: 50 GiB Longhorn PVC, replica 4
         {DbSystem::MARIADB, "mariadb-lb.databases.svc.cluster.local", 3306,
-         cfg.lab_user, "", "dedup_lab", "dedup_lab",
+         cfg.lab_user, maria_pass, "dedup_lab", "dedup_lab",
          "data-mariadb-0", "databases", 0},
 
         // ClickHouse: 50 GiB Longhorn PVC, replica 4, HTTP API

@@ -201,6 +201,7 @@ int main(int argc, char* argv[]) {
         }
         LOG_INF("Total: %zu files generated across %zu payload types",
             total_all, cfg.payload_types.size());
+        return 0;  // generate-data is a standalone operation
     }
 
     // Create results directory
