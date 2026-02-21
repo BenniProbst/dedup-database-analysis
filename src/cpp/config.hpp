@@ -131,6 +131,11 @@ enum class PayloadType {
     GUTENBERG_TEXT,       // Project Gutenberg plain text novels (§6.3 "Full text")
     GITHUB_EVENTS,        // GH Archive event streams .json.gz (§6.3 "GitHub logs")
 
+    // Real-world (pre-loaded from NAS onto experiment PVC)
+    BANK_TRANSACTIONS,    // bankdataset.xlsx -- financial tabular data (§6.3 "Bank transactions")
+    TEXT_CORPUS,          // million_post_corpus -- forum posts, natural language (§6.3 "Full text")
+    NUMERIC_DATASET,      // random-numbers -- numeric/statistical data (§6.3 "Synthetic random numbers")
+
     // Composite
     MIXED                 // Random mix of all available payload types
 };
@@ -146,6 +151,9 @@ inline const char* payload_type_str(PayloadType t) {
         case PayloadType::BLENDER_VIDEO:    return "blender_video";
         case PayloadType::GUTENBERG_TEXT:   return "gutenberg_text";
         case PayloadType::GITHUB_EVENTS:    return "github_events";
+        case PayloadType::BANK_TRANSACTIONS: return "bank_transactions";
+        case PayloadType::TEXT_CORPUS:      return "text_corpus";
+        case PayloadType::NUMERIC_DATASET:  return "numeric_dataset";
         case PayloadType::MIXED:            return "mixed";
     }
     return "??";
@@ -160,14 +168,25 @@ inline PayloadType parse_payload_type(const std::string& s) {
     if (s == "nasa_image")      return PayloadType::NASA_IMAGE;
     if (s == "blender_video")   return PayloadType::BLENDER_VIDEO;
     if (s == "gutenberg_text")  return PayloadType::GUTENBERG_TEXT;
-    if (s == "github_events")   return PayloadType::GITHUB_EVENTS;
-    if (s == "mixed")           return PayloadType::MIXED;
+    if (s == "github_events")       return PayloadType::GITHUB_EVENTS;
+    if (s == "bank_transactions")   return PayloadType::BANK_TRANSACTIONS;
+    if (s == "text_corpus")         return PayloadType::TEXT_CORPUS;
+    if (s == "numeric_dataset")     return PayloadType::NUMERIC_DATASET;
+    if (s == "mixed")               return PayloadType::MIXED;
     return PayloadType::MIXED;
 }
 
 inline bool is_real_world_payload(PayloadType t) {
     return t == PayloadType::NASA_IMAGE || t == PayloadType::BLENDER_VIDEO ||
-           t == PayloadType::GUTENBERG_TEXT || t == PayloadType::GITHUB_EVENTS;
+           t == PayloadType::GUTENBERG_TEXT || t == PayloadType::GITHUB_EVENTS ||
+           t == PayloadType::BANK_TRANSACTIONS || t == PayloadType::TEXT_CORPUS ||
+           t == PayloadType::NUMERIC_DATASET;
+}
+
+// NAS-sourced types require pre-loaded data on experiment PVC (no internet download)
+inline bool is_nas_payload(PayloadType t) {
+    return t == PayloadType::BANK_TRANSACTIONS || t == PayloadType::TEXT_CORPUS ||
+           t == PayloadType::NUMERIC_DATASET;
 }
 
 // ============================================================================
@@ -218,6 +237,10 @@ struct DataSourceConfig {
 
     // Local cache directory for downloaded real-world data
     std::string cache_dir = "/tmp/dedup-datasets-cache";
+
+    // Pre-loaded NAS datasets directory (experiment PVC mount)
+    // Structure: real_world_dir/{bankdataset,million_post,random_numbers}/
+    std::string real_world_dir = "/datasets/real-world";
 };
 
 // ============================================================================

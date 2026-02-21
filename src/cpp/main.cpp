@@ -64,7 +64,9 @@ static void print_usage(const char* prog) {
         "  --payload-types LIST Comma-separated payload types (default: synthetic)\n"
         "                      Valid: random_binary,structured_json,text_document,\n"
         "                             uuid_keys,jsonb_documents,nasa_image,\n"
-        "                             blender_video,gutenberg_text,github_events,mixed\n"
+        "                             blender_video,gutenberg_text,github_events,\n"
+        "                             bank_transactions,text_corpus,numeric_dataset,mixed\n"
+        "  --real-world-dir PATH  NAS dataset directory (default: /datasets/real-world)\n"
         "  --lab-schema NAME   Lab schema name (default: dedup_lab)\n"
         "  --generate-data     Generate synthetic test datasets before running\n"
         "  --num-files N       Files per duplication grade (default: 100)\n"
@@ -112,6 +114,7 @@ int main(int argc, char* argv[]) {
     size_t file_size = 0;
     uint64_t seed = 42;
     std::string checkpoint_dir;
+    std::string real_world_dir;
     int run_id = 0;
     int max_retries = 3;
 
@@ -153,6 +156,8 @@ int main(int argc, char* argv[]) {
             run_id = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--max-retries") == 0 && i + 1 < argc) {
             max_retries = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--real-world-dir") == 0 && i + 1 < argc) {
+            real_world_dir = argv[++i];
         } else if (std::strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (std::strcmp(argv[i], "--verbose") == 0) {
@@ -339,6 +344,12 @@ int main(int argc, char* argv[]) {
             cfg.payload_types.push_back(dedup::parse_payload_type(token));
         }
         LOG_INF("Payload types: %zu types selected", cfg.payload_types.size());
+    }
+
+    // Override real-world data directory (NAS datasets on experiment PVC)
+    if (!real_world_dir.empty()) {
+        cfg.data_sources.real_world_dir = real_world_dir;
+        LOG_INF("Real-world data directory: %s", real_world_dir.c_str());
     }
 
     // Create lab schemas

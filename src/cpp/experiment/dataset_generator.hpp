@@ -68,6 +68,12 @@ private:
     std::vector<char> load_gutenberg_text();
     std::vector<char> load_github_events();
 
+    // NAS-sourced data loaders (pre-loaded on experiment PVC)
+    std::vector<char> load_local_directory_file(const std::string& subdir);
+    std::vector<char> load_bank_transactions();
+    std::vector<char> load_text_corpus();
+    std::vector<char> load_numeric_dataset();
+
     // Write file to disk
     bool write_file(const std::string& path, const std::vector<char>& data);
 };

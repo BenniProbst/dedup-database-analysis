@@ -44,6 +44,11 @@ variables:
   SYSTEMS: "postgresql,cockroachdb,redis,kafka,minio,mariadb,clickhouse"
   NUM_FILES: "500"
   SEED: "42"
+  # Payload types: synthetic + NAS real-world (doku.tex §6.3)
+  PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
+  # NFS data directory for pre-loaded NAS datasets
+  REAL_WORLD_DIR: "/datasets/real-world"
+  NFS_SERVER: "10.0.110.184"
   # Docker registry (for optional image builds)
   DEDUP_IMAGE: ${CI_REGISTRY_IMAGE}/dedup-test
 
@@ -433,10 +438,39 @@ experiment:preflight:
       echo "================================================================="
       echo "  EXPERIMENT: ${DB_SYSTEM} (${REPETITIONS} repetitions)"
       echo "  Lab user: dedup-lab | Lab schema: ${LAB_SCHEMA}"
+      echo "  Payload types: ${PAYLOAD_TYPES}"
       echo "  Resume: checkpoint-dir + per-run-id tracking"
       echo "================================================================="
       chmod +x build/dedup-test
       mkdir -p results/${DB_SYSTEM}
+
+      # Mount NFS with pre-loaded NAS datasets (if reachable)
+      mkdir -p "${REAL_WORLD_DIR}"
+      apt-get install -y -qq --no-install-recommends nfs-common 2>/dev/null || true
+      if mount -t nfs4 -o ro,nolock,vers=4 "${NFS_SERVER}:/" /mnt/nfs-data 2>/dev/null; then
+        echo "[NFS] Mounted ${NFS_SERVER} -> /mnt/nfs-data"
+        # Unpack archives if not already unpacked
+        for DATASET_DIR in bankdataset million_post random_numbers; do
+          SRC="/mnt/nfs-data/testdata/${DATASET_DIR}"
+          DST="${REAL_WORLD_DIR}/${DATASET_DIR}"
+          mkdir -p "${DST}"
+          if [ -d "${SRC}" ]; then
+            # Unpack archives into dataset directory
+            for f in "${SRC}"/*.zip; do
+              [ -f "$f" ] && unzip -o -q "$f" -d "${DST}" 2>/dev/null && echo "[NFS] Unpacked: $(basename $f)"
+            done
+            for f in "${SRC}"/*.tar.bz2; do
+              [ -f "$f" ] && tar -xjf "$f" -C "${DST}" 2>/dev/null && echo "[NFS] Unpacked: $(basename $f)"
+            done
+            # Copy any non-archive files directly
+            find "${SRC}" -maxdepth 1 -type f ! -name '*.zip' ! -name '*.tar.bz2' ! -name '*.tar.gz' -exec cp {} "${DST}/" \; 2>/dev/null
+          fi
+        done
+        echo "[NFS] Real-world datasets prepared:"
+        du -sh "${REAL_WORLD_DIR}"/* 2>/dev/null || true
+      else
+        echo "[NFS] WARNING: Cannot mount ${NFS_SERVER} — NAS payload types will be skipped"
+      fi
       CHECKPOINT_DIR="results/${DB_SYSTEM}/checkpoints"
       mkdir -p "${CHECKPOINT_DIR}"
       MAX_SYSTEM_RETRIES=${MAX_SYSTEM_RETRIES:-3}
@@ -471,11 +505,13 @@ experiment:preflight:
           echo ""
           echo "===== Run ${RUN}/${REPETITIONS} (seed=${RUN_SEED}) ====="
 
-          # Generate datasets with varied seed
+          # Generate datasets with varied seed (synthetic + real-world)
           build/dedup-test --generate-data \
             --data-dir /tmp/datasets \
             --num-files "${NUM_FILES}" \
             --seed "${RUN_SEED}" \
+            --payload-types "${PAYLOAD_TYPES}" \
+            --real-world-dir "${REAL_WORLD_DIR}" \
             --verbose 2>&1
 
           # Run experiment with checkpoint + connection retry
@@ -489,6 +525,8 @@ experiment:preflight:
             --checkpoint-dir "${CHECKPOINT_DIR}" \
             --run-id "${RUN}" \
             --max-retries 3 \
+            --payload-types "${PAYLOAD_TYPES}" \
+            --real-world-dir "${REAL_WORLD_DIR}" \
             --verbose 2>&1
           EXIT_CODE=$?
           set -e

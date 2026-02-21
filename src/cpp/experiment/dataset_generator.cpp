@@ -298,6 +298,58 @@ std::vector<char> DatasetGenerator::load_github_events() {
     return load_cached_or_download(url, "gharchive_2024-01-01-0.json.gz");
 }
 
+// ---- NAS-sourced data loaders (pre-loaded on experiment PVC) ----
+
+std::vector<char> DatasetGenerator::load_local_directory_file(const std::string& subdir) {
+    std::string dir_path = cfg_.data_sources.real_world_dir + "/" + subdir;
+    if (!fs::exists(dir_path) || !fs::is_directory(dir_path)) {
+        LOG_ERR("[datagen] NAS dataset directory not found: %s", dir_path.c_str());
+        return {};
+    }
+
+    // Collect all regular files in the directory
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(dir_path)) {
+        if (entry.is_regular_file() && entry.file_size() > 0) {
+            files.push_back(entry.path());
+        }
+    }
+
+    if (files.empty()) {
+        LOG_ERR("[datagen] No files in NAS dataset directory: %s", dir_path.c_str());
+        return {};
+    }
+
+    // Select a file (deterministic via PRNG for reproducibility)
+    size_t idx = next_u64() % files.size();
+    const auto& fpath = files[idx];
+
+    std::ifstream f(fpath, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) {
+        LOG_ERR("[datagen] Cannot open NAS file: %s", fpath.string().c_str());
+        return {};
+    }
+
+    auto size = f.tellg();
+    f.seekg(0);
+    std::vector<char> data(static_cast<size_t>(size));
+    f.read(data.data(), size);
+    LOG_INF("[datagen] Loaded NAS file: %s (%zu bytes)", fpath.filename().string().c_str(), data.size());
+    return data;
+}
+
+std::vector<char> DatasetGenerator::load_bank_transactions() {
+    return load_local_directory_file("bankdataset");
+}
+
+std::vector<char> DatasetGenerator::load_text_corpus() {
+    return load_local_directory_file("million_post");
+}
+
+std::vector<char> DatasetGenerator::load_numeric_dataset() {
+    return load_local_directory_file("random_numbers");
+}
+
 // ---- Payload dispatch ----
 
 std::vector<char> DatasetGenerator::generate_payload(size_t size, PayloadType type) {
@@ -320,6 +372,12 @@ std::vector<char> DatasetGenerator::generate_payload(size_t size, PayloadType ty
             return load_gutenberg_text();
         case PayloadType::GITHUB_EVENTS:
             return load_github_events();
+        case PayloadType::BANK_TRANSACTIONS:
+            return load_bank_transactions();
+        case PayloadType::TEXT_CORPUS:
+            return load_text_corpus();
+        case PayloadType::NUMERIC_DATASET:
+            return load_numeric_dataset();
         case PayloadType::MIXED: {
             // Mix across all synthetic types (real-world only if explicitly requested)
             uint64_t choice = next_u64() % 5;
