@@ -348,8 +348,9 @@ experiment:preflight:
       chmod +x build/dedup-test
       FAIL=0
 
-      # PostgreSQL
-      apt-get install -y -qq postgresql-client > /dev/null 2>&1
+      # PostgreSQL (apt lists were cleaned by before_script, re-fetch)
+      apt-get update -qq > /dev/null 2>&1
+      apt-get install -y -qq postgresql-client > /dev/null 2>&1 || true
       if pg_isready -h postgres-lb.databases.svc.cluster.local -p 5432 -U dedup-lab -t 10; then
         echo "  [OK] PostgreSQL"
       else echo "  [FAIL] PostgreSQL"; FAIL=1; fi
