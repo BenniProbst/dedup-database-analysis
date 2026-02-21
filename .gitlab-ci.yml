@@ -342,7 +342,7 @@ experiment:build:
 # Step 2: Pre-flight check -- verify all DB systems are reachable
 experiment:preflight:
   tags:
-    - kubernetes
+    - experiment
   image: gcc:14-bookworm
   stage: experiment-preflight
   needs: ["experiment:build"]
@@ -432,6 +432,8 @@ experiment:preflight:
 # --- Hidden template for per-DB experiment jobs ---
 .experiment-per-db: &experiment-per-db
   <<: *cpp-default
+  tags:
+    - experiment
   stage: experiment-run
   timeout: 6 hours
   variables:
