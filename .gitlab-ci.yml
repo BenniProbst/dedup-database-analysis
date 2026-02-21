@@ -336,10 +336,18 @@ experiment:build:
 
 # Step 2: Pre-flight check -- verify all DB systems are reachable
 experiment:preflight:
-  <<: *cpp-default
+  tags:
+    - kubernetes
+  image: gcc:14-bookworm
   stage: experiment-preflight
   needs: ["experiment:build"]
-  timeout: 10 minutes
+  timeout: 5 minutes
+  before_script:
+    - |
+      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+      apt-get update -qq
+      apt-get install -y -qq --no-install-recommends postgresql-client netcat-openbsd \
+        && rm -rf /var/lib/apt/lists/*
   script:
     - |
       echo "================================================================="
@@ -348,9 +356,7 @@ experiment:preflight:
       chmod +x build/dedup-test
       FAIL=0
 
-      # PostgreSQL (apt lists were cleaned by before_script, re-fetch)
-      apt-get update -qq > /dev/null 2>&1
-      apt-get install -y -qq postgresql-client > /dev/null 2>&1 || true
+      # PostgreSQL
       if pg_isready -h postgres-lb.databases.svc.cluster.local -p 5432 -U dedup-lab -t 10; then
         echo "  [OK] PostgreSQL"
       else echo "  [FAIL] PostgreSQL"; FAIL=1; fi
