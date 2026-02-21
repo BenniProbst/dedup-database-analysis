@@ -31,6 +31,9 @@ public:
     [[nodiscard]] DbSystem system() const override { return system_; }
     [[nodiscard]] const char* system_name() const override { return db_system_str(system_); }
 
+    // Override: use PQreset for faster reconnection (reuses connection params)
+    bool reconnect(const DbConnection& conn) override;
+
 private:
     DbSystem system_;
     PGconn* conn_ = nullptr;

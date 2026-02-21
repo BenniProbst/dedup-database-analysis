@@ -24,6 +24,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
+#include <chrono>
 
 #include "config.hpp"
 #include "utils/logger.hpp"
@@ -43,6 +45,7 @@
 #include "experiment/metrics_trace.hpp"
 #include "experiment/results_exporter.hpp"
 #include "experiment/dataset_generator.hpp"
+#include "experiment/checkpoint.hpp"
 
 namespace fs = std::filesystem;
 
@@ -69,6 +72,9 @@ static void print_usage(const char* prog) {
         "  --seed N            PRNG seed for reproducible data (default: 42)\n"
         "  --cleanup-only      Only drop lab schemas, then exit (no experiment)\n"
         "  --dry-run           Simulate without actual DB operations\n"
+        "  --checkpoint-dir D  Directory for checkpoint files (enables resume)\n"
+        "  --run-id N          Run identifier (1,2,3) for checkpoint tracking\n"
+        "  --max-retries N     Max retries per system on connection loss (default: 3)\n"
         "  --verbose           Enable debug logging\n"
         "  --help              Show this help\n"
         "\n"
@@ -105,6 +111,9 @@ int main(int argc, char* argv[]) {
     size_t num_files = 100;
     size_t file_size = 0;
     uint64_t seed = 42;
+    std::string checkpoint_dir;
+    int run_id = 0;
+    int max_retries = 3;
 
 #ifdef DEDUP_DRY_RUN
     dry_run = true;
@@ -138,6 +147,12 @@ int main(int argc, char* argv[]) {
             seed = std::stoull(argv[++i]);
         } else if (std::strcmp(argv[i], "--cleanup-only") == 0) {
             cleanup_only = true;
+        } else if (std::strcmp(argv[i], "--checkpoint-dir") == 0 && i + 1 < argc) {
+            checkpoint_dir = argv[++i];
+        } else if (std::strcmp(argv[i], "--run-id") == 0 && i + 1 < argc) {
+            run_id = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--max-retries") == 0 && i + 1 < argc) {
+            max_retries = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (std::strcmp(argv[i], "--verbose") == 0) {
@@ -202,6 +217,16 @@ int main(int argc, char* argv[]) {
         LOG_INF("Total: %zu files generated across %zu payload types",
             total_all, cfg.payload_types.size());
         return 0;  // generate-data is a standalone operation
+    }
+
+    // Initialize checkpoint manager (if --checkpoint-dir specified)
+    std::unique_ptr<dedup::Checkpoint> checkpoint;
+    if (!checkpoint_dir.empty()) {
+        checkpoint = std::make_unique<dedup::Checkpoint>(checkpoint_dir);
+        if (run_id > 0) {
+            LOG_INF("Resume mode: checkpoint-dir=%s, run-id=%d, max-retries=%d",
+                checkpoint_dir.c_str(), run_id, max_retries);
+        }
     }
 
     // Create results directory
@@ -333,45 +358,111 @@ int main(int argc, char* argv[]) {
             ",\"payload_types\":" + std::to_string(cfg.payload_types.size()) + "}"});
     }
 
-    // Run experiments -- full factorial: payload_type × system × grade × stage
+    // Run experiments -- system × payload_type × grade × stage
+    // With connection retry (exponential backoff) and per-system checkpointing.
+    // On connection loss: retry ALL payload types for that system from scratch.
     // Directory structure: data_dir/{payload_type}/{U0,U50,U90}/
     dedup::DataLoader loader(schema_mgr, metrics, cfg.replica_count, cfg.db_internal_metrics);
     std::vector<dedup::ExperimentResult> all_results;
+    int systems_failed = 0;
 
-    LOG_INF("=== EXPERIMENT MATRIX: %zu payload types x %zu systems x %zu grades x %zu stages ===",
-        cfg.payload_types.size(), entries.size(), grades.size(), cfg.stages.size());
+    LOG_INF("=== EXPERIMENT MATRIX: %zu systems x %zu payload types x %zu grades x %zu stages ===",
+        entries.size(), cfg.payload_types.size(), grades.size(), cfg.stages.size());
 
-    for (auto pt : cfg.payload_types) {
-        std::string pt_data_dir = data_dir + "/" + dedup::payload_type_str(pt);
-        LOG_INF("=== PAYLOAD TYPE: %s (data: %s) ===", dedup::payload_type_str(pt), pt_data_dir.c_str());
+    for (auto& entry : entries) {
+        std::string sys_name = dedup::db_system_str(entry.db_conn.system);
 
-        if (cfg.metrics_trace.enabled) {
-            trace.publish_event({dedup::now_ms(), "payload_start", "",
-                dedup::payload_type_str(pt), "", "", ""});
+        // Checkpoint: skip if this system+run is already completed
+        if (checkpoint && run_id > 0 && checkpoint->is_complete(sys_name, run_id)) {
+            LOG_INF("[Resume] %s run %d already complete -- skipping", sys_name.c_str(), run_id);
+            continue;
         }
 
-        for (auto& entry : entries) {
-            if (cfg.metrics_trace.enabled) {
-                trace.publish_event({dedup::now_ms(), "system_start",
-                    dedup::db_system_str(entry.db_conn.system),
-                    dedup::payload_type_str(pt), "", "", ""});
+        bool system_ok = false;
+
+        for (int attempt = 0; attempt <= max_retries; ++attempt) {
+            if (attempt > 0) {
+                // Exponential backoff between retries: 5s, 10s, 20s
+                int backoff_s = 5 * (1 << (attempt - 1));
+                if (backoff_s > 60) backoff_s = 60;
+                LOG_WRN("[Recovery] %s FAILED -- retry %d/%d in %d s...",
+                    sys_name.c_str(), attempt, max_retries, backoff_s);
+                std::this_thread::sleep_for(std::chrono::seconds(backoff_s));
+
+                // Reconnect before retry
+                if (!entry.connector->ensure_connected(entry.db_conn)) {
+                    LOG_ERR("[Recovery] Cannot reconnect to %s -- trying next attempt",
+                        sys_name.c_str());
+                    continue;
+                }
+
+                // Clean lab schema for fresh retry
+                entry.connector->reset_lab_schema(lab_schema);
+                entry.connector->create_lab_schema(lab_schema);
             }
 
-            auto results = loader.run_full_experiment(
-                *entry.connector, entry.db_conn, pt_data_dir, lab_schema, grades, pt);
-            all_results.insert(all_results.end(), results.begin(), results.end());
+            std::vector<dedup::ExperimentResult> system_results;
+            bool had_conn_error = false;
 
-            if (cfg.metrics_trace.enabled) {
-                trace.publish_event({dedup::now_ms(), "system_end",
-                    dedup::db_system_str(entry.db_conn.system),
-                    dedup::payload_type_str(pt), "", "",
-                    "{\"runs\":" + std::to_string(results.size()) + "}"});
+            for (auto pt : cfg.payload_types) {
+                std::string pt_data_dir = data_dir + "/" + dedup::payload_type_str(pt);
+                LOG_INF("=== %s / %s (data: %s) ===",
+                    sys_name.c_str(), dedup::payload_type_str(pt), pt_data_dir.c_str());
+
+                if (cfg.metrics_trace.enabled) {
+                    trace.publish_event({dedup::now_ms(), "system_start", sys_name,
+                        dedup::payload_type_str(pt), "", "", ""});
+                }
+
+                auto results = loader.run_full_experiment(
+                    *entry.connector, entry.db_conn, pt_data_dir, lab_schema, grades, pt);
+
+                // Check for fatal connection loss in results
+                for (const auto& r : results) {
+                    if (!r.error.empty() &&
+                        r.error.find("CONNECTION_LOST") != std::string::npos) {
+                        had_conn_error = true;
+                        break;
+                    }
+                }
+
+                if (cfg.metrics_trace.enabled) {
+                    trace.publish_event({dedup::now_ms(), "system_end", sys_name,
+                        dedup::payload_type_str(pt), "", "",
+                        "{\"runs\":" + std::to_string(results.size()) + "}"});
+                }
+
+                if (had_conn_error) {
+                    LOG_ERR("[Recovery] Connection lost during %s / %s -- will retry system",
+                        sys_name.c_str(), dedup::payload_type_str(pt));
+                    break;
+                }
+
+                system_results.insert(system_results.end(), results.begin(), results.end());
+            }
+
+            if (!had_conn_error) {
+                // All payload types completed successfully for this system
+                all_results.insert(all_results.end(),
+                    system_results.begin(), system_results.end());
+                system_ok = true;
+                break;
             }
         }
 
-        if (cfg.metrics_trace.enabled) {
-            trace.publish_event({dedup::now_ms(), "payload_end", "",
-                dedup::payload_type_str(pt), "", "", ""});
+        if (system_ok) {
+            if (checkpoint && run_id > 0) {
+                checkpoint->mark_complete(sys_name, run_id,
+                    static_cast<int>(all_results.size()));
+            }
+            LOG_INF("[Resume] %s run %d: SUCCESS", sys_name.c_str(), run_id);
+        } else {
+            LOG_ERR("[Resume] %s FAILED after %d retries -- invalidating checkpoints",
+                sys_name.c_str(), max_retries + 1);
+            if (checkpoint) {
+                checkpoint->invalidate_system(sys_name);
+            }
+            systems_failed++;
         }
     }
 
@@ -426,6 +517,9 @@ int main(int argc, char* argv[]) {
     LOG_INF("=== EXPERIMENT COMPLETE ===");
     LOG_INF("Total runs: %zu", all_results.size());
     LOG_INF("Results: %s", combined_path.c_str());
+    if (systems_failed > 0) {
+        LOG_ERR("%d system(s) FAILED after all retries!", systems_failed);
+    }
 
     // Print summary table (doku.tex metrics: payload, duration, logical bytes, physical delta, EDR, throughput, latency)
     std::printf("\n%-13s %-16s %-4s %-15s %10s %12s %12s %7s %10s %10s %10s %10s\n",
@@ -447,5 +541,5 @@ int main(int argc, char* argv[]) {
         std::printf("\n");
     }
 
-    return 0;
+    return systems_failed > 0 ? 1 : 0;
 }

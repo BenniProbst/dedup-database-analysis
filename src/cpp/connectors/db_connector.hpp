@@ -6,7 +6,10 @@
 #include <vector>
 #include <algorithm>
 #include <numeric>
+#include <thread>
+#include <chrono>
 #include "../config.hpp"
+#include "../utils/logger.hpp"
 
 namespace dedup {
 
@@ -50,6 +53,43 @@ public:
     // System identification
     [[nodiscard]] virtual DbSystem system() const = 0;
     [[nodiscard]] virtual const char* system_name() const = 0;
+
+    // Connection resilience: reconnect after connection loss.
+    // Default: disconnect + connect. Override for protocol-specific reset (e.g. PQreset).
+    virtual bool reconnect(const DbConnection& conn) {
+        disconnect();
+        return connect(conn);
+    }
+
+    // Ensure connection is alive, retry with exponential backoff if lost.
+    // Returns true if connected (either already was or successfully reconnected).
+    // Backoff: base_delay_ms * 2^(attempt-1), capped at 30s.
+    bool ensure_connected(const DbConnection& conn,
+                          int max_retries = 5, int base_delay_ms = 1000) {
+        if (is_connected()) return true;
+
+        LOG_WRN("[%s] Connection lost! Starting reconnection (max %d retries)...",
+            system_name(), max_retries);
+
+        for (int attempt = 1; attempt <= max_retries; ++attempt) {
+            int delay = base_delay_ms * (1 << (attempt - 1));
+            if (delay > 30000) delay = 30000;  // cap at 30s
+
+            LOG_WRN("[%s] Reconnect attempt %d/%d (backoff: %d ms)...",
+                system_name(), attempt, max_retries, delay);
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+
+            if (reconnect(conn)) {
+                LOG_INF("[%s] Reconnected successfully on attempt %d",
+                    system_name(), attempt);
+                return true;
+            }
+            LOG_ERR("[%s] Reconnect attempt %d failed", system_name(), attempt);
+        }
+
+        LOG_ERR("[%s] All %d reconnection attempts FAILED", system_name(), max_retries);
+        return false;
+    }
 };
 
 } // namespace dedup

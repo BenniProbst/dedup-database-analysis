@@ -96,6 +96,14 @@ ExperimentResult DataLoader::run_stage(
     LOG_INF("=== %s / %s / %s / %s ===", result.system.c_str(),
         result.payload_type.c_str(), result.dup_grade.c_str(), result.stage.c_str());
 
+    // Connection health check with exponential backoff before each stage
+    if (!connector.ensure_connected(db_conn)) {
+        result.error = "CONNECTION_LOST: " + std::string(connector.system_name()) +
+                       " unreachable after reconnection attempts";
+        LOG_ERR("%s", result.error.c_str());
+        return result;
+    }
+
     // Check per-DB experiment size limit (e.g. CockroachDB: 50 GiB)
     if (db_conn.max_experiment_bytes > 0) {
         int64_t current_size = connector.get_logical_size_bytes();
@@ -269,30 +277,47 @@ std::vector<ExperimentResult> DataLoader::run_full_experiment(
     LOG_INF("=== FULL EXPERIMENT: %s / %s ===", connector.system_name(), payload_type_str(payload_type));
     LOG_INF("PVC: %s (namespace: %s)", db_conn.pvc_name.c_str(), db_conn.k8s_namespace.c_str());
 
+    // Helper: run stage, check for fatal connection loss
+    bool aborted = false;
+    auto run_checked = [&](Stage stage, DupGrade grade) {
+        if (aborted) return;
+        auto r = run_stage(connector, db_conn, stage, grade, data_dir, lab_schema, payload_type);
+        results.push_back(r);
+        if (!r.error.empty() && r.error.find("CONNECTION_LOST") != std::string::npos) {
+            LOG_ERR("ABORT: Connection lost during %s/%s/%s",
+                connector.system_name(), payload_type_str(payload_type), stage_str(stage));
+            aborted = true;
+        }
+    };
+
     for (auto grade : grades) {
+        if (aborted) break;
+
         LOG_INF("--- %s / Grade: %s ---", payload_type_str(payload_type), dup_grade_str(grade));
 
         // Reset lab schema before each grade
         connector.reset_lab_schema(lab_schema);
 
         // Stage 1: Bulk Insert
-        results.push_back(run_stage(connector, db_conn, Stage::BULK_INSERT, grade, data_dir, lab_schema, payload_type));
+        run_checked(Stage::BULK_INSERT, grade);
 
         // Reset for Stage 2
-        connector.reset_lab_schema(lab_schema);
+        if (!aborted) connector.reset_lab_schema(lab_schema);
 
         // Stage 2: Per-File Insert
-        results.push_back(run_stage(connector, db_conn, Stage::PERFILE_INSERT, grade, data_dir, lab_schema, payload_type));
+        run_checked(Stage::PERFILE_INSERT, grade);
 
         // Stage 3a: Per-File Delete
-        results.push_back(run_stage(connector, db_conn, Stage::PERFILE_DELETE, grade, data_dir, lab_schema, payload_type));
+        run_checked(Stage::PERFILE_DELETE, grade);
 
         // Stage 3b: Maintenance (VACUUM FULL / compaction / retention)
-        results.push_back(run_stage(connector, db_conn, Stage::MAINTENANCE, grade, data_dir, lab_schema, payload_type));
+        run_checked(Stage::MAINTENANCE, grade);
 
         // Reset after each grade run
-        connector.reset_lab_schema(lab_schema);
-        LOG_INF("Lab schema reset after %s / %s run", payload_type_str(payload_type), dup_grade_str(grade));
+        if (!aborted) {
+            connector.reset_lab_schema(lab_schema);
+            LOG_INF("Lab schema reset after %s / %s run", payload_type_str(payload_type), dup_grade_str(grade));
+        }
     }
 
     // Save per-system per-payload results to JSON

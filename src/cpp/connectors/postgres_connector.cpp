@@ -55,6 +55,23 @@ bool PostgresConnector::is_connected() const {
     return conn_ && PQstatus(conn_) == CONNECTION_OK;
 }
 
+bool PostgresConnector::reconnect(const DbConnection& conn) {
+    if (conn_) {
+        // PQreset reuses existing connection parameters -- faster than full reconnect
+        PQreset(conn_);
+        if (PQstatus(conn_) == CONNECTION_OK) {
+            LOG_INF("[%s] PQreset successful (server %s)",
+                system_name(), PQparameterStatus(conn_, "server_version"));
+            return true;
+        }
+        LOG_WRN("[%s] PQreset failed: %s -- falling back to full reconnect",
+            system_name(), PQerrorMessage(conn_));
+    }
+    // Full reconnect: disconnect + connect
+    disconnect();
+    return connect(conn);
+}
+
 bool PostgresConnector::exec(const char* sql) {
 #ifdef DEDUP_DRY_RUN
     LOG_DBG("[%s] DRY RUN SQL: %s", system_name(), sql);

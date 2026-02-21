@@ -427,52 +427,105 @@ experiment:preflight:
   variables:
     GIT_STRATEGY: clone
     REPETITIONS: "3"
+    MAX_SYSTEM_RETRIES: "3"
   script:
     - |
       echo "================================================================="
       echo "  EXPERIMENT: ${DB_SYSTEM} (${REPETITIONS} repetitions)"
       echo "  Lab user: dedup-lab | Lab schema: ${LAB_SCHEMA}"
+      echo "  Resume: checkpoint-dir + per-run-id tracking"
       echo "================================================================="
       chmod +x build/dedup-test
       mkdir -p results/${DB_SYSTEM}
+      CHECKPOINT_DIR="results/${DB_SYSTEM}/checkpoints"
+      mkdir -p "${CHECKPOINT_DIR}"
+      MAX_SYSTEM_RETRIES=${MAX_SYSTEM_RETRIES:-3}
 
-      for RUN in $(seq 1 ${REPETITIONS}); do
-        RUN_SEED=$((42 + RUN))
+      ALL_RUNS_OK=false
+
+      for ATTEMPT in $(seq 1 ${MAX_SYSTEM_RETRIES}); do
         echo ""
-        echo "===== Run ${RUN}/${REPETITIONS} (seed=${RUN_SEED}) ====="
+        echo "===== ${DB_SYSTEM}: Attempt ${ATTEMPT}/${MAX_SYSTEM_RETRIES} ====="
 
-        # Generate datasets with varied seed
-        build/dedup-test --generate-data \
-          --data-dir /tmp/datasets \
-          --num-files "${NUM_FILES}" \
-          --seed "${RUN_SEED}" \
-          --verbose 2>&1
+        if [ "$ATTEMPT" -gt 1 ]; then
+          echo "[Recovery] Previous attempt failed — invalidating all checkpoints"
+          rm -f "${CHECKPOINT_DIR}/${DB_SYSTEM}_run"*.checkpoint
+          rm -rf results/${DB_SYSTEM}/run-*
+          mkdir -p results/${DB_SYSTEM}
+          BACKOFF=$((10 * ATTEMPT))
+          echo "[Recovery] Waiting ${BACKOFF}s before retry..."
+          sleep ${BACKOFF}
+        fi
 
-        # Run experiment for this system only
-        build/dedup-test \
-          --systems "${DB_SYSTEM}" \
-          --grades "${DUP_GRADES}" \
-          --lab-schema "${LAB_SCHEMA}" \
-          --data-dir /tmp/datasets \
-          --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
-          --verbose 2>&1
+        RUN_FAILED=false
 
-        echo "===== Run ${RUN} complete ====="
-        ls -la "results/${DB_SYSTEM}/run-${RUN}/" 2>/dev/null || true
+        for RUN in $(seq 1 ${REPETITIONS}); do
+          RUN_SEED=$((42 + RUN))
 
-        # Cleanup between runs
-        build/dedup-test \
-          --cleanup-only \
-          --systems "${DB_SYSTEM}" \
-          --lab-schema "${LAB_SCHEMA}" \
-          --verbose 2>&1
+          # Check if this run is already checkpointed
+          if [ -f "${CHECKPOINT_DIR}/${DB_SYSTEM}_run${RUN}.checkpoint" ]; then
+            echo "===== Run ${RUN}: SKIPPED (checkpoint exists) ====="
+            continue
+          fi
 
-        echo "  Lab schema cleaned for next run"
-        sleep 15
+          echo ""
+          echo "===== Run ${RUN}/${REPETITIONS} (seed=${RUN_SEED}) ====="
+
+          # Generate datasets with varied seed
+          build/dedup-test --generate-data \
+            --data-dir /tmp/datasets \
+            --num-files "${NUM_FILES}" \
+            --seed "${RUN_SEED}" \
+            --verbose 2>&1
+
+          # Run experiment with checkpoint + connection retry
+          set +e
+          build/dedup-test \
+            --systems "${DB_SYSTEM}" \
+            --grades "${DUP_GRADES}" \
+            --lab-schema "${LAB_SCHEMA}" \
+            --data-dir /tmp/datasets \
+            --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
+            --checkpoint-dir "${CHECKPOINT_DIR}" \
+            --run-id "${RUN}" \
+            --max-retries 3 \
+            --verbose 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "[Recovery] Run ${RUN} FAILED (exit code ${EXIT_CODE})"
+            RUN_FAILED=true
+            break
+          fi
+
+          echo "===== Run ${RUN} complete ====="
+          ls -la "results/${DB_SYSTEM}/run-${RUN}/" 2>/dev/null || true
+
+          # Cleanup between runs
+          build/dedup-test \
+            --cleanup-only \
+            --systems "${DB_SYSTEM}" \
+            --lab-schema "${LAB_SCHEMA}" \
+            --verbose 2>&1
+
+          echo "  Lab schema cleaned for next run"
+          sleep 15
+        done
+
+        if [ "$RUN_FAILED" = false ]; then
+          ALL_RUNS_OK=true
+          break
+        fi
       done
 
       echo ""
-      echo "=== ${DB_SYSTEM}: All ${REPETITIONS} runs complete ==="
+      if [ "$ALL_RUNS_OK" = true ]; then
+        echo "=== ${DB_SYSTEM}: All ${REPETITIONS} runs COMPLETE ==="
+      else
+        echo "=== ${DB_SYSTEM}: FAILED after ${MAX_SYSTEM_RETRIES} attempts ==="
+        exit 1
+      fi
       du -sh results/${DB_SYSTEM}/
   after_script:
     - |
