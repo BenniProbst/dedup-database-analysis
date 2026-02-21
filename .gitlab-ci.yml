@@ -347,6 +347,11 @@ experiment:preflight:
   stage: experiment-preflight
   needs: ["experiment:build"]
   timeout: 5 minutes
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - script_failure
   before_script:
     - |
       echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
