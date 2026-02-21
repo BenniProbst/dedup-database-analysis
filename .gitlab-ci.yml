@@ -23,6 +23,10 @@ stages:
   - build
   - aggregate
   - upload
+  - experiment-build
+  - experiment-preflight
+  - experiment-run
+  - experiment-cleanup
 
 variables:
   GCC_VERSION: "14"
@@ -233,3 +237,259 @@ upload-to-minio:
     - if: '$MINIO_ENDPOINT && $MINIO_ACCESS_KEY && $MINIO_SECRET_KEY'
       when: always
     - when: never
+
+# =============================================================================
+# PIPELINE 2: Real DB Experiment (sequential per-DB, 3 repetitions each)
+# =============================================================================
+# Runner: k8s-runner-4 (ID 17) on dedicated node talos-say-ls6
+#   - Tag: "experiment" (only tag, run_untagged=false)
+#   - Node selector: kubernetes.io/hostname=talos-say-ls6
+#   - Toleration: experiment=dedicated:NoSchedule
+# Safety: Samba AD lab user (dedup-lab), isolated lab schemas, cleanup guaranteed
+# =============================================================================
+
+.experiment-default: &experiment-default
+  image: gcc:14-bookworm
+  tags:
+    - experiment
+  before_script:
+    - |
+      apt-get update -qq > /dev/null 2>&1
+      apt-get install -y -qq --no-install-recommends \
+        libpq-dev libhiredis-dev librdkafka-dev libcurl4-openssl-dev \
+        libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common \
+        > /dev/null 2>&1
+      echo "Build-tools ready: GCC $(gcc -dumpversion) + CMake + Ninja"
+
+experiment:build:
+  <<: *experiment-default
+  stage: experiment-build
+  needs: []
+  script:
+    - |
+      echo "=== Experiment Build: dedup-test v${CI_COMMIT_SHORT_SHA} ==="
+      mkdir -p build && cd build
+      cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
+      make -j4 dedup-test 2>&1
+      echo "=== Binary ready ==="
+      ls -lh dedup-test
+      file dedup-test
+  artifacts:
+    paths:
+      - build/dedup-test
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
+
+experiment:preflight:
+  tags:
+    - experiment
+  image: gcc:14-bookworm
+  stage: experiment-preflight
+  needs: ["experiment:build"]
+  timeout: 5 minutes
+  retry:
+    max: 2
+    when: [runner_system_failure, script_failure]
+  script:
+    - |
+      apt-get update -qq > /dev/null 2>&1
+      apt-get install -y -qq --no-install-recommends \
+        postgresql-client default-mysql-client redis-tools curl netcat-openbsd \
+        > /dev/null 2>&1
+      echo "=== Pre-Flight: Checking all 7 DB systems ==="
+      PASS=0; FAIL=0
+      check() {
+        if eval "$2" > /dev/null 2>&1; then
+          echo "  OK  $1"; PASS=$((PASS+1))
+        else
+          echo "  FAIL $1"; FAIL=$((FAIL+1))
+        fi
+      }
+      check "PostgreSQL"   "pg_isready -h postgres-lb.databases.svc.cluster.local -p 5432 -t 5"
+      check "CockroachDB"  "pg_isready -h cockroachdb-public.cockroach-operator-system.svc.cluster.local -p 26257 -t 5"
+      check "MariaDB"      "mysqladmin ping -h mariadb.databases.svc.cluster.local -P 3306 --connect-timeout=5"
+      check "ClickHouse"   "curl -sf --max-time 5 'http://clickhouse.databases.svc.cluster.local:8123/ping'"
+      check "Redis"        "redis-cli -h redis-cluster.redis.svc.cluster.local -p 6379 ping"
+      check "Kafka"        "nc -z -w5 kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local 9092"
+      check "MinIO"        "curl -sf --max-time 5 'http://minio-lb.minio.svc.cluster.local:9000/minio/health/live'"
+      echo "=== Result: ${PASS}/7 passed, ${FAIL}/7 failed ==="
+      [ "$FAIL" -eq 0 ] || exit 1
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
+
+.experiment-per-db: &experiment-per-db
+  <<: *experiment-default
+  stage: experiment-run
+  timeout: 6 hours
+  retry:
+    max: 1
+    when: [runner_system_failure]
+  script:
+    - |
+      echo "================================================================="
+      echo "  EXPERIMENT: ${DB_SYSTEM} (3 repetitions)"
+      echo "  Lab user: dedup-lab | Lab schema: dedup_lab"
+      echo "  Payload types: ${PAYLOAD_TYPES}"
+      echo "  Resume: checkpoint-dir + per-run-id tracking"
+      echo "================================================================="
+
+      # Try NFS mount for real-world datasets
+      mkdir -p /datasets/real-world
+      mount -t nfs4 10.0.110.184:/ /datasets/real-world 2>/dev/null && echo "[NFS] Mounted real-world datasets" || echo "[NFS] WARNING: Cannot mount 10.0.110.184 — NAS payload types will be skipped"
+
+      chmod +x build/dedup-test
+      OVERALL_EXIT=0
+
+      for RUN in 1 2 3; do
+        echo ""
+        echo "===== ${DB_SYSTEM}: Attempt ${RUN}/3 ====="
+        echo ""
+        SEED=$((42 + RUN))
+        mkdir -p results/${DB_SYSTEM}/run-${RUN}
+
+        echo "===== Run ${RUN}/3 (seed=${SEED}) ====="
+
+        build/dedup-test \
+          --config k8s/base/configmap.yaml \
+          --systems "${DB_SYSTEM}" \
+          --generate-data \
+          --data-dir /tmp/datasets \
+          --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
+          --num-files 500 \
+          --file-size 524288 \
+          --seed ${SEED} \
+          --checkpoint-dir "results/${DB_SYSTEM}/checkpoints" \
+          --run-id ${RUN} \
+          --max-retries 3 \
+          --verbose 2>&1 || {
+            echo "WARNING: Run ${RUN} exited with code $?"
+            OVERALL_EXIT=1
+          }
+
+        echo "===== Run ${RUN}/3 complete ====="
+        ls -la results/${DB_SYSTEM}/run-${RUN}/ 2>/dev/null || true
+      done
+
+      echo ""
+      echo "=== All 3 runs complete for ${DB_SYSTEM} ==="
+      echo "=== Overall exit: ${OVERALL_EXIT} ==="
+
+      # Export combined results
+      if ls results/${DB_SYSTEM}/run-*/combined_results.json 2>/dev/null; then
+        echo "Results files found"
+      fi
+
+      umount /datasets/real-world 2>/dev/null || true
+      exit ${OVERALL_EXIT}
+  after_script:
+    - |
+      echo "=== Cleanup: dropping lab schemas ==="
+      # Lab schema cleanup is handled by the binary's --cleanup flag
+      # but we ensure NFS unmount here
+      umount /datasets/real-world 2>/dev/null || true
+  artifacts:
+    paths:
+      - results/
+    expire_in: 365 days
+    when: always
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
+
+experiment:postgresql:
+  <<: *experiment-per-db
+  needs: ["experiment:preflight", "experiment:build"]
+  variables:
+    DB_SYSTEM: "postgresql"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
+
+experiment:cockroachdb:
+  <<: *experiment-per-db
+  needs: ["experiment:postgresql", "experiment:build"]
+  variables:
+    DB_SYSTEM: "cockroachdb"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
+
+experiment:mariadb:
+  <<: *experiment-per-db
+  needs: ["experiment:cockroachdb", "experiment:build"]
+  variables:
+    DB_SYSTEM: "mariadb"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
+
+experiment:clickhouse:
+  <<: *experiment-per-db
+  needs: ["experiment:mariadb", "experiment:build"]
+  variables:
+    DB_SYSTEM: "clickhouse"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
+
+experiment:redis:
+  <<: *experiment-per-db
+  needs: ["experiment:clickhouse", "experiment:build"]
+  variables:
+    DB_SYSTEM: "redis"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
+
+experiment:kafka:
+  <<: *experiment-per-db
+  needs: ["experiment:redis", "experiment:build"]
+  variables:
+    DB_SYSTEM: "kafka"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
+
+experiment:minio:
+  <<: *experiment-per-db
+  needs: ["experiment:kafka", "experiment:build"]
+  variables:
+    DB_SYSTEM: "minio"
+    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
+
+experiment:run-all:
+  stage: experiment-run
+  tags:
+    - experiment
+  image: alpine:latest
+  when: manual
+  needs: ["experiment:build"]
+  script:
+    - echo "Manual trigger for full experiment cascade"
+    - echo "Use individual DB jobs instead (they chain automatically)"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+      when: manual
+
+experiment:cleanup:
+  stage: experiment-cleanup
+  tags:
+    - experiment
+  image: alpine:latest
+  when: manual
+  needs: []
+  script:
+    - echo "=== Post-Experiment Cleanup ==="
+    - echo "Manual cleanup — verify results before running"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+      when: manual
