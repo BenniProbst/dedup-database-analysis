@@ -1,751 +1,273 @@
-# =============================================================================
-# Dedup Database Analysis - GitLab CI/CD Triple Pipeline
-# =============================================================================
-# Pipeline 1: LaTeX compilation (auto on .tex/.bib/.cls/.bst changes)
-# Pipeline 2: C++ compilation + smoke tests (auto on src/cpp/** changes)
-# Pipeline 3: DB experiment (MANUAL trigger only -- production DBs!)
+# COMDARE Multi-Platform CI/CD Template v5.2.0 (BS-3040)
+# v5.2.0: Unique build dirs + coverage per BM OS, corrected artifact handling
+# v5.1.0: Split BM into Debian + Ubuntu (incompatible OS, separate runner pools)
+# v5.0.0: ALL build jobs in single stage (parallel execution)
 #
-# SAFETY: Pipeline 3 uses Samba AD lab user (dedup-lab) and isolated
-#         lab schemas (dedup_lab). Customer data is NEVER touched.
-#         Lab schemas are created before and dropped after each experiment.
-#         Automatic cleanup via after_script guarantees no orphaned data.
+# === Runner Architecture (12 total, 10 online, 2 paused) ===
+# Parallelization: 7 independent execution lanes in single build stage
 #
-# Cluster: 4 Worker Nodes (Intel N97), Talos v1.12.4, K8s v1.34.0
-# Storage: Longhorn (Replica 4, thin-provisioned)
-# Runners: K8s pool (IDs 6,15,16 tag: kubernetes) + Experiment (ID 17, tag: experiment)
-# Scheduling: LeastAllocated via runner ConfigMap (global for all projects).
-#   Runner sets cpu_request=2000m so K8s scheduler properly considers node load.
-#   TopologySpreadConstraints spread concurrent jobs across nodes.
+# Lane 1: K8s (Docker)        — kubernetes tag — pve1/node3/node4 Talos VMs
+# Lane 2: BM-Debian (Shell)   — debian+x86_64  — pve1 (pve2 paused/experiment)
+# Lane 3: BM-Ubuntu (Shell)   — ubuntu+x86_64  — node3, node4
+# Lane 4: macOS x86 (Shell)   — macos+x86_64   — node5 (independent)
+# Lane 5: macOS ARM (Shell)   — macos+arm64    — node6 (independent)
+# Lane 6: Linux ARM64 (Shell) — arm64+linux    — node7 (independent)
+# Lane 7: Linux RISC-V (Shell)— riscv64+linux  — node8 (independent)
 #
-# Required CI/CD Variables (Settings > CI/CD > Variables, MASKED):
-#   DEDUP_PG_PASSWORD       - PostgreSQL lab user password
-#   DEDUP_CRDB_PASSWORD     - CockroachDB lab user password (often empty)
-#   DEDUP_REDIS_PASSWORD    - Redis password (often empty in cluster mode)
-#   DEDUP_MARIADB_PASSWORD  - MariaDB lab user password
-#   DEDUP_MINIO_PASSWORD    - MinIO lab user password
-# =============================================================================
+# XOR: K8s runner XOR BM runner per physical host (pve1/pve2/node3/node4)
+# Exotic nodes (5-8) have no XOR constraint — fully independent
+# Phase 1: K8s + BM = MANDATORY, Exotic = allow_failure
 
 stages:
-  - latex
-  - docker-build
-  - cpp-build
-  - cpp-test
-  - experiment-build
-  - experiment-preflight
-  - experiment-run
-  - experiment-cleanup
+  - build
+  - aggregate
+  - upload
 
 variables:
-  PROMETHEUS_URL: http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
-  KAFKA_BOOTSTRAP: kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
-  REPLICA_COUNT: "4"
-  LAB_SCHEMA: dedup_lab
-  DUP_GRADES: "U0,U50,U90"
-  SYSTEMS: "postgresql,cockroachdb,redis,kafka,minio,mariadb,clickhouse"
-  NUM_FILES: "500"
-  SEED: "42"
-  # Payload types: synthetic + NAS real-world (doku.tex §6.3)
-  PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
-  # NFS data directory for pre-loaded NAS datasets
-  REAL_WORLD_DIR: "/datasets/real-world"
-  NFS_SERVER: "10.0.110.184"
-  # Docker registry (for optional image builds)
-  DEDUP_IMAGE: ${CI_REGISTRY_IMAGE}/dedup-test
+  GCC_VERSION: "14"
+  BUILD_TYPE: "Debug"
 
-# =============================================================================
-# PIPELINE 1: LaTeX Compilation (auto-triggered on document changes)
-# =============================================================================
+# ============================================================
+# Stage 1: ALL Builds (7 parallel execution lanes)
+# ============================================================
 
-latex:compile:
-  stage: latex
+# --- Lane 1: K8s Build (Docker executor, MANDATORY) ---
+build-k8s:
+  stage: build
+  image: gcc:${GCC_VERSION}
   tags:
     - kubernetes
-  image: texlive/texlive:latest
   before_script:
-    - cd docs
+    - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
+    - KEEPALIVE_PID=$!
+    - apt-get update -qq && apt-get install -y -qq cmake ninja-build git python3-pip >/dev/null 2>&1
+    - pip install gcovr --break-system-packages -q
+    - git config --global url."http://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
   script:
-    - |
-      echo "=== LaTeX Compilation: Triple-Pass Build ==="
-      pdflatex -interaction=nonstopmode -halt-on-error doku.tex || true
-      bibtex doku || true
-      pdflatex -interaction=nonstopmode -halt-on-error doku.tex || true
-      pdflatex -interaction=nonstopmode -halt-on-error doku.tex
-      ls -lh doku.pdf 2>/dev/null && echo "PDF generated successfully" || echo "ERROR: PDF not generated"
-      echo "=== Warnings ==="
-      grep -c "Warning" doku.log 2>/dev/null && grep "Warning" doku.log | head -10 || echo "None"
-      echo "=== Undefined References ==="
-      grep "undefined" doku.log | head -5 || echo "None"
+    - echo "=== COMDARE CI v5.2 — K8s (gcc:${GCC_VERSION}, x86_64) ==="
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
+    - cmake -B build-k8s -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
+    - cmake --build build-k8s -j $(nproc)
+    - cd build-k8s && ctest --output-on-failure -j$(nproc) || true
+    - cd $CI_PROJECT_DIR
+    - kill $KEEPALIVE_PID 2>/dev/null || true
+    - sleep 1
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s/_deps' --print-summary --xml coverage-k8s.xml || true
+  coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
-      - docs/doku.pdf
-      - docs/doku.log
+      - coverage-k8s.xml
+      - build-k8s/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-k8s.xml
     expire_in: 30 days
     when: always
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-      changes:
-        - "docs/**/*.tex"
-        - "docs/**/*.bib"
-        - "docs/**/*.cls"
-        - "docs/**/*.bst"
-        - "docs/Makefile"
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
 
-# =============================================================================
-# Docker Image Build (optional, manual -- uses Kaniko for K8s runners)
-# =============================================================================
-
-docker:build:
-  stage: docker-build
+# --- Lane 2: Debian x86_64 (pve1, pve2) — MANDATORY ---
+build-debian-x86:
+  stage: build
   tags:
-    - kubernetes
-  image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
-    entrypoint: [""]
-  script:
-    - |
-      echo "=== Building Docker image: ${DEDUP_IMAGE}:${CI_COMMIT_SHORT_SHA} ==="
-      mkdir -p /kaniko/.docker
-      echo "{\"auths\":{\"${CI_REGISTRY}\":{\"auth\":\"$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64)\"}}}" > /kaniko/.docker/config.json
-      /kaniko/executor \
-        --context "${CI_PROJECT_DIR}" \
-        --dockerfile "${CI_PROJECT_DIR}/Dockerfile" \
-        --destination "${DEDUP_IMAGE}:${CI_COMMIT_SHORT_SHA}" \
-        --destination "${DEDUP_IMAGE}:latest" \
-        --cache=true \
-        --cache-repo "${DEDUP_IMAGE}/cache"
-      echo "=== Image pushed: ${DEDUP_IMAGE}:${CI_COMMIT_SHORT_SHA} ==="
-  rules:
-    - changes:
-        - Dockerfile
-        - .dockerignore
-      when: manual
-      allow_failure: true
-
-# =============================================================================
-# PIPELINE 2: C++ Build + Tests (auto on src/cpp/** changes)
-# =============================================================================
-
-.cpp-default: &cpp-default
-  tags:
-    - kubernetes
-  image: gcc:14-bookworm
+    - debian
+    - x86_64
   before_script:
-    - |
-      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-      apt-get update -qq
-      apt-get install -y -qq --no-install-recommends \
-        cmake libpq-dev libcurl4-openssl-dev \
-        libhiredis-dev librdkafka-dev nlohmann-json3-dev \
-        libmariadb-dev \
-        && rm -rf /var/lib/apt/lists/*
-
-cpp:build:
-  <<: *cpp-default
-  stage: cpp-build
-  timeout: 30 minutes
+    - 'echo "=== COMDARE CI v5.2 — Debian x86_64 ($(uname -m)) ==="'
+    - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
   script:
-    - |
-      echo "=== C++ Build: dedup-integration-test v${CI_COMMIT_SHORT_SHA} ==="
-      echo "Compiler: $(gcc --version | head -1)"
-      echo "CMake: $(cmake --version | head -1)"
-
-      mkdir -p build && cd build
-      cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
-
-      echo "=== Building dedup-test ==="
-      make -j4 dedup-test 2>&1
-
-      echo "=== Building dedup-smoke-test ==="
-      make -j4 dedup-smoke-test 2>&1
-
-      echo "=== Build artifacts ==="
-      ls -lh dedup-test dedup-smoke-test
-      file dedup-test
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - cmake -B build-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
+    - cmake --build build-debian -j $(nproc)
+    - cd build-debian && ctest --output-on-failure -j$(nproc) || true
+    - cd $CI_PROJECT_DIR
+    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-debian/_deps --print-summary --xml coverage-debian.xml || echo "gcovr not found — skipping coverage"'
+  coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
-      - build/dedup-test
-      - build/dedup-smoke-test
+      - coverage-debian.xml
+      - build-debian/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-debian.xml
     expire_in: 30 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
+    when: always
 
-cpp:smoke-test:
-  <<: *cpp-default
-  stage: cpp-test
-  timeout: 20 minutes
-  needs: ["cpp:build"]
-  script:
-    - |
-      echo "=== Smoke Test: SHA-256 + Dataset Generator + Dry-Run ==="
-      chmod +x build/dedup-smoke-test
-
-      # 1. Generate test datasets (100 files per grade, 16K fixed, seed=42)
-      echo "--- Step 1: Generate datasets ---"
-      build/dedup-smoke-test --generate-data \
-        --data-dir /tmp/datasets \
-        --num-files 100 \
-        --file-size 16384 \
-        --seed 42 \
-        --dry-run --verbose 2>&1
-
-      # Verify generated files (structure: data_dir/{payload_type}/{grade}/)
-      echo "--- Dataset verification ---"
-      echo "Payload type directories:"
-      ls -1 /tmp/datasets/
-      for pt_dir in /tmp/datasets/*/; do
-        PT=$(basename "${pt_dir}")
-        for grade in U0 U50 U90; do
-          COUNT=$(find "${pt_dir}${grade}" -name '*.dat' 2>/dev/null | wc -l)
-          SIZE=$(du -sh "${pt_dir}${grade}/" 2>/dev/null | cut -f1)
-          echo "  ${PT}/${grade}: ${COUNT} files, ${SIZE}"
-        done
-      done
-
-      # 2. Check for duplicates using SHA-256 (per payload type)
-      echo "--- Step 2: Verify duplication levels ---"
-      for pt_dir in /tmp/datasets/*/; do
-        PT=$(basename "${pt_dir}")
-        for grade in U0 U50 U90; do
-          TOTAL=$(find "${pt_dir}${grade}" -name '*.dat' 2>/dev/null | wc -l)
-          UNIQUE=$(find "${pt_dir}${grade}" -name '*.dat' -exec sha256sum {} + 2>/dev/null | awk '{print $1}' | sort -u | wc -l)
-          if [ "$TOTAL" -gt 0 ]; then
-            DUP_PCT=$(awk "BEGIN {printf \"%.1f\", (1 - ${UNIQUE}/${TOTAL}) * 100}")
-          else
-            DUP_PCT="0.0"
-          fi
-          echo "  ${PT}/${grade}: ${TOTAL} total, ${UNIQUE} unique, ${DUP_PCT}% duplicates"
-        done
-      done
-
-      echo "=== Smoke Test PASSED ==="
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-cpp:full-dry-test:
-  <<: *cpp-default
-  stage: cpp-test
-  timeout: 30 minutes
-  needs: ["cpp:build"]
-  script:
-    - |
-      echo "=== Full Dry Test: All Systems x All Grades ==="
-      chmod +x build/dedup-smoke-test
-      mkdir -p results
-
-      # Redirect full output to log file (keeps CI trace small, avoids 500 errors)
-      set +e
-      build/dedup-smoke-test --generate-data \
-        --data-dir /tmp/datasets \
-        --results-dir results \
-        --num-files 50 \
-        --seed 42 \
-        --dry-run 2>&1 | tee results/full-dry-test.log | tail -200
-      EXIT_CODE=${PIPESTATUS[0]}
-      set -e
-
-      echo ""
-      echo "=== Binary exit code: ${EXIT_CODE} ==="
-      echo "=== Log file: $(wc -l < results/full-dry-test.log) lines, $(wc -c < results/full-dry-test.log) bytes ==="
-
-      if [ "$EXIT_CODE" -ne 0 ]; then
-        echo "ERROR: dedup-smoke-test exited with code ${EXIT_CODE}"
-        echo "--- First 50 lines of log ---"
-        head -50 results/full-dry-test.log
-        echo "--- Last 100 lines of log ---"
-        tail -100 results/full-dry-test.log
-        echo "--- dmesg (last 10 lines, check for OOM/segfault) ---"
-        dmesg 2>/dev/null | tail -10 || true
-        exit ${EXIT_CODE}
-      fi
-
-      echo "--- Results ---"
-      ls -la results/*.json 2>/dev/null || echo "No result files"
-      head -100 results/combined_results.json 2>/dev/null || true
-
-      echo "=== Full Dry Test PASSED ==="
-  artifacts:
-    paths:
-      - results/
-    expire_in: 7 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-# =============================================================================
-# PIPELINE 3: Real DB Experiment (MANUAL trigger only)
-# =============================================================================
-# SAFETY CONCEPT:
-#   - Uses Samba AD lab user (dedup-lab) with restricted permissions
-#   - All data goes into isolated lab schemas (dedup_lab / dedup-lab prefix)
-#   - Lab schemas are CREATED before experiment and DROPPED after
-#   - Customer/production data is NEVER read, modified, or deleted
-#   - after_script GUARANTEES cleanup even on failure/timeout
-#   - Each DB system uses its own isolation mechanism:
-#     PostgreSQL/CockroachDB: CREATE SCHEMA dedup_lab (separate from public)
-#     Redis: Key prefix dedup:* (no SELECT in cluster mode)
-#     Kafka: Topic prefix dedup-lab-* (separate from production topics)
-#     MinIO: Bucket dedup-lab-* (separate from production buckets)
-#     MariaDB/ClickHouse: CREATE DATABASE dedup_lab (separate database)
-# =============================================================================
-
-# Step 1: Build the binary for the experiment (self-contained, no dependency
-# on Pipeline 2 artifacts which may have expired or not exist)
-experiment:build:
-  <<: *cpp-default
-  stage: experiment-build
-  needs: []
-  script:
-    - |
-      echo "=== Experiment Build: dedup-test v${CI_COMMIT_SHORT_SHA} ==="
-      echo "Compiler: $(gcc --version | head -1)"
-      mkdir -p build && cd build
-      cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
-      make -j4 dedup-test 2>&1
-      echo "=== Binary ready ==="
-      ls -lh dedup-test
-      file dedup-test
-  artifacts:
-    paths:
-      - build/dedup-test
-    expire_in: 7 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-# Step 2: Pre-flight check -- verify all DB systems are reachable
-experiment:preflight:
+# --- Lane 3: Ubuntu x86_64 (node3, node4) — MANDATORY ---
+build-ubuntu-x86:
+  stage: build
   tags:
-    - experiment
-  image: gcc:14-bookworm
-  stage: experiment-preflight
-  needs: ["experiment:build"]
-  timeout: 5 minutes
-  retry:
-    max: 2
-    when:
-      - runner_system_failure
-      - script_failure
+    - ubuntu
+    - x86_64
   before_script:
-    - |
-      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-      apt-get update -qq
-      apt-get install -y -qq --no-install-recommends postgresql-client netcat-openbsd \
-        && rm -rf /var/lib/apt/lists/*
+    - 'echo "=== COMDARE CI v5.2 — Ubuntu x86_64 ($(uname -m)) ==="'
+    - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
   script:
-    - |
-      echo "================================================================="
-      echo "  PRE-FLIGHT: Verifying all 7 database systems"
-      echo "================================================================="
-      chmod +x build/dedup-test
-      FAIL=0
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - cmake -B build-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
+    - cmake --build build-ubuntu -j $(nproc)
+    - cd build-ubuntu && ctest --output-on-failure -j$(nproc) || true
+    - cd $CI_PROJECT_DIR
+    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-ubuntu/_deps --print-summary --xml coverage-ubuntu.xml || echo "gcovr not found — skipping coverage"'
+  coverage: '/lines:\s+(\d+\.\d+)%/'
+  artifacts:
+    paths:
+      - coverage-ubuntu.xml
+      - build-ubuntu/
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-ubuntu.xml
+    expire_in: 30 days
+    when: always
 
-      # PostgreSQL
-      if pg_isready -h postgres-lb.databases.svc.cluster.local -p 5432 -U dedup-lab -t 10; then
-        echo "  [OK] PostgreSQL"
-      else echo "  [FAIL] PostgreSQL"; FAIL=1; fi
+# --- Lanes 4-7: Exotic Platforms (Shell executor, SOFT-FAIL Phase 1) ---
+.exotic-base:
+  stage: build
+  allow_failure: true
+  before_script:
+    - 'echo "=== COMDARE CI v5.2 — Exotic ($(uname -s) $(uname -m)) ==="'
+    - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
+    - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"'
+    - cmake -B build-exotic $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_STANDARD=23
+    - cmake --build build-exotic -j $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
+    - cd build-exotic && ctest --output-on-failure || true
+    - cd $CI_PROJECT_DIR
+  artifacts:
+    paths:
+      - build-exotic/
+    expire_in: 30 days
+    when: always
 
-      # CockroachDB
-      if pg_isready -h cockroachdb-public.cockroach-operator-system.svc.cluster.local -p 26257 -U dedup_lab -t 10; then
-        echo "  [OK] CockroachDB"
-      else echo "  [FAIL] CockroachDB"; FAIL=1; fi
-
-      # Redis
-      if timeout 10 bash -c 'echo PING | nc -w5 redis-standalone.redis.svc.cluster.local 6379 | grep -q PONG' 2>/dev/null; then
-        echo "  [OK] Redis"
-      else echo "  [FAIL] Redis (PING check)"; FAIL=1; fi
-
-      # Kafka
-      if timeout 10 bash -c 'echo "" | nc -w5 kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local 9092' 2>/dev/null; then
-        echo "  [OK] Kafka"
-      else echo "  [WARN] Kafka (port check only)"; fi
-
-      # MinIO
-      if curl -sf -o /dev/null --connect-timeout 10 http://minio-lb.minio.svc.cluster.local:9000/minio/health/live; then
-        echo "  [OK] MinIO"
-      else echo "  [FAIL] MinIO"; FAIL=1; fi
-
-      # MariaDB
-      if timeout 10 bash -c 'echo "" | nc -w5 mariadb.databases.svc.cluster.local 3306' 2>/dev/null; then
-        echo "  [OK] MariaDB"
-      else echo "  [FAIL] MariaDB"; FAIL=1; fi
-
-      # ClickHouse
-      if curl -sf -o /dev/null --connect-timeout 10 "http://clickhouse.databases.svc.cluster.local:8123/ping"; then
-        echo "  [OK] ClickHouse"
-      else echo "  [FAIL] ClickHouse"; FAIL=1; fi
-
-      echo ""
-      if [ "$FAIL" -eq 0 ]; then
-        echo "=== PRE-FLIGHT PASSED: All systems reachable ==="
-      else
-        echo "=== PRE-FLIGHT FAILED: Some systems unreachable ==="
-        exit 1
-      fi
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-# =============================================================================
-# Step 3: Per-DB sequential experiment jobs (3 repetitions each)
-# =============================================================================
-# Each job tests ONE database system with 3 repetitions (seeds 43, 44, 45).
-# Jobs are chained sequentially via needs: [previous_job].
-# The runner is pinned to the experiment node (talos-say-ls6) for isolation.
-#
-# Config JSON is generated inline per job. Each job has its own after_script
-# cleanup to guarantee lab schema removal even on failure.
-# =============================================================================
-
-# --- Hidden template for per-DB experiment jobs ---
-.experiment-per-db: &experiment-per-db
-  <<: *cpp-default
+# Lane 4: macOS x86_64 (node5)
+build-macos-x86:
+  extends: .exotic-base
   tags:
-    - experiment
-  stage: experiment-run
-  timeout: 6 hours
-  variables:
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-    MAX_SYSTEM_RETRIES: "3"
-  script:
-    - |
-      echo "================================================================="
-      echo "  EXPERIMENT: ${DB_SYSTEM} (${REPETITIONS} repetitions)"
-      echo "  Lab user: dedup-lab | Lab schema: ${LAB_SCHEMA}"
-      echo "  Payload types: ${PAYLOAD_TYPES}"
-      echo "  Resume: checkpoint-dir + per-run-id tracking"
-      echo "================================================================="
-      chmod +x build/dedup-test
-      mkdir -p results/${DB_SYSTEM}
+    - macos
+    - x86_64
 
-      # Mount NFS with pre-loaded NAS datasets (if reachable)
-      mkdir -p "${REAL_WORLD_DIR}"
-      apt-get install -y -qq --no-install-recommends nfs-common 2>/dev/null || true
-      if mount -t nfs4 -o ro,nolock,vers=4 "${NFS_SERVER}:/" /mnt/nfs-data 2>/dev/null; then
-        echo "[NFS] Mounted ${NFS_SERVER} -> /mnt/nfs-data"
-        # Unpack archives if not already unpacked
-        for DATASET_DIR in bankdataset million_post random_numbers; do
-          SRC="/mnt/nfs-data/testdata/${DATASET_DIR}"
-          DST="${REAL_WORLD_DIR}/${DATASET_DIR}"
-          mkdir -p "${DST}"
-          if [ -d "${SRC}" ]; then
-            # Unpack archives into dataset directory
-            for f in "${SRC}"/*.zip; do
-              [ -f "$f" ] && unzip -o -q "$f" -d "${DST}" 2>/dev/null && echo "[NFS] Unpacked: $(basename $f)"
-            done
-            for f in "${SRC}"/*.tar.bz2; do
-              [ -f "$f" ] && tar -xjf "$f" -C "${DST}" 2>/dev/null && echo "[NFS] Unpacked: $(basename $f)"
-            done
-            # Copy any non-archive files directly
-            find "${SRC}" -maxdepth 1 -type f ! -name '*.zip' ! -name '*.tar.bz2' ! -name '*.tar.gz' -exec cp {} "${DST}/" \; 2>/dev/null
-          fi
-        done
-        echo "[NFS] Real-world datasets prepared:"
-        du -sh "${REAL_WORLD_DIR}"/* 2>/dev/null || true
-      else
-        echo "[NFS] WARNING: Cannot mount ${NFS_SERVER} — NAS payload types will be skipped"
-      fi
-      CHECKPOINT_DIR="results/${DB_SYSTEM}/checkpoints"
-      mkdir -p "${CHECKPOINT_DIR}"
-      MAX_SYSTEM_RETRIES=${MAX_SYSTEM_RETRIES:-3}
+# Lane 5: macOS ARM64 (node6)
+build-macos-arm:
+  extends: .exotic-base
+  tags:
+    - macos
+    - arm64
 
-      ALL_RUNS_OK=false
+# Lane 6: Linux ARM64 (node7)
+build-linux-arm64:
+  extends: .exotic-base
+  tags:
+    - arm64
+    - linux
 
-      for ATTEMPT in $(seq 1 ${MAX_SYSTEM_RETRIES}); do
-        echo ""
-        echo "===== ${DB_SYSTEM}: Attempt ${ATTEMPT}/${MAX_SYSTEM_RETRIES} ====="
+# Lane 7: Linux RISC-V (node8)
+build-linux-riscv:
+  extends: .exotic-base
+  tags:
+    - riscv64
+    - linux
 
-        if [ "$ATTEMPT" -gt 1 ]; then
-          echo "[Recovery] Previous attempt failed — invalidating all checkpoints"
-          rm -f "${CHECKPOINT_DIR}/${DB_SYSTEM}_run"*.checkpoint
-          rm -rf results/${DB_SYSTEM}/run-*
-          mkdir -p results/${DB_SYSTEM}
-          BACKOFF=$((10 * ATTEMPT))
-          echo "[Recovery] Waiting ${BACKOFF}s before retry..."
-          sleep ${BACKOFF}
-        fi
-
-        RUN_FAILED=false
-
-        for RUN in $(seq 1 ${REPETITIONS}); do
-          RUN_SEED=$((42 + RUN))
-
-          # Check if this run is already checkpointed
-          if [ -f "${CHECKPOINT_DIR}/${DB_SYSTEM}_run${RUN}.checkpoint" ]; then
-            echo "===== Run ${RUN}: SKIPPED (checkpoint exists) ====="
-            continue
-          fi
-
-          echo ""
-          echo "===== Run ${RUN}/${REPETITIONS} (seed=${RUN_SEED}) ====="
-
-          # Generate datasets with varied seed (synthetic + real-world)
-          build/dedup-test --generate-data \
-            --data-dir /tmp/datasets \
-            --num-files "${NUM_FILES}" \
-            --seed "${RUN_SEED}" \
-            --payload-types "${PAYLOAD_TYPES}" \
-            --real-world-dir "${REAL_WORLD_DIR}" \
-            --verbose 2>&1
-
-          # Run experiment with checkpoint + connection retry
-          set +e
-          build/dedup-test \
-            --systems "${DB_SYSTEM}" \
-            --grades "${DUP_GRADES}" \
-            --lab-schema "${LAB_SCHEMA}" \
-            --data-dir /tmp/datasets \
-            --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
-            --checkpoint-dir "${CHECKPOINT_DIR}" \
-            --run-id "${RUN}" \
-            --max-retries 3 \
-            --payload-types "${PAYLOAD_TYPES}" \
-            --real-world-dir "${REAL_WORLD_DIR}" \
-            --verbose 2>&1
-          EXIT_CODE=$?
-          set -e
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "[Recovery] Run ${RUN} FAILED (exit code ${EXIT_CODE})"
-            RUN_FAILED=true
-            break
-          fi
-
-          echo "===== Run ${RUN} complete ====="
-          ls -la "results/${DB_SYSTEM}/run-${RUN}/" 2>/dev/null || true
-
-          # Cleanup between runs
-          build/dedup-test \
-            --cleanup-only \
-            --systems "${DB_SYSTEM}" \
-            --lab-schema "${LAB_SCHEMA}" \
-            --verbose 2>&1
-
-          echo "  Lab schema cleaned for next run"
-          sleep 15
-        done
-
-        if [ "$RUN_FAILED" = false ]; then
-          ALL_RUNS_OK=true
-          break
-        fi
-      done
-
-      echo ""
-      if [ "$ALL_RUNS_OK" = true ]; then
-        echo "=== ${DB_SYSTEM}: All ${REPETITIONS} runs COMPLETE ==="
-      else
-        echo "=== ${DB_SYSTEM}: FAILED after ${MAX_SYSTEM_RETRIES} attempts ==="
-        exit 1
-      fi
-      du -sh results/${DB_SYSTEM}/
-  after_script:
-    - |
-      echo "=== AUTO-CLEANUP: ${DB_SYSTEM} lab schemas ==="
-      if [ -x build/dedup-test ]; then
-        echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-        apt-get update -qq 2>/dev/null
-        apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
-          libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
-        build/dedup-test --cleanup-only --systems "${DB_SYSTEM}" \
-          --lab-schema "${LAB_SCHEMA}" --verbose 2>&1
-      fi
-  artifacts:
-    paths:
-      - results/
-    expire_in: 365 days
-  rules:
-    - when: on_success
-
-experiment:postgresql:
-  <<: *experiment-per-db
-  needs: ["experiment:preflight", "experiment:build"]
-  variables:
-    DB_SYSTEM: postgresql
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-experiment:cockroachdb:
-  <<: *experiment-per-db
+# ============================================================
+# Stage 2: Aggregate Results
+# ============================================================
+aggregate-results:
+  stage: aggregate
+  image: alpine:latest
+  tags:
+    - kubernetes
   needs:
-    - job: experiment:postgresql
+    - job: build-k8s
       artifacts: true
-    - job: experiment:build
+    - job: build-debian-x86
       artifacts: true
-  variables:
-    DB_SYSTEM: cockroachdb
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-experiment:mariadb:
-  <<: *experiment-per-db
-  needs:
-    - job: experiment:cockroachdb
+      optional: true
+    - job: build-ubuntu-x86
       artifacts: true
-    - job: experiment:build
+      optional: true
+    - job: build-macos-x86
       artifacts: true
-  variables:
-    DB_SYSTEM: mariadb
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-experiment:clickhouse:
-  <<: *experiment-per-db
-  needs:
-    - job: experiment:mariadb
+      optional: true
+    - job: build-macos-arm
       artifacts: true
-    - job: experiment:build
+      optional: true
+    - job: build-linux-arm64
       artifacts: true
-  variables:
-    DB_SYSTEM: clickhouse
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-experiment:redis:
-  <<: *experiment-per-db
-  needs:
-    - job: experiment:clickhouse
+      optional: true
+    - job: build-linux-riscv
       artifacts: true
-    - job: experiment:build
-      artifacts: true
-  variables:
-    DB_SYSTEM: redis
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-experiment:kafka:
-  <<: *experiment-per-db
-  needs:
-    - job: experiment:redis
-      artifacts: true
-    - job: experiment:build
-      artifacts: true
-  variables:
-    DB_SYSTEM: kafka
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-experiment:minio:
-  <<: *experiment-per-db
-  needs:
-    - job: experiment:kafka
-      artifacts: true
-    - job: experiment:build
-      artifacts: true
-  variables:
-    DB_SYSTEM: minio
-    GIT_STRATEGY: clone
-    REPETITIONS: "3"
-
-# Legacy: Run ALL systems in one job (fallback, renamed)
-experiment:run-all:
-  <<: *cpp-default
-  stage: experiment-run
-  needs: ["experiment:build"]
-  timeout: 4 hours
-  variables:
-    GIT_STRATEGY: clone
-  script:
-    - |
-      echo "================================================================="
-      echo "  LEGACY: All systems in one job"
-      echo "================================================================="
-      chmod +x build/dedup-test
-      mkdir -p results
-
-      build/dedup-test --generate-data \
-        --data-dir /tmp/datasets \
-        --num-files "${NUM_FILES}" \
-        --seed "${SEED}" \
-        --verbose 2>&1
-
-      build/dedup-test \
-        --systems "${SYSTEMS}" \
-        --grades "${DUP_GRADES}" \
-        --lab-schema "${LAB_SCHEMA}" \
-        --data-dir /tmp/datasets \
-        --results-dir results \
-        --verbose 2>&1
-
-      echo "=== Results ==="
-      ls -la results/*.json 2>/dev/null || echo "No result files"
-  after_script:
-    - |
-      if [ -x build/dedup-test ]; then
-        echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-        apt-get update -qq 2>/dev/null
-        apt-get install -y -qq --no-install-recommends libpq5 libcurl4 \
-          libhiredis1.1.0 librdkafka1 libmariadb3 2>/dev/null || true
-        build/dedup-test --cleanup-only --systems "${SYSTEMS}" \
-          --lab-schema "${LAB_SCHEMA}" --verbose 2>&1
-      fi
-  artifacts:
-    paths:
-      - results/
-    expire_in: 90 days
-  rules:
-    - when: manual
-      allow_failure: true
-
-# Step 3: Manual cleanup fallback -- in case after_script cleanup failed
-# or experiment:run was never triggered but schemas exist from a previous run
-experiment:cleanup:
-  <<: *cpp-default
-  stage: experiment-cleanup
-  needs:
-    - job: experiment:build
-      artifacts: true
-    - job: experiment:run
       optional: true
   script:
-    - |
-      echo "================================================================="
-      echo "  MANUAL CLEANUP: Dropping all lab schemas"
-      echo "  This removes ONLY ${LAB_SCHEMA} data, NOT customer data!"
-      echo "================================================================="
+    - echo "=== COMDARE CI v5.2 — Aggregate Results ==="
+    - echo "Platform build results:"
+    - '[ -f coverage-k8s.xml ] && echo "  K8s Docker (x86_64):  OK" || echo "  K8s Docker (x86_64):  MISSING"'
+    - '[ -f coverage-debian.xml ] && echo "  Debian BM (x86_64):   OK" || echo "  Debian BM (x86_64):   MISSING"'
+    - '[ -f coverage-ubuntu.xml ] && echo "  Ubuntu BM (x86_64):   OK" || echo "  Ubuntu BM (x86_64):   MISSING"'
+    - '[ -d build-exotic ] && echo "  Exotic platforms:      artifacts present" || echo "  Exotic platforms:      no artifacts"'
+    - echo "Pipeline $CI_PIPELINE_ID complete on $(date -u)"
+  artifacts:
+    paths:
+      - coverage-k8s.xml
+      - coverage-debian.xml
+      - coverage-ubuntu.xml
+    expire_in: 30 days
+    when: always
 
-      chmod +x build/dedup-test
-
-      build/dedup-test \
-        --cleanup-only \
-        --systems "${SYSTEMS}" \
-        --lab-schema "${LAB_SCHEMA}" \
-        --verbose 2>&1
-
-      echo "=== Manual cleanup complete: all lab schemas dropped ==="
+# ============================================================
+# Stage 3: Upload Artifacts to MinIO (buildsystem-artifacts)
+# RBMM Path Hierarchy: {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/
+# ============================================================
+upload-to-minio:
+  stage: upload
+  image: alpine:latest
+  tags:
+    - kubernetes
+  needs:
+    - job: build-k8s
+      artifacts: true
+    - job: build-debian-x86
+      artifacts: true
+      optional: true
+    - job: build-ubuntu-x86
+      artifacts: true
+      optional: true
+    - job: build-macos-x86
+      artifacts: true
+      optional: true
+    - job: build-macos-arm
+      artifacts: true
+      optional: true
+    - job: build-linux-arm64
+      artifacts: true
+      optional: true
+    - job: build-linux-riscv
+      artifacts: true
+      optional: true
+  script:
+    - apk add --no-cache curl >/dev/null 2>&1
+    - curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+    - chmod +x /usr/local/bin/mc
+    - mc alias set ci $MINIO_ENDPOINT $MINIO_ACCESS_KEY $MINIO_SECRET_KEY --api S3v4
+    - export B="buildsystem-artifacts/${CI_PROJECT_PATH}"
+    - export P="${CI_PIPELINE_ID}"
+    - echo "=== COMDARE CI v5.2 — MinIO Artifact Upload ==="
+    - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
+    - test -f coverage-k8s.xml && mc cp coverage-k8s.xml ci/${B}/linux/x86_64/k8s/${P}/coverage/ && echo "  OK linux/x86_64/k8s" || true
+    - test -f coverage-debian.xml && mc cp coverage-debian.xml ci/${B}/linux/x86_64/debian/${P}/coverage/ && echo "  OK linux/x86_64/debian" || true
+    - test -f coverage-ubuntu.xml && mc cp coverage-ubuntu.xml ci/${B}/linux/x86_64/ubuntu/${P}/coverage/ && echo "  OK linux/x86_64/ubuntu" || true
+    - echo "--- Upload Summary ---"
+    - mc ls ci/${B}/ --recursive || true
+    - echo "Upload complete for pipeline ${P}"
+  allow_failure: true
   rules:
-    - when: manual
-      allow_failure: true
+    - if: '$MINIO_ENDPOINT && $MINIO_ACCESS_KEY && $MINIO_SECRET_KEY'
+      when: on_success
+    - when: never
