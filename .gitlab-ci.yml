@@ -365,7 +365,7 @@ experiment:preflight:
         echo "===== Run ${RUN}/3 (seed=${SEED}) ====="
 
         build/dedup-test \
-          --config k8s/base/configmap.yaml \
+          --config src/cpp/config.example.json \
           --systems "${DB_SYSTEM}" \
           --generate-data \
           --data-dir /tmp/datasets \
