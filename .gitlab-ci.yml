@@ -475,11 +475,14 @@ experiment:preflight:
       echo "  Checkpoint: NFS-persistent"
       echo "================================================================="
 
-      # Mount NFS for checkpoints + real-world datasets (BEFORE any checkpoint access)
-      mkdir -p /datasets/real-world
-      mount -t nfs4 10.0.110.184:/ /datasets/real-world 2>/dev/null && \
-        echo "[NFS] Mounted real-world datasets + checkpoint storage" || \
-        echo "[NFS] WARNING: Cannot mount 10.0.110.184 — checkpoints local-only"
+      # NFS is mounted via Runner-4 ConfigMap [[runners.kubernetes.volumes.nfs]]
+      # mount_path: /datasets/real-world, server: 10.0.110.184, path: /
+      if [ -d /datasets/real-world ]; then
+        echo "[NFS] Volume mounted at /datasets/real-world (K8s NFS volume)"
+      else
+        echo "[NFS] WARNING: NFS volume not available — checkpoints local-only"
+        mkdir -p /datasets/real-world
+      fi
       mkdir -p /datasets/real-world/checkpoints/${DB_SYSTEM}
 
       # Scale down other experiment DBs, scale up THIS DB
@@ -566,7 +569,7 @@ experiment:preflight:
         echo "Results files found"
       fi
 
-      umount /datasets/real-world 2>/dev/null || true
+      # NFS volume auto-unmounted by K8s (no manual umount needed)
       exit ${OVERALL_EXIT}
   after_script:
     - |
@@ -594,7 +597,7 @@ experiment:preflight:
             -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
         fi
       fi
-      umount /datasets/real-world 2>/dev/null || true
+      # NFS volume auto-unmounted by K8s (no manual umount needed)
   artifacts:
     paths:
       - results/
@@ -704,6 +707,100 @@ experiment:run-all:
   rules:
     - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
       when: manual
+
+experiment:upload-results:
+  stage: experiment-cleanup
+  tags:
+    - experiment
+  image: gcc:14-bookworm
+  needs:
+    - job: experiment:postgresql
+      artifacts: true
+    - job: experiment:cockroachdb
+      artifacts: true
+    - job: experiment:mariadb
+      artifacts: true
+    - job: experiment:clickhouse
+      artifacts: true
+    - job: experiment:redis
+      artifacts: true
+    - job: experiment:kafka
+      artifacts: true
+    - job: experiment:minio
+      artifacts: true
+  script:
+    - |
+      echo "=== Experiment Results Upload to measurement_results/ ==="
+      apt-get update -qq 2>&1 | tail -1
+      apt-get install -y -qq git 2>&1 | tail -1
+
+      # Configure git for commit
+      git config user.email "dedup-lab@comdare.de"
+      git config user.name "Experiment Pipeline"
+      git config http.sslVerify false
+
+      # Use CI token for push
+      PUSH_URL="http://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/${CI_PROJECT_PATH}.git"
+      git remote set-url origin "$PUSH_URL" 2>/dev/null || git remote add origin "$PUSH_URL"
+
+      # Fetch and checkout the branch
+      git fetch origin "${CI_COMMIT_REF_NAME}" --depth=1
+      git checkout -B "${CI_COMMIT_REF_NAME}" "origin/${CI_COMMIT_REF_NAME}"
+
+      # Create measurement_results directory with timestamp
+      TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+      RESULT_DIR="measurement_results/pipeline-${CI_PIPELINE_ID}_${TIMESTAMP}"
+      mkdir -p "${RESULT_DIR}"
+
+      # Copy all experiment results
+      if [ -d results ]; then
+        cp -r results/* "${RESULT_DIR}/" 2>/dev/null || true
+        echo "Copied results to ${RESULT_DIR}/"
+        find "${RESULT_DIR}" -type f | head -50
+      else
+        echo "WARNING: No results directory found"
+      fi
+
+      # Create summary file
+      cat > "${RESULT_DIR}/pipeline_info.json" << INFOEOF
+      {
+        "pipeline_id": ${CI_PIPELINE_ID},
+        "commit_sha": "${CI_COMMIT_SHA}",
+        "commit_short": "${CI_COMMIT_SHORT_SHA}",
+        "branch": "${CI_COMMIT_REF_NAME}",
+        "timestamp": "${TIMESTAMP}",
+        "runner": "k8s-runner-4 (talos-say-ls6)",
+        "databases": ["postgresql","cockroachdb","mariadb","clickhouse","redis","kafka","minio"]
+      }
+      INFOEOF
+
+      # Commit and push
+      git add measurement_results/
+      if git diff --cached --quiet; then
+        echo "No new results to commit"
+      else
+        COMMIT_MSG="experiment: results pipeline #${CI_PIPELINE_ID} (${TIMESTAMP})"
+        git commit -m "${COMMIT_MSG}"
+        git push origin "${CI_COMMIT_REF_NAME}" || {
+          echo "WARNING: Push failed, retrying with rebase..."
+          git pull --rebase origin "${CI_COMMIT_REF_NAME}" && \
+          git push origin "${CI_COMMIT_REF_NAME}" || \
+          echo "ERROR: Could not push results. Check GitLab permissions."
+        }
+        echo "=== Results committed and pushed ==="
+        echo "Commit: $(git rev-parse --short HEAD)"
+        echo "Directory: ${RESULT_DIR}"
+      fi
+  allow_failure: true
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
 
 experiment:cleanup:
   stage: experiment-cleanup

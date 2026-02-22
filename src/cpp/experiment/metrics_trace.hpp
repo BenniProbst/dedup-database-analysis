@@ -104,6 +104,13 @@ private:
 
     // Kafka producer handle (opaque, cast to rd_kafka_t* in .cpp)
     void* kafka_producer_ = nullptr;
+
+    // Kafka backoff state (prevents log flood on persistent errors)
+    std::atomic<int64_t> kafka_consecutive_errors_{0};
+    std::atomic<int64_t> kafka_suppressed_count_{0};
+    std::atomic<int64_t> kafka_last_error_log_ms_{0};
+    static constexpr int64_t KAFKA_BACKOFF_THRESHOLD = 5;       // errors before backoff
+    static constexpr int64_t KAFKA_ERROR_LOG_INTERVAL_MS = 30000; // log every 30s during backoff
 };
 
 // Built-in metric collectors for each DB system

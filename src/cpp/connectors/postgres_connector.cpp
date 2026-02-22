@@ -189,20 +189,13 @@ MeasureResult PostgresConnector::bulk_insert(const std::string& data_dir, DupGra
         "COPY %s.files (mime, size_bytes, sha256, payload) FROM STDIN WITH (FORMAT binary)",
         schema_.c_str());
 
-    // For each file in the data directory, read and insert via COPY
-    // TODO: implement binary COPY protocol for maximum throughput
-    // For now, use prepared statements as fallback
+    // For each file in the data directory, read and insert via parameterized query
     exec("BEGIN");
 
     char insert_sql[512];
     std::snprintf(insert_sql, sizeof(insert_sql),
         "INSERT INTO %s.files (mime, size_bytes, sha256, payload) "
         "VALUES ($1, $2, $3, $4)", schema_.c_str());
-
-    if (conn_) {
-        PGresult* prep = PQprepare(conn_, "bulk_insert", insert_sql, 4, nullptr);
-        PQclear(prep);
-    }
 
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_regular_file()) continue;
@@ -226,10 +219,12 @@ MeasureResult PostgresConnector::bulk_insert(const std::string& data_dir, DupGra
         int formats[4] = {0, 0, 0, 1};  // payload is binary
 
         if (conn_) {
-            PGresult* res = PQexecPrepared(conn_, "bulk_insert", 4,
-                values, lengths, formats, 0);
+            PGresult* res = PQexecParams(conn_, insert_sql, 4,
+                nullptr, values, lengths, formats, 0);
             if (PQresultStatus(res) == PGRES_COMMAND_OK) {
                 result.rows_affected++;
+            } else {
+                LOG_ERR("[%s] Bulk insert row error: %s", system_name(), PQerrorMessage(conn_));
             }
             PQclear(res);
         }

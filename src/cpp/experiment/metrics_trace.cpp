@@ -206,6 +206,19 @@ void MetricsTrace::produce_to_kafka(const std::string& topic,
 #ifdef HAS_RDKAFKA
     if (!kafka_producer_) return;
 
+    // Backoff: after repeated errors, skip most produce calls to avoid log flood
+    int64_t consec = kafka_consecutive_errors_.load();
+    if (consec >= KAFKA_BACKOFF_THRESHOLD) {
+        int64_t now = now_ms();
+        int64_t last_log = kafka_last_error_log_ms_.load();
+        if (now - last_log < KAFKA_ERROR_LOG_INTERVAL_MS) {
+            kafka_suppressed_count_++;
+            return;  // skip produce entirely during backoff
+        }
+        // Periodic retry: attempt one produce to check if Kafka recovered
+        kafka_last_error_log_ms_.store(now);
+    }
+
     rd_kafka_t* rk = static_cast<rd_kafka_t*>(kafka_producer_);
     rd_kafka_resp_err_t err = rd_kafka_producev(
         rk,
@@ -217,7 +230,28 @@ void MetricsTrace::produce_to_kafka(const std::string& topic,
     );
 
     if (err) {
-        LOG_ERR("[metrics_trace] Kafka produce error: %s", rd_kafka_err2str(err));
+        int64_t new_consec = ++kafka_consecutive_errors_;
+        if (new_consec == KAFKA_BACKOFF_THRESHOLD) {
+            LOG_WRN("[metrics_trace] Kafka produce failing repeatedly (%lld errors), "
+                    "entering backoff (retry every %llds). Last error: %s",
+                    (long long)new_consec,
+                    (long long)(KAFKA_ERROR_LOG_INTERVAL_MS / 1000),
+                    rd_kafka_err2str(err));
+        } else if (new_consec < KAFKA_BACKOFF_THRESHOLD) {
+            LOG_ERR("[metrics_trace] Kafka produce error: %s", rd_kafka_err2str(err));
+        } else {
+            int64_t suppressed = kafka_suppressed_count_.exchange(0);
+            LOG_WRN("[metrics_trace] Kafka still failing (%lld suppressed): %s",
+                    (long long)suppressed, rd_kafka_err2str(err));
+        }
+    } else {
+        // Success: reset backoff
+        if (consec > 0) {
+            int64_t suppressed = kafka_suppressed_count_.exchange(0);
+            LOG_INF("[metrics_trace] Kafka recovered after %lld errors (%lld suppressed)",
+                    (long long)consec, (long long)suppressed);
+            kafka_consecutive_errors_.store(0);
+        }
     }
 
     rd_kafka_poll(rk, 0);
