@@ -316,7 +316,7 @@ upload-to-minio:
       apt-get update -qq 2>&1 | tail -3
       apt-get install -y -qq --no-install-recommends \
         libpq-dev libhiredis-dev librdkafka-dev libcurl4-openssl-dev \
-        libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common \
+        libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common curl \
         2>&1 | tail -3
       echo "Build-tools ready: GCC $(gcc -dumpversion) + CMake + Ninja"
 
@@ -400,43 +400,131 @@ experiment:preflight:
   stage: experiment-run
   timeout: 6 hours
   retry:
-    max: 1
-    when: [runner_system_failure]
+    max: 3
+    when: [runner_system_failure, unknown_failure]
   script:
     - |
+      # === K8s API helpers for per-DB scaling ===
+      APISERVER=https://kubernetes.default.svc
+      SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
+      SA_CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+
+      k8s_scale_sts() {
+        local ns=$1 name=$2 replicas=$3
+        echo "[Scale] ${ns}/${name} -> ${replicas} replicas"
+        curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
+          -H "Content-Type: application/merge-patch+json" \
+          -X PATCH "${APISERVER}/apis/apps/v1/namespaces/${ns}/statefulsets/${name}/scale" \
+          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200
+        echo ""
+      }
+
+      k8s_scale_kafka() {
+        local ns=$1 pool=$2 replicas=$3
+        echo "[Scale] kafka/${pool} -> ${replicas} replicas"
+        curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
+          -H "Content-Type: application/merge-patch+json" \
+          -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/${ns}/kafkanodepools/${pool}" \
+          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200
+        echo ""
+      }
+
+      wait_for_db() {
+        local host=$1 port=$2 timeout=${3:-180}
+        echo "[Wait] Waiting for ${host}:${port} (max ${timeout}s)..."
+        for i in $(seq 1 $timeout); do
+          if timeout 2 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null; then
+            echo "[Wait] ${host}:${port} ready after ${i}s"
+            return 0
+          fi
+          sleep 1
+        done
+        echo "[WARN] Timeout waiting for ${host}:${port} after ${timeout}s"
+        return 1
+      }
+
+      scale_down_experiment_dbs() {
+        echo "=== Scaling down ALL experiment DBs ==="
+        k8s_scale_sts databases postgres-ha 0
+        k8s_scale_sts databases mariadb 0
+        k8s_scale_sts databases clickhouse 0
+        k8s_scale_sts redis redis-cluster 0
+        k8s_scale_kafka kafka broker 0
+        k8s_scale_kafka kafka controller 0
+        echo "[Scale] MinIO + CockroachDB: unchanged (production)"
+        sleep 5
+      }
+
       echo "================================================================="
       echo "  EXPERIMENT: ${DB_SYSTEM} (3 repetitions)"
       echo "  Lab user: dedup-lab | Lab schema: dedup_lab"
       echo "  Payload types: ${PAYLOAD_TYPES}"
-      echo "  Resume: checkpoint-dir + per-run-id tracking"
+      echo "  DB scaling: type=${DB_TYPE} ns=${DB_NAMESPACE}"
+      echo "  Checkpoint: NFS-persistent"
       echo "================================================================="
 
-      # Try NFS mount for real-world datasets
+      # Mount NFS for checkpoints + real-world datasets (BEFORE any checkpoint access)
       mkdir -p /datasets/real-world
-      mount -t nfs4 10.0.110.184:/ /datasets/real-world 2>/dev/null && echo "[NFS] Mounted real-world datasets" || echo "[NFS] WARNING: Cannot mount 10.0.110.184 — NAS payload types will be skipped"
+      mount -t nfs4 10.0.110.184:/ /datasets/real-world 2>/dev/null && \
+        echo "[NFS] Mounted real-world datasets + checkpoint storage" || \
+        echo "[NFS] WARNING: Cannot mount 10.0.110.184 — checkpoints local-only"
+      mkdir -p /datasets/real-world/checkpoints/${DB_SYSTEM}
+
+      # Scale down other experiment DBs, scale up THIS DB
+      if [ -n "$SA_TOKEN" ]; then
+        if [ "${DB_TYPE}" = "statefulset" ]; then
+          scale_down_experiment_dbs
+          echo "=== Scaling UP ${DB_SYSTEM} ==="
+          k8s_scale_sts "${DB_NAMESPACE}" "${DB_STATEFULSET}" "${DB_REPLICAS}"
+          wait_for_db "${DB_HOST}" "${DB_PORT}" 180
+        elif [ "${DB_TYPE}" = "kafka" ]; then
+          scale_down_experiment_dbs
+          echo "=== Scaling UP Kafka ==="
+          k8s_scale_kafka kafka controller 1
+          sleep 10
+          k8s_scale_kafka kafka broker "${DB_REPLICAS}"
+          wait_for_db "${DB_HOST}" "${DB_PORT}" 180
+        else
+          echo "[Scale] DB_TYPE=${DB_TYPE} — no scaling (production DB)"
+        fi
+      else
+        echo "[Scale] No SA token — skipping DB scaling (non-K8s environment)"
+      fi
 
       chmod +x build/dedup-test
       OVERALL_EXIT=0
 
       for RUN in 1 2 3; do
         echo ""
-        echo "===== ${DB_SYSTEM}: Attempt ${RUN}/3 ====="
-        echo ""
+        echo "===== ${DB_SYSTEM}: Run ${RUN}/3 ====="
         SEED=$((42 + RUN))
         mkdir -p results/${DB_SYSTEM}/run-${RUN}
 
-        echo "===== Run ${RUN}/3 (seed=${SEED}) ====="
+        # Check NFS-persistent checkpoint (survives OOM/pod restarts)
+        if [ -f "/datasets/real-world/checkpoints/${DB_SYSTEM}/${DB_SYSTEM}_run${RUN}.checkpoint" ]; then
+          echo "[Checkpoint] Run ${RUN} already completed — skipping"
+          continue
+        fi
 
+        echo "--- Step 1: Generate data (seed=${SEED}) ---"
         build/dedup-test \
-          --config src/cpp/config.example.json \
-          --systems "${DB_SYSTEM}" \
           --generate-data \
+          --payload-types "${PAYLOAD_TYPES}" \
+          --config src/cpp/config.example.json \
           --data-dir /tmp/datasets \
-          --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
           --num-files 500 \
           --file-size 524288 \
           --seed ${SEED} \
-          --checkpoint-dir "results/${DB_SYSTEM}/checkpoints" \
+          --verbose 2>&1 || echo "[WARN] Data generation exit code: $?"
+
+        echo "--- Step 2: Run experiment (${DB_SYSTEM}, run ${RUN}) ---"
+        build/dedup-test \
+          --config src/cpp/config.example.json \
+          --systems "${DB_SYSTEM}" \
+          --payload-types "${PAYLOAD_TYPES}" \
+          --data-dir /tmp/datasets \
+          --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
+          --checkpoint-dir "/datasets/real-world/checkpoints/${DB_SYSTEM}" \
           --run-id ${RUN} \
           --max-retries 3 \
           --verbose 2>&1 || {
@@ -452,7 +540,16 @@ experiment:preflight:
       echo "=== All 3 runs complete for ${DB_SYSTEM} ==="
       echo "=== Overall exit: ${OVERALL_EXIT} ==="
 
-      # Export combined results
+      # Scale down THIS DB after test
+      if [ -n "$SA_TOKEN" ]; then
+        if [ "${DB_TYPE}" = "statefulset" ]; then
+          k8s_scale_sts "${DB_NAMESPACE}" "${DB_STATEFULSET}" 0
+        elif [ "${DB_TYPE}" = "kafka" ]; then
+          k8s_scale_kafka kafka broker 0
+          k8s_scale_kafka kafka controller 0
+        fi
+      fi
+
       if ls results/${DB_SYSTEM}/run-*/combined_results.json 2>/dev/null; then
         echo "Results files found"
       fi
@@ -461,9 +558,30 @@ experiment:preflight:
       exit ${OVERALL_EXIT}
   after_script:
     - |
-      echo "=== Cleanup: dropping lab schemas ==="
-      # Lab schema cleanup is handled by the binary's --cleanup flag
-      # but we ensure NFS unmount here
+      echo "=== after_script: Safety cleanup ==="
+      # Safety-net: Scale down THIS DB even if script failed/OOMKilled
+      APISERVER=https://kubernetes.default.svc
+      if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+        SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+        SA_CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        if [ "${DB_TYPE}" = "statefulset" ] && [ -n "${DB_NAMESPACE}" ] && [ -n "${DB_STATEFULSET}" ]; then
+          echo "[Scale] Safety: ${DB_NAMESPACE}/${DB_STATEFULSET} -> 0"
+          curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
+            -H "Content-Type: application/merge-patch+json" \
+            -X PATCH "${APISERVER}/apis/apps/v1/namespaces/${DB_NAMESPACE}/statefulsets/${DB_STATEFULSET}/scale" \
+            -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
+        elif [ "${DB_TYPE}" = "kafka" ]; then
+          echo "[Scale] Safety: kafka broker+controller -> 0"
+          curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
+            -H "Content-Type: application/merge-patch+json" \
+            -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/kafka/kafkanodepools/broker" \
+            -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
+          curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
+            -H "Content-Type: application/merge-patch+json" \
+            -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/kafka/kafkanodepools/controller" \
+            -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
+        fi
+      fi
       umount /datasets/real-world 2>/dev/null || true
   artifacts:
     paths:
@@ -485,6 +603,12 @@ experiment:postgresql:
   needs: ["experiment:preflight", "experiment:build"]
   variables:
     DB_SYSTEM: "postgresql"
+    DB_TYPE: "statefulset"
+    DB_NAMESPACE: "databases"
+    DB_STATEFULSET: "postgres-ha"
+    DB_REPLICAS: "3"
+    DB_HOST: "postgres-lb.databases.svc.cluster.local"
+    DB_PORT: "5432"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
 
 experiment:cockroachdb:
@@ -492,6 +616,9 @@ experiment:cockroachdb:
   needs: ["experiment:postgresql", "experiment:build"]
   variables:
     DB_SYSTEM: "cockroachdb"
+    DB_TYPE: "none"
+    DB_HOST: "cockroachdb-public.cockroach-operator-system.svc.cluster.local"
+    DB_PORT: "26257"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
 
 experiment:mariadb:
@@ -499,6 +626,12 @@ experiment:mariadb:
   needs: ["experiment:cockroachdb", "experiment:build"]
   variables:
     DB_SYSTEM: "mariadb"
+    DB_TYPE: "statefulset"
+    DB_NAMESPACE: "databases"
+    DB_STATEFULSET: "mariadb"
+    DB_REPLICAS: "1"
+    DB_HOST: "mariadb.databases.svc.cluster.local"
+    DB_PORT: "3306"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
 
 experiment:clickhouse:
@@ -506,6 +639,12 @@ experiment:clickhouse:
   needs: ["experiment:mariadb", "experiment:build"]
   variables:
     DB_SYSTEM: "clickhouse"
+    DB_TYPE: "statefulset"
+    DB_NAMESPACE: "databases"
+    DB_STATEFULSET: "clickhouse"
+    DB_REPLICAS: "1"
+    DB_HOST: "clickhouse.databases.svc.cluster.local"
+    DB_PORT: "8123"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
 
 experiment:redis:
@@ -513,6 +652,12 @@ experiment:redis:
   needs: ["experiment:clickhouse", "experiment:build"]
   variables:
     DB_SYSTEM: "redis"
+    DB_TYPE: "statefulset"
+    DB_NAMESPACE: "redis"
+    DB_STATEFULSET: "redis-cluster"
+    DB_REPLICAS: "3"
+    DB_HOST: "redis-cluster.redis.svc.cluster.local"
+    DB_PORT: "6379"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
 
 experiment:kafka:
@@ -520,6 +665,11 @@ experiment:kafka:
   needs: ["experiment:redis", "experiment:build"]
   variables:
     DB_SYSTEM: "kafka"
+    DB_TYPE: "kafka"
+    DB_NAMESPACE: "kafka"
+    DB_REPLICAS: "1"
+    DB_HOST: "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local"
+    DB_PORT: "9092"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
 
 experiment:minio:
@@ -527,6 +677,9 @@ experiment:minio:
   needs: ["experiment:kafka", "experiment:build"]
   variables:
     DB_SYSTEM: "minio"
+    DB_TYPE: "none"
+    DB_HOST: "minio-lb.minio.svc.cluster.local"
+    DB_PORT: "9000"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
 
 experiment:run-all:

@@ -191,6 +191,25 @@ int main(int argc, char* argv[]) {
     cfg.lab_schema = lab_schema;
     cfg.dry_run = dry_run;
 
+    // Apply payload types filter BEFORE dataset generation (doku.tex §6.3)
+    // MUST be before generate_data block — otherwise filter is never applied
+    // when --generate-data exits early (return 0 at end of generation).
+    if (!payload_types_filter.empty()) {
+        cfg.payload_types.clear();
+        std::string token;
+        std::istringstream stream(payload_types_filter);
+        while (std::getline(stream, token, ',')) {
+            cfg.payload_types.push_back(dedup::parse_payload_type(token));
+        }
+        LOG_INF("Payload types filter: %zu types selected", cfg.payload_types.size());
+    }
+
+    // Override real-world data directory (NAS datasets on experiment PVC)
+    if (!real_world_dir.empty()) {
+        cfg.data_sources.real_world_dir = real_world_dir;
+        LOG_INF("Real-world data directory: %s", real_world_dir.c_str());
+    }
+
     // Generate datasets if requested (one subdirectory per payload type)
     // Directory structure: data_dir/{payload_type}/{U0,U50,U90}/
     if (generate_data) {
@@ -332,24 +351,6 @@ int main(int argc, char* argv[]) {
         if (grades_filter.find("U0") != std::string::npos) grades.push_back(dedup::DupGrade::U0);
         if (grades_filter.find("U50") != std::string::npos) grades.push_back(dedup::DupGrade::U50);
         if (grades_filter.find("U90") != std::string::npos) grades.push_back(dedup::DupGrade::U90);
-    }
-
-    // Parse payload types filter (doku.tex §6.3)
-    if (!payload_types_filter.empty()) {
-        cfg.payload_types.clear();
-        // Split by comma and parse each
-        std::string token;
-        std::istringstream stream(payload_types_filter);
-        while (std::getline(stream, token, ',')) {
-            cfg.payload_types.push_back(dedup::parse_payload_type(token));
-        }
-        LOG_INF("Payload types: %zu types selected", cfg.payload_types.size());
-    }
-
-    // Override real-world data directory (NAS datasets on experiment PVC)
-    if (!real_world_dir.empty()) {
-        cfg.data_sources.real_world_dir = real_world_dir;
-        LOG_INF("Real-world data directory: %s", real_world_dir.c_str());
     }
 
     // Create lab schemas
