@@ -1,4 +1,5 @@
-# COMDARE Multi-Platform CI/CD Template v5.4.0 (BS-3040)
+# COMDARE Multi-Platform CI/CD Template v5.4.1 (BS-3040)
+# v5.4.1: upload-to-minio uses python3 S3v4 (no external mc download needed)
 # v5.4.0: K8s timeout 15min (was 10min, build needs ~9min with apt-get overhead)
 # v5.3.0: aggregate+upload via rules:when:always + stage-ordering, 10min timeout on K8s
 # v5.2.0: Unique build dirs + coverage per BM OS, corrected artifact handling
@@ -47,7 +48,7 @@ build-k8s:
     - pip install gcovr --break-system-packages -q
     - git config --global url."http://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
   script:
-    - echo "=== COMDARE CI v5.4 — K8s (gcc:${GCC_VERSION}, x86_64) ==="
+    - echo "=== COMDARE CI v5.4.1 — K8s (gcc:${GCC_VERSION}, x86_64) ==="
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
     - cmake --build build-k8s -j $(nproc)
@@ -75,7 +76,7 @@ build-debian-x86:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v5.4 — Debian x86_64 ($(uname -m)) ==="'
+    - 'echo "=== COMDARE CI v5.4.1 — Debian x86_64 ($(uname -m)) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
@@ -106,7 +107,7 @@ build-ubuntu-x86:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v5.4 — Ubuntu x86_64 ($(uname -m)) ==="'
+    - 'echo "=== COMDARE CI v5.4.1 — Ubuntu x86_64 ($(uname -m)) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
@@ -135,7 +136,7 @@ build-ubuntu-x86:
   stage: build
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v5.4 — Exotic ($(uname -s) $(uname -m)) ==="'
+    - 'echo "=== COMDARE CI v5.4.1 — Exotic ($(uname -s) $(uname -m)) ==="'
     - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
     - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
   script:
@@ -190,7 +191,7 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v5.4 — Aggregate Results ==="
+    - echo "=== COMDARE CI v5.4.1 — Aggregate Results ==="
     - echo "Platform build results:"
     - '[ -f coverage-k8s.xml ] && echo "  K8s Docker (x86_64):  OK" || echo "  K8s Docker (x86_64):  MISSING"'
     - '[ -f coverage-debian.xml ] && echo "  Debian BM (x86_64):   OK" || echo "  Debian BM (x86_64):   MISSING"'
@@ -211,24 +212,76 @@ aggregate-results:
 # ============================================================
 upload-to-minio:
   stage: upload
-  image: alpine:latest
+  image: python:3.12-alpine
   tags:
     - kubernetes
   script:
-    - apk add --no-cache curl >/dev/null 2>&1
-    - curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-    - chmod +x /usr/local/bin/mc
-    - mc alias set ci $MINIO_ENDPOINT $MINIO_ACCESS_KEY $MINIO_SECRET_KEY --api S3v4
-    - export B="buildsystem-artifacts/${CI_PROJECT_PATH}"
-    - export P="${CI_PIPELINE_ID}"
-    - echo "=== COMDARE CI v5.4 — MinIO Artifact Upload ==="
+    - echo "=== COMDARE CI v5.4.1 — MinIO Artifact Upload (S3v4 native) ==="
     - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
-    - test -f coverage-k8s.xml && mc cp coverage-k8s.xml ci/${B}/linux/x86_64/k8s/${P}/coverage/ && echo "  OK linux/x86_64/k8s" || true
-    - test -f coverage-debian.xml && mc cp coverage-debian.xml ci/${B}/linux/x86_64/debian/${P}/coverage/ && echo "  OK linux/x86_64/debian" || true
-    - test -f coverage-ubuntu.xml && mc cp coverage-ubuntu.xml ci/${B}/linux/x86_64/ubuntu/${P}/coverage/ && echo "  OK linux/x86_64/ubuntu" || true
-    - echo "--- Upload Summary ---"
-    - mc ls ci/${B}/ --recursive || true
-    - echo "Upload complete for pipeline ${P}"
+    - |
+      python3 << 'PYEOF'
+      import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error
+
+      def get_signing_key(secret, datestamp, region, service):
+          k = hmac.new(('AWS4' + secret).encode(), datestamp.encode(), hashlib.sha256).digest()
+          k = hmac.new(k, region.encode(), hashlib.sha256).digest()
+          k = hmac.new(k, service.encode(), hashlib.sha256).digest()
+          return hmac.new(k, b'aws4_request', hashlib.sha256).digest()
+
+      def s3_put(filepath, bucket, obj_key, endpoint, access, secret):
+          with open(filepath, 'rb') as f:
+              payload = f.read()
+          parsed = urllib.parse.urlparse(endpoint)
+          host = parsed.netloc
+          scheme = parsed.scheme
+          t = datetime.datetime.utcnow()
+          amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+          ds = t.strftime('%Y%m%d')
+          region, service = 'us-east-1', 's3'
+          uri = '/' + bucket + '/' + obj_key
+          payload_hash = hashlib.sha256(payload).hexdigest()
+          headers_str = f'host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n'
+          signed_h = 'host;x-amz-content-sha256;x-amz-date'
+          creq = f'PUT\n{uri}\n\n{headers_str}\n{signed_h}\n{payload_hash}'
+          scope = f'{ds}/{region}/{service}/aws4_request'
+          sts = f'AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashlib.sha256(creq.encode()).hexdigest()}'
+          sig = hmac.new(get_signing_key(secret, ds, region, service), sts.encode(), hashlib.sha256).hexdigest()
+          auth = f'AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed_h}, Signature={sig}'
+          url = f'{scheme}://{host}{uri}'
+          req = urllib.request.Request(url, data=payload, method='PUT')
+          req.add_header('Authorization', auth)
+          req.add_header('x-amz-date', amz_date)
+          req.add_header('x-amz-content-sha256', payload_hash)
+          req.add_header('Content-Type', 'application/xml')
+          try:
+              resp = urllib.request.urlopen(req, timeout=30)
+              return resp.status
+          except urllib.error.HTTPError as e:
+              print(f'  HTTP {e.code}: {e.read().decode()[:100]}', file=sys.stderr)
+              return e.code
+
+      endpoint = os.environ.get('MINIO_ENDPOINT', '')
+      access = os.environ.get('MINIO_ACCESS_KEY', '')
+      secret = os.environ.get('MINIO_SECRET_KEY', '')
+      proj = os.environ.get('CI_PROJECT_PATH', '')
+      pid = os.environ.get('CI_PIPELINE_ID', '')
+      bucket = 'buildsystem-artifacts'
+      uploads = [
+          ('coverage-k8s.xml', f'{proj}/linux/x86_64/k8s/{pid}/coverage/coverage-k8s.xml'),
+          ('coverage-debian.xml', f'{proj}/linux/x86_64/debian/{pid}/coverage/coverage-debian.xml'),
+          ('coverage-ubuntu.xml', f'{proj}/linux/x86_64/ubuntu/{pid}/coverage/coverage-ubuntu.xml'),
+      ]
+      ok = 0
+      for local, key in uploads:
+          if os.path.exists(local):
+              code = s3_put(local, bucket, key, endpoint, access, secret)
+              status = 'OK' if code == 200 else f'FAIL({code})'
+              print(f'  {status} {key}')
+              if code == 200: ok += 1
+          else:
+              print(f'  SKIP {local} (not found)')
+      print(f'\nUpload complete: {ok}/{len(uploads)} files for pipeline {pid}')
+      PYEOF
   allow_failure: true
   rules:
     - if: '$MINIO_ENDPOINT && $MINIO_ACCESS_KEY && $MINIO_SECRET_KEY'
