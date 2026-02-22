@@ -444,14 +444,13 @@ experiment:preflight:
       }
 
       scale_down_experiment_dbs() {
-        echo "=== Scaling down ALL experiment DBs ==="
-        k8s_scale_sts databases postgres-ha 0
+        echo "=== Scaling down experiment-only DBs ==="
         k8s_scale_sts databases mariadb 0
         k8s_scale_sts databases clickhouse 0
         k8s_scale_sts redis redis-cluster 0
         k8s_scale_kafka kafka broker 0
         k8s_scale_kafka kafka controller 0
-        echo "[Scale] MinIO + CockroachDB: unchanged (production)"
+        echo "[Scale] PostgreSQL + MinIO + CockroachDB: unchanged (production)"
         sleep 5
       }
 
@@ -603,10 +602,7 @@ experiment:postgresql:
   needs: ["experiment:preflight", "experiment:build"]
   variables:
     DB_SYSTEM: "postgresql"
-    DB_TYPE: "statefulset"
-    DB_NAMESPACE: "databases"
-    DB_STATEFULSET: "postgres-ha"
-    DB_REPLICAS: "3"
+    DB_TYPE: "none"
     DB_HOST: "postgres-lb.databases.svc.cluster.local"
     DB_PORT: "5432"
     PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
