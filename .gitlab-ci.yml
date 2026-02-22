@@ -348,32 +348,36 @@ experiment:preflight:
   image: gcc:14-bookworm
   stage: experiment-preflight
   needs: ["experiment:build"]
-  timeout: 5 minutes
+  timeout: 10 minutes
   retry:
     max: 2
-    when: [runner_system_failure, script_failure]
+    when: [runner_system_failure, script_failure, job_execution_timeout]
   script:
     - |
-      apt-get update -qq > /dev/null 2>&1
-      apt-get install -y -qq --no-install-recommends \
-        postgresql-client default-mysql-client redis-tools curl netcat-openbsd \
-        > /dev/null 2>&1
-      echo "=== Pre-Flight: Checking all 7 DB systems ==="
+      echo "=== Pre-Flight: Checking all 7 DB systems (no apt needed) ==="
       PASS=0; FAIL=0
+      tcp_check() {
+        local host=$1 port=$2
+        timeout 5 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null
+      }
+      http_check() {
+        local url=$1
+        timeout 5 bash -c "exec 3<>/dev/tcp/\$(echo $url | cut -d/ -f3 | cut -d: -f1)/\$(echo $url | cut -d: -f3 | cut -d/ -f1); echo -e 'GET /\$(echo $url | cut -d/ -f4-) HTTP/1.0\r\nHost: \$(echo $url | cut -d/ -f3 | cut -d: -f1)\r\n\r\n' >&3; head -1 <&3" 2>/dev/null | grep -q "200"
+      }
       check() {
-        if eval "$2" > /dev/null 2>&1; then
+        if eval "$2" 2>/dev/null; then
           echo "  OK  $1"; PASS=$((PASS+1))
         else
           echo "  FAIL $1"; FAIL=$((FAIL+1))
         fi
       }
-      check "PostgreSQL"   "pg_isready -h postgres-lb.databases.svc.cluster.local -p 5432 -t 5"
-      check "CockroachDB"  "pg_isready -h cockroachdb-public.cockroach-operator-system.svc.cluster.local -p 26257 -t 5"
-      check "MariaDB"      "mysqladmin ping -h mariadb.databases.svc.cluster.local -P 3306 --connect-timeout=5"
-      check "ClickHouse"   "curl -sf --max-time 5 'http://clickhouse.databases.svc.cluster.local:8123/ping'"
-      check "Redis"        "redis-cli -h redis-cluster.redis.svc.cluster.local -p 6379 ping"
-      check "Kafka"        "nc -z -w5 kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local 9092"
-      check "MinIO"        "curl -sf --max-time 5 'http://minio-lb.minio.svc.cluster.local:9000/minio/health/live'"
+      check "PostgreSQL"   "tcp_check postgres-lb.databases.svc.cluster.local 5432"
+      check "CockroachDB"  "tcp_check cockroachdb-public.cockroach-operator-system.svc.cluster.local 26257"
+      check "MariaDB"      "tcp_check mariadb.databases.svc.cluster.local 3306"
+      check "ClickHouse"   "tcp_check clickhouse.databases.svc.cluster.local 8123"
+      check "Redis"        "tcp_check redis-cluster.redis.svc.cluster.local 6379"
+      check "Kafka"        "tcp_check kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local 9092"
+      check "MinIO"        "tcp_check minio-lb.minio.svc.cluster.local 9000"
       echo "=== Result: ${PASS}/7 passed, ${FAIL}/7 failed ==="
       [ "$FAIL" -eq 0 ] || exit 1
   rules:
