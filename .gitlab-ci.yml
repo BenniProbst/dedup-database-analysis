@@ -308,11 +308,13 @@ upload-to-minio:
     - experiment
   before_script:
     - |
-      apt-get update -qq > /dev/null 2>&1
+      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+      sed -i 's|http://deb.debian.org|http://cdn-fastly.deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+      apt-get update -qq 2>&1 | tail -3
       apt-get install -y -qq --no-install-recommends \
         libpq-dev libhiredis-dev librdkafka-dev libcurl4-openssl-dev \
         libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common \
-        > /dev/null 2>&1
+        2>&1 | tail -3
       echo "Build-tools ready: GCC $(gcc -dumpversion) + CMake + Ninja"
 
 experiment:build:
