@@ -431,6 +431,12 @@ inline ExperimentConfig ExperimentConfig::from_json(const std::string& path) {
         cfg.grafana.dashboard_uid = j["grafana"].value("dashboard_uid", cfg.grafana.dashboard_uid);
     }
 
+    // Environment variable fallback for passwords (CI/CD masked variables)
+    auto env_or = [](const char* name, const std::string& fallback) -> std::string {
+        const char* v = std::getenv(name);
+        return (v && v[0]) ? v : fallback;
+    };
+
     if (j.contains("databases")) {
         cfg.databases.clear();
         for (const auto& db : j["databases"]) {
@@ -445,6 +451,19 @@ inline ExperimentConfig ExperimentConfig::from_json(const std::string& path) {
             conn.pvc_name = db.value("pvc_name", "");
             conn.k8s_namespace = db.value("k8s_namespace", "");
             conn.max_experiment_bytes = db.value("max_experiment_bytes", static_cast<int64_t>(0));
+
+            // Fallback to CI/CD environment variables if JSON password is empty
+            if (conn.password.empty()) {
+                switch (conn.system) {
+                    case DbSystem::POSTGRESQL:  conn.password = env_or("DEDUP_PG_PASSWORD", ""); break;
+                    case DbSystem::COCKROACHDB: conn.password = env_or("DEDUP_CRDB_PASSWORD", ""); break;
+                    case DbSystem::REDIS:       conn.password = env_or("DEDUP_REDIS_PASSWORD", ""); break;
+                    case DbSystem::MARIADB:     conn.password = env_or("DEDUP_MARIADB_PASSWORD", ""); break;
+                    case DbSystem::MINIO:       conn.password = env_or("DEDUP_MINIO_PASSWORD", ""); break;
+                    default: break;
+                }
+            }
+
             cfg.databases.push_back(conn);
         }
     } else {
