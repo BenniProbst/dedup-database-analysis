@@ -400,7 +400,7 @@ experiment:preflight:
   stage: experiment-run
   timeout: 6 hours
   retry:
-    max: 3
+    max: 2
     when: [runner_system_failure, unknown_failure]
   script:
     - |
