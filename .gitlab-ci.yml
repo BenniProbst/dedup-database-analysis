@@ -332,6 +332,7 @@ upload-to-minio:
       apt-get install -y -qq --no-install-recommends \
         libpq-dev libhiredis-dev librdkafka-dev libcurl4-openssl-dev \
         libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common curl \
+        libsasl2-modules \
         2>&1 || echo "[WARN] apt install failed"
       echo "Build-tools ready: GCC $(gcc -dumpversion) + CMake + Ninja"
 
@@ -614,6 +615,13 @@ experiment:reset:
       # Kafka SASL/SCRAM-SHA-512 credentials for MetricsTrace (dedup-lab KafkaUser)
       export KAFKA_USER="dedup-lab"
       export KAFKA_PASSWORD="${DEDUP_KAFKA_PASSWORD}"
+      echo "[DEBUG] KAFKA_USER=${KAFKA_USER}, KAFKA_PASSWORD length=${#KAFKA_PASSWORD}"
+      # Fallback: Read from mounted K8s secret if CI variable is empty
+      if [ -z "${KAFKA_PASSWORD}" ]; then
+        echo "[WARN] DEDUP_KAFKA_PASSWORD CI var empty. Trying mounted secret..."
+        export KAFKA_PASSWORD=$(cat /secrets/dedup-kafka/KAFKA_PASSWORD 2>/dev/null || echo "")
+        echo "[DEBUG] After fallback: KAFKA_PASSWORD length=${#KAFKA_PASSWORD}"
+      fi
 
       # Reset: Clear NFS checkpoints for this DB so all runs execute fresh
       # (Without this, completed runs from cancelled pipelines would be skipped)
