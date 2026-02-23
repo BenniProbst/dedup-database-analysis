@@ -18,6 +18,18 @@
 namespace dedup {
 namespace fs = std::filesystem;
 
+#ifdef HAS_MYSQL
+// Consume any pending result set from mysql_query() -- prevents "Commands out of sync"
+static void mysql_consume_result(MYSQL* mysql) {
+    MYSQL_RES* r = mysql_store_result(mysql);
+    if (r) mysql_free_result(r);
+    while (mysql_next_result(mysql) == 0) {
+        r = mysql_store_result(mysql);
+        if (r) mysql_free_result(r);
+    }
+}
+#endif
+
 bool MariaDBConnector::connect(const DbConnection& conn) {
     schema_ = conn.lab_schema;
 
@@ -85,12 +97,17 @@ bool MariaDBConnector::create_lab_schema(const std::string& schema_name) {
 
     std::string sql = "CREATE DATABASE IF NOT EXISTS " + schema_name;
     if (mysql_query(mysql, sql.c_str())) {
-        LOG_ERR("[mariadb] %s", mysql_error(mysql));
+        LOG_ERR("[mariadb] CREATE DATABASE: %s", mysql_error(mysql));
         return false;
     }
+    mysql_consume_result(mysql);
 
     sql = "USE " + schema_name;
-    mysql_query(mysql, sql.c_str());
+    if (mysql_query(mysql, sql.c_str()) != 0) {
+        LOG_ERR("[mariadb] USE: %s", mysql_error(mysql));
+        return false;
+    }
+    mysql_consume_result(mysql);
 
     // Create files table matching doku.tex Stage 2 schema
     sql = "CREATE TABLE IF NOT EXISTS files ("
@@ -102,9 +119,10 @@ bool MariaDBConnector::create_lab_schema(const std::string& schema_name) {
           "  inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
           ") ENGINE=InnoDB";
     if (mysql_query(mysql, sql.c_str())) {
-        LOG_ERR("[mariadb] %s", mysql_error(mysql));
+        LOG_ERR("[mariadb] CREATE TABLE: %s", mysql_error(mysql));
         return false;
     }
+    mysql_consume_result(mysql);
     return true;
 #else
     return false;
@@ -122,7 +140,9 @@ bool MariaDBConnector::drop_lab_schema(const std::string& schema_name) {
     auto* mysql = static_cast<MYSQL*>(conn_);
     if (!mysql) return false;
     std::string sql = "DROP DATABASE IF EXISTS " + schema_name;
-    return mysql_query(mysql, sql.c_str()) == 0;
+    bool ok = mysql_query(mysql, sql.c_str()) == 0;
+    mysql_consume_result(mysql);
+    return ok;
 #else
     return false;
 #endif
@@ -366,7 +386,10 @@ MeasureResult MariaDBConnector::run_maintenance() {
     Timer timer;
     timer.start();
     // OPTIMIZE TABLE = InnoDB online defrag (rebuilds table + indexes)
-    mysql_query(mysql, "OPTIMIZE TABLE files");
+    if (mysql_query(mysql, "OPTIMIZE TABLE files") != 0) {
+        LOG_ERR("[mariadb] OPTIMIZE TABLE: %s", mysql_error(mysql));
+    }
+    mysql_consume_result(mysql);
     timer.stop();
     result.duration_ns = timer.elapsed_ns();
     LOG_INF("[mariadb] Maintenance complete: %lld ms", timer.elapsed_ms());
@@ -416,9 +439,14 @@ bool MariaDBConnector::create_native_schema(const std::string& schema_name, Payl
         LOG_ERR("[mariadb] CREATE DATABASE error: %s", mysql_error(mysql));
         return false;
     }
+    mysql_consume_result(mysql);
 
     sql = "USE " + schema_name;
-    mysql_query(mysql, sql.c_str());
+    if (mysql_query(mysql, sql.c_str()) != 0) {
+        LOG_ERR("[mariadb] USE error: %s", mysql_error(mysql));
+        return false;
+    }
+    mysql_consume_result(mysql);
 
     auto ns = get_native_schema(type);
     sql = "CREATE TABLE IF NOT EXISTS " + ns.table_name + " (\n";
@@ -455,6 +483,7 @@ bool MariaDBConnector::create_native_schema(const std::string& schema_name, Payl
         LOG_ERR("[mariadb] CREATE TABLE error: %s", mysql_error(mysql));
         return false;
     }
+    mysql_consume_result(mysql);
     return true;
 #else
     return create_lab_schema(schema_name);
@@ -467,6 +496,7 @@ bool MariaDBConnector::drop_native_schema(const std::string& schema_name, Payloa
     auto ns = get_native_schema(type);
     std::string sql = "DROP TABLE IF EXISTS " + schema_name + "." + ns.table_name;
     mysql_query(mysql, sql.c_str());
+    mysql_consume_result(mysql);
     return true;
 #else
     return drop_lab_schema(schema_name);
@@ -720,6 +750,7 @@ MeasureResult MariaDBConnector::native_perfile_delete(PayloadType type) {
                 {
                     ScopedTimer st(del_ns);
                     if (mysql_query(mysql, del.c_str()) == 0) result.rows_affected++;
+                    mysql_consume_result(mysql);
                 }
                 result.per_file_latencies_ns.push_back(del_ns);
             }
