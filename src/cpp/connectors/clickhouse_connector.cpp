@@ -67,7 +67,6 @@ bool ClickHouseConnector::http_exec(const std::string& sql) {
 bool ClickHouseConnector::connect(const DbConnection& conn) {
     endpoint_ = "http://" + conn.host + ":" + std::to_string(conn.port);
     database_ = "default";  // connect to default DB; create_lab_schema() handles target DB
-    target_database_ = conn.lab_schema.empty() ? "dedup_lab" : conn.lab_schema;
     user_ = conn.user;
     password_ = conn.password;
 
@@ -128,7 +127,10 @@ bool ClickHouseConnector::create_lab_schema(const std::string& schema_name) {
         "payload String, "
         "inserted_at DateTime DEFAULT now()"
         ") ENGINE = MergeTree() ORDER BY id";
-    return http_exec(sql);
+    if (!http_exec(sql)) return false;
+    database_ = schema_name;  // switch to lab database for all subsequent queries
+    LOG_INF("[clickhouse] Switched database to: %s", database_.c_str());
+    return true;
 }
 
 bool ClickHouseConnector::drop_lab_schema(const std::string& schema_name) {
