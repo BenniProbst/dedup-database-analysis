@@ -266,23 +266,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // --repeat-db: filter to single DB and invalidate its checkpoints
-    if (!repeat_db.empty()) {
-        entries.erase(std::remove_if(entries.begin(), entries.end(),
-            [&](const auto& e) {
-                return dedup::db_system_str(e.db_conn.system) != repeat_db;
-            }), entries.end());
-        if (entries.empty()) {
-            LOG_ERR("--repeat-db %s: system not found", repeat_db.c_str());
-            return 1;
-        }
-        if (checkpoint) {
-            checkpoint->invalidate_system(repeat_db);
-            LOG_INF("[Repeat] Invalidated checkpoints for %s", repeat_db.c_str());
-        }
-        LOG_INF("[Repeat] Running only: %s", repeat_db.c_str());
-    }
-
 
     // Create results directory
     fs::create_directories(results_dir);
@@ -356,6 +339,24 @@ int main(int argc, char* argv[]) {
     }
 
     LOG_INF("Connected to %zu databases", entries.size());
+
+    // --repeat-db: filter to single DB and invalidate its checkpoints
+    if (!repeat_db.empty()) {
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+            [&](const auto& e) {
+                return dedup::db_system_str(e.db_conn.system) != repeat_db;
+            }), entries.end());
+        if (entries.empty()) {
+            LOG_ERR("--repeat-db %s: system not found", repeat_db.c_str());
+            return 1;
+        }
+        if (checkpoint) {
+            checkpoint->invalidate_system(repeat_db);
+            LOG_INF("[Repeat] Invalidated checkpoints for %s", repeat_db.c_str());
+        }
+        LOG_INF("[Repeat] Running only: %s", repeat_db.c_str());
+    }
+
 
     // Cleanup-only mode: drop lab schemas and exit (used by CI cleanup job)
     if (cleanup_only) {
