@@ -435,7 +435,7 @@ experiment:preflight:
         curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
           -H "Content-Type: application/merge-patch+json" \
           -X PATCH "${APISERVER}/apis/apps/v1/namespaces/${ns}/statefulsets/${name}/scale" \
-          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200
+          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200 || true
         echo ""
       }
 
@@ -445,7 +445,7 @@ experiment:preflight:
         curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
           -H "Content-Type: application/merge-patch+json" \
           -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/${ns}/kafkanodepools/${pool}" \
-          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200
+          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200 || true
         echo ""
       }
 
