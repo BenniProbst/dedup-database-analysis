@@ -46,7 +46,7 @@
         {
             "system": "kafka",
             "host": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local",
-            "port": 9092,
+            "port": 9094,
             "lab_schema": "dedup-lab",
             "pvc_name": "data-kafka-cluster-broker-0",
             "k8s_namespace": "kafka",
