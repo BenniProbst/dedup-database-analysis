@@ -591,7 +591,7 @@ int main(int argc, char* argv[]) {
         dedup::ResultsExporter exporter(cfg.git_export, cfg.metrics_trace, results_dir);
         bool exported = 
         // Export per-stage ExperimentResults as CSV
-        ResultsExporter::export_results_csv(all_results, results_dir);
+        dedup::ResultsExporter::export_results_csv(all_results, results_dir);
         LOG_INF("=== CSV Export: %zu results to %s/experiment_results.csv ===",
                 all_results.size(), results_dir.c_str());
 

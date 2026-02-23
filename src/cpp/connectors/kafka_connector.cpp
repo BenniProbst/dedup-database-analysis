@@ -482,7 +482,7 @@ MeasureResult KafkaConnector::native_perfile_insert(
         {
             ScopedTimer st(produce_ns);
             rd_kafka_producev(
-                producer_, RD_KAFKA_V_TOPIC(topic.c_str()),
+                rk, RD_KAFKA_V_TOPIC(topic.c_str()),
                 RD_KAFKA_V_VALUE(json_val.data(), json_val.size()),
                 RD_KAFKA_V_END);
             result.rows_affected++;
