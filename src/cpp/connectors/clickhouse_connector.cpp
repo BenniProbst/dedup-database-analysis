@@ -66,7 +66,8 @@ bool ClickHouseConnector::http_exec(const std::string& sql) {
 
 bool ClickHouseConnector::connect(const DbConnection& conn) {
     endpoint_ = "http://" + conn.host + ":" + std::to_string(conn.port);
-    database_ = conn.lab_schema.empty() ? "dedup_lab" : conn.lab_schema;
+    database_ = "default";  // connect to default DB; create_lab_schema() handles target DB
+    target_database_ = conn.lab_schema.empty() ? "dedup_lab" : conn.lab_schema;
     user_ = conn.user;
     password_ = conn.password;
 
