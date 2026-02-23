@@ -492,6 +492,20 @@ experiment:preflight:
       fi
       mkdir -p /datasets/real-world/checkpoints/${DB_SYSTEM}
 
+      # Copy real-world datasets from NFS to working directory if available
+      if [ -d /datasets/real-world ] && [ "$(ls -A /datasets/real-world 2>/dev/null | grep -v checkpoints)" ]; then
+        echo "[NFS] Copying real-world datasets to /tmp/datasets/"
+        for dtype in bank_transactions text_corpus numeric_dataset github_events; do
+          if [ -d "/datasets/real-world/${dtype}" ]; then
+            mkdir -p "/tmp/datasets/${dtype}"
+            cp -r "/datasets/real-world/${dtype}/"* "/tmp/datasets/${dtype}/" 2>/dev/null || true
+            echo "[NFS] Copied ${dtype}: $(find /tmp/datasets/${dtype} -type f 2>/dev/null | wc -l) files"
+          fi
+        done
+      else
+        echo "[NFS] No real-world datasets on NFS -- using synthetic data only"
+      fi
+
       # Scale down other experiment DBs, scale up THIS DB
       if [ -n "$SA_TOKEN" ]; then
         if [ "${DB_TYPE}" = "statefulset" ]; then
