@@ -16,7 +16,7 @@
 #include <chrono>
 #include "../config.hpp"
 #include "../utils/logger.hpp"
-#include "native_record.hpp"
+#include "../experiment/native_record.hpp"
 
 namespace dedup {
 
