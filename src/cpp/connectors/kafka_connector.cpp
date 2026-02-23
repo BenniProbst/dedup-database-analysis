@@ -27,6 +27,21 @@ bool KafkaConnector::connect(const DbConnection& conn) {
     rd_kafka_conf_set(conf, "bootstrap.servers", bootstrap_.c_str(), errstr, sizeof(errstr));
     rd_kafka_conf_set(conf, "client.id", "dedup-test", errstr, sizeof(errstr));
 
+    // SASL/SCRAM-SHA-512 auth (dedup-lab KafkaUser via Strimzi)
+    // Credentials from env KAFKA_USER/KAFKA_PASSWORD or DbConnection user/password
+    std::string sasl_user = conn.user;
+    std::string sasl_pass = conn.password;
+    if (const char* v = std::getenv("KAFKA_USER")) sasl_user = v;
+    if (const char* v = std::getenv("KAFKA_PASSWORD")) sasl_pass = v;
+
+    if (!sasl_user.empty()) {
+        rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT", errstr, sizeof(errstr));
+        rd_kafka_conf_set(conf, "sasl.mechanism", "SCRAM-SHA-512", errstr, sizeof(errstr));
+        rd_kafka_conf_set(conf, "sasl.username", sasl_user.c_str(), errstr, sizeof(errstr));
+        rd_kafka_conf_set(conf, "sasl.password", sasl_pass.c_str(), errstr, sizeof(errstr));
+        LOG_INF("[kafka] SASL/SCRAM-SHA-512 auth enabled (user=%s)", sasl_user.c_str());
+    }
+
     rd_kafka_t* rk = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
     if (!rk) {
         LOG_ERR("[kafka] Producer creation failed: %s", errstr);
