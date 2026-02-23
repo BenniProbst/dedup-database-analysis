@@ -465,13 +465,7 @@ experiment:preflight:
       }
 
       scale_down_experiment_dbs() {
-        echo "=== Scaling down experiment-only DBs ==="
-        k8s_scale_sts databases mariadb 0
-        k8s_scale_sts databases clickhouse 0
-        k8s_scale_sts redis redis-cluster 0
-        echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
-        echo "[Scale] PostgreSQL + MinIO + CockroachDB: unchanged (production)"
-        sleep 5
+        echo "[Scale] All experiment DBs stay running (no scale-down)"
       }
 
       echo "================================================================="
@@ -506,26 +500,9 @@ experiment:preflight:
         echo "[NFS] No real-world datasets on NFS -- using synthetic data only"
       fi
 
-      # Scale down other experiment DBs, scale up THIS DB
-      if [ -n "$SA_TOKEN" ]; then
-        if [ "${DB_TYPE}" = "statefulset" ]; then
-          scale_down_experiment_dbs
-          echo "=== Scaling UP ${DB_SYSTEM} ==="
-          k8s_scale_sts "${DB_NAMESPACE}" "${DB_STATEFULSET}" "${DB_REPLICAS}"
-          wait_for_db "${DB_HOST}" "${DB_PORT}" 180
-        elif [ "${DB_TYPE}" = "kafka" ]; then
-          scale_down_experiment_dbs
-          echo "=== Scaling UP Kafka ==="
-          k8s_scale_kafka kafka controller 1
-          sleep 10
-          k8s_scale_kafka kafka broker "${DB_REPLICAS}"
-          wait_for_db "${DB_HOST}" "${DB_PORT}" 180
-        else
-          echo "[Scale] DB_TYPE=${DB_TYPE} â€” no scaling (production DB)"
-        fi
-      else
-        echo "[Scale] No SA token â€” skipping DB scaling (non-K8s environment)"
-      fi
+      # All DBs stay running — just verify connectivity
+      echo “[Scale] All DBs stay running (no scale up/down)”
+      wait_for_db “${DB_HOST}” “${DB_PORT}” 120
 
       chmod +x build/dedup-test
       OVERALL_EXIT=0
@@ -583,14 +560,8 @@ experiment:preflight:
       echo "=== All 3 runs complete for ${DB_SYSTEM} ==="
       echo "=== Overall exit: ${OVERALL_EXIT} ==="
 
-      # Scale down THIS DB after test
-      if [ -n "$SA_TOKEN" ]; then
-        if [ "${DB_TYPE}" = "statefulset" ]; then
-          k8s_scale_sts "${DB_NAMESPACE}" "${DB_STATEFULSET}" 0
-        elif [ "${DB_TYPE}" = "kafka" ]; then
-          echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
-        fi
-      fi
+      # All DBs stay running after test (no scale-down)
+      echo "[Scale] ${DB_SYSTEM} stays running after test"
 
       if ls results/${DB_SYSTEM}/run-*/combined_results.json 2>/dev/null; then
         echo "Results files found"
@@ -600,22 +571,7 @@ experiment:preflight:
       exit ${OVERALL_EXIT}
   after_script:
     - |
-      echo "=== after_script: Safety cleanup ==="
-      # Safety-net: Scale down THIS DB even if script failed/OOMKilled
-      APISERVER=https://kubernetes.default.svc
-      if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
-        SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-        SA_CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-        if [ "${DB_TYPE}" = "statefulset" ] && [ -n "${DB_NAMESPACE}" ] && [ -n "${DB_STATEFULSET}" ]; then
-          echo "[Scale] Safety: ${DB_NAMESPACE}/${DB_STATEFULSET} -> 0"
-          curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
-            -H "Content-Type: application/merge-patch+json" \
-            -X PATCH "${APISERVER}/apis/apps/v1/namespaces/${DB_NAMESPACE}/statefulsets/${DB_STATEFULSET}/scale" \
-            -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
-        elif [ "${DB_TYPE}" = "kafka" ]; then
-          echo "[Scale] Safety: Kafka unchanged (metrics trace needs Kafka always running)"
-        fi
-      fi
+      echo "=== after_script: No scale-down (all DBs stay running) ==="
       # NFS volume auto-unmounted by K8s (no manual umount needed)
   artifacts:
     paths:
