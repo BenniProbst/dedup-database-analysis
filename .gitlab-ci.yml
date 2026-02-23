@@ -33,7 +33,8 @@ stages:
 variables:
   GCC_VERSION: "14"
   BUILD_TYPE: "Debug"
-  INSERTION_MODE: "both"  # blob, native, or both
+  INSERTION_MODE: "both"
+  REPEAT_DB: ""  # Set to e.g. "mariadb" to repeat only that DB  # blob, native, or both
 
 # ============================================================
 # Stage 1: ALL Builds (7 parallel execution lanes)
@@ -468,8 +469,7 @@ experiment:preflight:
         k8s_scale_sts databases mariadb 0
         k8s_scale_sts databases clickhouse 0
         k8s_scale_sts redis redis-cluster 0
-        k8s_scale_kafka kafka broker 0
-        k8s_scale_kafka kafka controller 0
+    echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
         echo "[Scale] PostgreSQL + MinIO + CockroachDB: unchanged (production)"
         sleep 5
       }
@@ -569,8 +569,7 @@ experiment:preflight:
         if [ "${DB_TYPE}" = "statefulset" ]; then
           k8s_scale_sts "${DB_NAMESPACE}" "${DB_STATEFULSET}" 0
         elif [ "${DB_TYPE}" = "kafka" ]; then
-          k8s_scale_kafka kafka broker 0
-          k8s_scale_kafka kafka controller 0
+    echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
         fi
       fi
 
