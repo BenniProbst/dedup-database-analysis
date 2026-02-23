@@ -114,7 +114,7 @@ bool MariaDBConnector::create_lab_schema(const std::string& schema_name) {
           "  id CHAR(36) PRIMARY KEY,"
           "  mime VARCHAR(128) NOT NULL,"
           "  size_bytes BIGINT NOT NULL,"
-          "  sha256 BINARY(32) NOT NULL,"
+          "  sha256 CHAR(64) NOT NULL,"
           "  payload LONGBLOB NOT NULL,"
           "  inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
           ") ENGINE=InnoDB";
@@ -173,7 +173,12 @@ MeasureResult MariaDBConnector::bulk_insert(const std::string& data_dir, DupGrad
     MYSQL_STMT* stmt = mysql_stmt_init(mysql);
     const char* sql = "INSERT INTO files (id, mime, size_bytes, sha256, payload) "
                       "VALUES (UUID(), ?, ?, ?, ?)";
-    mysql_stmt_prepare(stmt, sql, strlen(sql));
+    if (mysql_stmt_prepare(stmt, sql, strlen(sql)) != 0) {
+        LOG_ERR("[mariadb] Prepare failed: %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return result;
+    }
+    bool first_err_logged = false;
 
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_regular_file()) continue;
@@ -212,7 +217,11 @@ MeasureResult MariaDBConnector::bulk_insert(const std::string& data_dir, DupGrad
         mysql_stmt_bind_param(stmt, bind);
         if (mysql_stmt_execute(stmt) == 0) {
             result.rows_affected++;
+        } else if (!first_err_logged) {
+            LOG_ERR("[mariadb] First bulk execute error: %s", mysql_stmt_error(stmt));
+            first_err_logged = true;
         }
+
         result.bytes_logical += fsize;
     }
 
@@ -246,7 +255,12 @@ MeasureResult MariaDBConnector::perfile_insert(const std::string& data_dir, DupG
     MYSQL_STMT* stmt = mysql_stmt_init(mysql);
     const char* sql = "INSERT INTO files (id, mime, size_bytes, sha256, payload) "
                       "VALUES (UUID(), ?, ?, ?, ?)";
-    mysql_stmt_prepare(stmt, sql, strlen(sql));
+    if (mysql_stmt_prepare(stmt, sql, strlen(sql)) != 0) {
+        LOG_ERR("[mariadb] Prepare failed: %s", mysql_stmt_error(stmt));
+        mysql_stmt_close(stmt);
+        return result;
+    }
+    bool first_err_logged = false;
 
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_regular_file()) continue;
@@ -289,7 +303,11 @@ MeasureResult MariaDBConnector::perfile_insert(const std::string& data_dir, DupG
             ScopedTimer st(insert_ns);
             if (mysql_stmt_execute(stmt) == 0) {
                 result.rows_affected++;
+            } else if (!first_err_logged) {
+                LOG_ERR("[mariadb] First perfile execute error: %s", mysql_stmt_error(stmt));
+                first_err_logged = true;
             }
+
         }
         result.per_file_latencies_ns.push_back(insert_ns);
         result.bytes_logical += fsize;
@@ -421,7 +439,6 @@ int64_t MariaDBConnector::get_logical_size_bytes() {
     return -1;
 #endif
 }
-
 
 // ============================================================================
 // Native insertion mode (Stage 1)
