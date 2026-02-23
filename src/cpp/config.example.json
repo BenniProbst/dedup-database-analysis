@@ -150,7 +150,7 @@
     },
 
     "metrics_trace": {
-        "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092",
+        "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094",
         "kafka_topic": "dedup-lab-metrics",
         "events_topic": "dedup-lab-events",
         "sample_interval_ms": 100,

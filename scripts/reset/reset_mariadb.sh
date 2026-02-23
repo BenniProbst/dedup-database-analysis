@@ -1,35 +1,42 @@
 #!/bin/bash
-# Reset MariaDB experiment data (dedup_lab schema)
+# Reset MariaDB experiment data (dedup_lab database)
+# Only drops tables inside dedup_lab — other databases/users untouched.
 # Usage: ./reset_mariadb.sh [--dry-run]
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DRY_RUN="${1:-}"
-DB_HOST="mariadb.databases.svc.cluster.local"
-DB_PORT=3306
 DB_USER="dedup-lab"
+DB_PASS="${MARIADB_PASSWORD:-}"
 SCHEMA="dedup_lab"
 NFS_CHECKPOINT="/datasets/real-world/checkpoints/mariadb"
+
+# Resolve password from K8s Secret if not set
+if [ -z "$DB_PASS" ]; then
+  DB_PASS=$(kubectl -n databases get secret dedup-credentials -o jsonpath='{.data.MARIADB_PASSWORD}' 2>/dev/null | base64 -d 2>/dev/null) || true
+fi
+if [ -z "$DB_PASS" ]; then
+  echo "[ERROR] No MariaDB password. Set MARIADB_PASSWORD or ensure dedup-credentials secret exists."
+  exit 1
+fi
 
 echo "=== Reset MariaDB ($SCHEMA) ==="
 
 if [ "$DRY_RUN" = "--dry-run" ]; then
-  echo "[DRY-RUN] Would DROP and recreate schema $SCHEMA"
+  echo "[DRY-RUN] Would DROP and recreate database $SCHEMA"
   echo "[DRY-RUN] Would clear NFS checkpoints at $NFS_CHECKPOINT"
   exit 0
 fi
 
-# Find a MariaDB pod to run commands
 MARIA_POD=$(kubectl -n databases get pod -l app.kubernetes.io/name=mariadb -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
 if [ -z "$MARIA_POD" ]; then
   echo "[ERROR] No MariaDB pod found in databases namespace"
   exit 1
 fi
 
-echo "[1/3] Dropping schema $SCHEMA..."
-kubectl -n databases exec "$MARIA_POD" -- mariadb -u "$DB_USER" -e "DROP DATABASE IF EXISTS $SCHEMA;" 2>&1 || true
+echo "[1/3] Dropping database $SCHEMA..."
+kubectl -n databases exec "$MARIA_POD" -- mariadb -u "$DB_USER" -p"$DB_PASS" -e "DROP DATABASE IF EXISTS $SCHEMA;" 2>&1 || true
 
-echo "[2/3] Recreating schema $SCHEMA..."
-kubectl -n databases exec "$MARIA_POD" -- mariadb -u "$DB_USER" -e "CREATE DATABASE $SCHEMA; GRANT ALL ON $SCHEMA.* TO '$DB_USER'@'%';" 2>&1
+echo "[2/3] Recreating database $SCHEMA..."
+kubectl -n databases exec "$MARIA_POD" -- mariadb -u "$DB_USER" -p"$DB_PASS" -e "CREATE DATABASE IF NOT EXISTS $SCHEMA;" 2>&1
 
 echo "[3/3] Clearing NFS checkpoints..."
 RUNNER4_POD=$(kubectl -n gitlab-runner get pod -l app=gitlab-runner-4 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)

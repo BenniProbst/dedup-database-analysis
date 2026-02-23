@@ -522,6 +522,14 @@ experiment:preflight:
       export KAFKA_USER="dedup-lab"
       export KAFKA_PASSWORD="${DEDUP_KAFKA_PASSWORD}"
 
+      # Reset: Clear NFS checkpoints for this DB so all runs execute fresh
+      # (Without this, completed runs from cancelled pipelines would be skipped)
+      if [ "${RESET_CHECKPOINTS:-true}" = "true" ]; then
+        echo "[Reset] Clearing NFS checkpoints for ${DB_SYSTEM}..."
+        rm -rf "/datasets/real-world/checkpoints/${DB_SYSTEM}/"* 2>/dev/null || true
+        echo "[Reset] Checkpoints cleared"
+      fi
+
       for RUN in 1 2 3; do
         echo ""
         echo "===== ${DB_SYSTEM}: Run ${RUN}/3 ====="

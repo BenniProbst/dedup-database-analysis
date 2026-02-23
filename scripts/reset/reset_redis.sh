@@ -18,12 +18,15 @@ if [ -z "$REDIS_POD" ]; then
   exit 1
 fi
 
-echo "[1/2] Deleting dedup:* keys..."
+echo "[1/2] Deleting dedup-lab:* keys..."
 # Use SCAN + DEL to safely remove experiment keys (cluster mode safe)
-kubectl -n redis exec "$REDIS_POD" -- redis-cli --scan --pattern 'dedup:*' | while read key; do
-  kubectl -n redis exec "$REDIS_POD" -- redis-cli DEL "$key" >/dev/null 2>&1
-done
-echo "  Keys deleted"
+COUNT=$(kubectl -n redis exec "$REDIS_POD" -- redis-cli --scan --pattern 'dedup-lab:*' 2>/dev/null | wc -l)
+if [ "$COUNT" -gt 0 ]; then
+  kubectl -n redis exec "$REDIS_POD" -- sh -c 'redis-cli --scan --pattern "dedup-lab:*" | xargs -r redis-cli DEL' 2>/dev/null || true
+  echo "  Deleted $COUNT keys"
+else
+  echo "  No dedup-lab:* keys found"
+fi
 
 echo "[2/2] Clearing NFS checkpoints..."
 RUNNER4_POD=$(kubectl -n gitlab-runner get pod -l app=gitlab-runner-4 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
