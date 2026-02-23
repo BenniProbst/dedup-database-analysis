@@ -22,6 +22,7 @@
 #include <iostream>
 #include <memory>
 #include <filesystem>
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <thread>
@@ -79,7 +80,7 @@ static void print_usage(const char* prog) {
         "  --checkpoint-dir D  Directory for checkpoint files (enables resume)\n"
         "  --run-id N          Run identifier (1,2,3) for checkpoint tracking\n"
         "  --max-retries N     Max retries per system on connection loss (default: 3)\n"
-        "  --insertion-mode M  Insertion mode: blob, native, or both (default: blob)\n  --verbose           Enable debug logging\n"
+        "  --insertion-mode M  Insertion mode: blob, native, or both (default: blob)\n  --repeat-db NAME    Repeat only this DB (invalidates its checkpoints)\n  --verbose           Enable debug logging\n"
         "  --help              Show this help\n"
         "\n"
         "SAFETY: This program operates on SEPARATE lab schemas.\n"
@@ -120,6 +121,7 @@ int main(int argc, char* argv[]) {
     int run_id = 0;
     int max_retries = 3;
     std::string insertion_mode_str = "blob";
+    std::string repeat_db;
 
 #ifdef DEDUP_DRY_RUN
     dry_run = true;
@@ -163,6 +165,8 @@ int main(int argc, char* argv[]) {
             real_world_dir = argv[++i];
         } else if (std::strcmp(argv[i], "--insertion-mode") == 0 && i + 1 < argc) {
             insertion_mode_str = argv[++i];
+        } else if (std::strcmp(argv[i], "--repeat-db") == 0 && i + 1 < argc) {
+            repeat_db = argv[++i];
         } else if (std::strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (std::strcmp(argv[i], "--verbose") == 0) {
@@ -261,6 +265,24 @@ int main(int argc, char* argv[]) {
                 checkpoint_dir.c_str(), run_id, max_retries);
         }
     }
+
+    // --repeat-db: filter to single DB and invalidate its checkpoints
+    if (!repeat_db.empty()) {
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+            [&](const auto& e) {
+                return dedup::db_system_str(e.db_conn.system) != repeat_db;
+            }), entries.end());
+        if (entries.empty()) {
+            LOG_ERR("--repeat-db %s: system not found", repeat_db.c_str());
+            return 1;
+        }
+        if (checkpoint) {
+            checkpoint->invalidate_system(repeat_db);
+            LOG_INF("[Repeat] Invalidated checkpoints for %s", repeat_db.c_str());
+        }
+        LOG_INF("[Repeat] Running only: %s", repeat_db.c_str());
+    }
+
 
     // Create results directory
     fs::create_directories(results_dir);
