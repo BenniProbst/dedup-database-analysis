@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <iomanip>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 
@@ -298,6 +299,84 @@ bool ResultsExporter::export_all() {
         pushed ? "COMPLETE" : "FAILED");
 
     return pushed;
+}
+
+
+// ---------------------------------------------------------------------------
+// ExperimentResult CSV export (per-stage aggregated results)
+// ---------------------------------------------------------------------------
+
+void ResultsExporter::export_results_csv(
+        const std::vector<ExperimentResult>& results,
+        const std::string& output_dir) {
+    std::string filepath = output_dir + "/experiment_results.csv";
+    std::ofstream csv(filepath);
+    if (!csv.is_open()) {
+        LOG_ERR("[exporter] Cannot open %s", filepath.c_str());
+        return;
+    }
+
+    // Header (25 columns)
+    csv << "system,payload_type,dup_grade,insertion_mode,stage,"
+        << "duration_ms,rows_affected,bytes_logical,"
+        << "logical_size_before,logical_size_after,"
+        << "phys_size_before,phys_size_after,phys_delta,"
+        << "edr,throughput_mbps,"
+        << "latency_p50_us,latency_p95_us,latency_p99_us,"
+        << "latency_min_us,latency_max_us,latency_mean_us,"
+        << "replica_count,volume_name,timestamp,error" << std::endl;
+
+    for (const auto& r : results) {
+        // Escape error field for CSV
+        std::string safe_error = r.error;
+        if (safe_error.find(',') != std::string::npos ||
+            safe_error.find('"') != std::string::npos) {
+            std::string escaped;
+            escaped += '"';
+            for (char c : safe_error) {
+                if (c == '"') escaped += '"';
+                escaped += c;
+            }
+            escaped += '"';
+            safe_error = escaped;
+        }
+
+        csv << r.system << ","
+            << r.payload_type << ","
+            << r.dup_grade << ","
+            << r.insertion_mode << ","
+            << r.stage << ","
+            << (r.duration_ns / 1000000) << ","
+            << r.rows_affected << ","
+            << r.bytes_logical << ","
+            << r.logical_size_before << ","
+            << r.logical_size_after << ","
+            << r.phys_size_before << ","
+            << r.phys_size_after << ","
+            << r.phys_delta << ",";
+
+        // Fixed precision for float fields
+        csv << std::fixed;
+        csv << std::setprecision(4) << r.edr << ",";
+        csv << std::setprecision(2) << (r.throughput_bytes_per_sec / 1048576.0) << ",";
+
+        // Latency in microseconds
+        csv << (r.latency_p50_ns / 1000) << ","
+            << (r.latency_p95_ns / 1000) << ","
+            << (r.latency_p99_ns / 1000) << ","
+            << (r.latency_min_ns / 1000) << ","
+            << (r.latency_max_ns / 1000) << ",";
+        csv << std::setprecision(1) << (r.latency_mean_ns / 1000.0) << ",";
+
+        csv << r.replica_count << ","
+            << r.volume_name << ","
+            << r.timestamp << ","
+            << safe_error << std::endl;
+    }
+
+    csv.close();
+    LOG_INF("[exporter] Wrote %zu experiment results to %s",
+        results.size(), filepath.c_str());
 }
 
 } // namespace dedup

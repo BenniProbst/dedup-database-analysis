@@ -17,6 +17,7 @@
 #include <vector>
 #include "../config.hpp"
 #include "metrics_trace.hpp"
+#include "data_loader.hpp"
 
 namespace dedup {
 
@@ -41,6 +42,13 @@ public:
     // Full export pipeline: metrics CSV + events CSV + git push
     // Returns true if ALL steps succeeded
     bool export_all();
+
+
+    // Export per-stage ExperimentResults as CSV (1 row per stage run)
+    // This is the main experiment output CSV (unlike metrics_trace which is 10Hz)
+    static void export_results_csv(
+        const std::vector<ExperimentResult>& results,
+        const std::string& output_dir);
 
 private:
     GitExportConfig git_config_;
