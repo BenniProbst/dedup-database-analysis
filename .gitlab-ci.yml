@@ -382,14 +382,15 @@ experiment:preflight:
       for status in running pending; do
         RESPONSE=$(curl -sf --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
           "${API_URL}?status=${status}&per_page=100" 2>/dev/null || echo "[]")
-        echo "$RESPONSE" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' | while read PID; do
-          if [ "$PID" != "${CI_PIPELINE_ID}" ]; then
-            echo "[Auto-Cancel] Cancelling pipeline #${PID}"
-            curl -sf --request POST --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-              "${API_URL}/${PID}/cancel" 2>/dev/null || echo "[WARN] Could not cancel #${PID}"
-            CANCELLED=$((CANCELLED+1))
-          fi
-        done
+        PIDS=$(echo "$RESPONSE" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' || true)
+          for PID in $PIDS; do
+            if [ "$PID" != "${CI_PIPELINE_ID}" ]; then
+              echo "[Auto-Cancel] Cancelling pipeline #${PID}"
+              curl -sf --request POST --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+                "${API_URL}/${PID}/cancel" 2>/dev/null || echo "[WARN] Could not cancel #${PID}"
+              CANCELLED=$((CANCELLED+1))
+            fi
+          done
       done
       echo "[Auto-Cancel] Done (${CANCELLED} pipelines cancelled)"
 
@@ -420,7 +421,7 @@ experiment:preflight:
       for db_info in "MariaDB:mariadb.databases.svc.cluster.local:3306" \
                      "ClickHouse:clickhouse.databases.svc.cluster.local:8123" \
                      "Redis:redis-cluster.redis.svc.cluster.local:6379" \
-                     "Kafka:kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"; do
+                     "Kafka:kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094"; do
         name=$(echo "$db_info" | cut -d: -f1)
         host=$(echo "$db_info" | cut -d: -f2)
         port=$(echo "$db_info" | cut -d: -f3)
