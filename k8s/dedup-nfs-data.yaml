@@ -1,0 +1,59 @@
+---
+# Dediziertes NFS für Experiment-Testdaten
+# Replika 1 (keine Redundanz nötig, temporäre Daten)
+# Wird auf die isolierte Test-Node gepinnt
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-experiment
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "2880"
+  dataLocality: "best-effort"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dedup-nfs-data
+  namespace: databases
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn-experiment
+  resources:
+    requests:
+      storage: 100Gi
+---
+# Staging-Pod zum Kopieren der Testdaten auf das PVC
+# Nach dem Kopieren wird dieser Pod gelöscht
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dedup-staging
+  namespace: databases
+  labels:
+    app: dedup-staging
+spec:
+  containers:
+  - name: staging
+    image: alpine:3.19
+    command: ["sleep", "infinity"]
+    volumeMounts:
+    - name: testdata
+      mountPath: /data
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+  volumes:
+  - name: testdata
+    persistentVolumeClaim:
+      claimName: dedup-nfs-data
+  restartPolicy: Never
