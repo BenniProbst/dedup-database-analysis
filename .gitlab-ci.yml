@@ -9,16 +9,16 @@
 # === Runner Architecture (12 total, 10 online, 2 paused) ===
 # Parallelization: 7 independent execution lanes in single build stage
 #
-# Lane 1: K8s (Docker)        — kubernetes tag — pve1/node3/node4 Talos VMs
-# Lane 2: BM-Debian (Shell)   — debian+x86_64  — pve1 (pve2 paused/experiment)
-# Lane 3: BM-Ubuntu (Shell)   — ubuntu+x86_64  — node3, node4
-# Lane 4: macOS x86 (Shell)   — macos+x86_64   — node5 (independent)
-# Lane 5: macOS ARM (Shell)   — macos+arm64    — node6 (independent)
-# Lane 6: Linux ARM64 (Shell) — arm64+linux    — node7 (independent)
-# Lane 7: Linux RISC-V (Shell)— riscv64+linux  — node8 (independent)
+# Lane 1: K8s (Docker)        â€” kubernetes tag â€” pve1/node3/node4 Talos VMs
+# Lane 2: BM-Debian (Shell)   â€” debian+x86_64  â€” pve1 (pve2 paused/experiment)
+# Lane 3: BM-Ubuntu (Shell)   â€” ubuntu+x86_64  â€” node3, node4
+# Lane 4: macOS x86 (Shell)   â€” macos+x86_64   â€” node5 (independent)
+# Lane 5: macOS ARM (Shell)   â€” macos+arm64    â€” node6 (independent)
+# Lane 6: Linux ARM64 (Shell) â€” arm64+linux    â€” node7 (independent)
+# Lane 7: Linux RISC-V (Shell)â€” riscv64+linux  â€” node8 (independent)
 #
 # XOR: K8s runner XOR BM runner per physical host (pve1/pve2/node3/node4)
-# Exotic nodes (5-8) have no XOR constraint — fully independent
+# Exotic nodes (5-8) have no XOR constraint â€” fully independent
 # Phase 1: K8s + BM = MANDATORY, Exotic = allow_failure
 
 stages:
@@ -33,8 +33,8 @@ stages:
 variables:
   GCC_VERSION: "14"
   BUILD_TYPE: "Debug"
-  INSERTION_MODE: "both"
-  REPEAT_DB: ""  # Set to e.g. "mariadb" to repeat only that DB  # blob, native, or both
+  INSERTION_MODE: "both"  # blob, native, or both
+  REPEAT_DB: ""  # Set to e.g. "mariadb" to repeat only that DB
 
 # ============================================================
 # Stage 1: ALL Builds (7 parallel execution lanes)
@@ -57,8 +57,8 @@ build-k8s:
     - pip install gcovr --break-system-packages -q
     - git config --global url."http://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
   script:
-    - echo "=== COMDARE CI v5.4.1 — K8s (gcc:${GCC_VERSION}, x86_64) ==="
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
+    - echo "=== COMDARE CI v5.4.1 â€” K8s (gcc:${GCC_VERSION}, x86_64) ==="
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt â€” skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
     - cmake --build build-k8s -j4
     - cd build-k8s && ctest --output-on-failure -j$(nproc) || true
@@ -78,25 +78,25 @@ build-k8s:
     expire_in: 30 days
     when: always
 
-# --- Lane 2: Debian x86_64 (pve1, pve2) — MANDATORY ---
+# --- Lane 2: Debian x86_64 (pve1, pve2) â€” MANDATORY ---
 build-debian-x86:
   stage: build
   tags:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v5.4.1 — Debian x86_64 ($(uname -m)) ==="'
+    - 'echo "=== COMDARE CI v5.4.1 â€” Debian x86_64 ($(uname -m)) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
   script:
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt â€” skipping"; exit 0; }
     - cmake -B build-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
     - cmake --build build-debian -j $(nproc)
     - cd build-debian && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
-    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-debian/_deps --print-summary --xml coverage-debian.xml || echo "gcovr not found — skipping coverage"'
+    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-debian/_deps --print-summary --xml coverage-debian.xml || echo "gcovr not found â€” skipping coverage"'
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
@@ -109,25 +109,25 @@ build-debian-x86:
     expire_in: 30 days
     when: always
 
-# --- Lane 3: Ubuntu x86_64 (node3, node4) — MANDATORY ---
+# --- Lane 3: Ubuntu x86_64 (node3, node4) â€” MANDATORY ---
 build-ubuntu-x86:
   stage: build
   tags:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v5.4.1 — Ubuntu x86_64 ($(uname -m)) ==="'
+    - 'echo "=== COMDARE CI v5.4.1 â€” Ubuntu x86_64 ($(uname -m)) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
   script:
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt â€” skipping"; exit 0; }
     - cmake -B build-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
     - cmake --build build-ubuntu -j $(nproc)
     - cd build-ubuntu && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
-    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-ubuntu/_deps --print-summary --xml coverage-ubuntu.xml || echo "gcovr not found — skipping coverage"'
+    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-ubuntu/_deps --print-summary --xml coverage-ubuntu.xml || echo "gcovr not found â€” skipping coverage"'
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
@@ -145,11 +145,11 @@ build-ubuntu-x86:
   stage: build
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v5.4.1 — Exotic ($(uname -s) $(uname -m)) ==="'
-    - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
-    - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
+    - 'echo "=== COMDARE CI v5.4.1 â€” Exotic ($(uname -s) $(uname -m)) ==="'
+    - 'command -v git >/dev/null || { echo "WARN: git not found â€” skipping"; exit 0; }'
+    - 'command -v cmake >/dev/null || { echo "WARN: cmake not found â€” skipping"; exit 0; }'
   script:
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt â€” skipping"; exit 0; }
     - 'GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"'
     - cmake -B build-exotic $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_STANDARD=23
     - cmake --build build-exotic -j $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
@@ -200,7 +200,7 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v5.4.1 — Aggregate Results ==="
+    - echo "=== COMDARE CI v5.4.1 â€” Aggregate Results ==="
     - echo "Platform build results:"
     - '[ -f coverage-k8s.xml ] && echo "  K8s Docker (x86_64):  OK" || echo "  K8s Docker (x86_64):  MISSING"'
     - '[ -f coverage-debian.xml ] && echo "  Debian BM (x86_64):   OK" || echo "  Debian BM (x86_64):   MISSING"'
@@ -225,8 +225,8 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v5.4.1 — MinIO Artifact Upload (S3v4 native) ==="
-    - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
+    - echo "=== COMDARE CI v5.4.1 â€” MinIO Artifact Upload (S3v4 native) ==="
+    - echo "RBMM Hierarchy â€” {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
       import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error
@@ -362,7 +362,7 @@ experiment:preflight:
   script:
     - |
       echo "=== Pre-Flight: Checking production DBs + K8s API + NFS ==="
-      echo "(Experiment DBs like MariaDB/ClickHouse/Redis may be scaled to 0 — checked per-job)"
+      echo "(Experiment DBs like MariaDB/ClickHouse/Redis may be scaled to 0 â€” checked per-job)"
       PASS=0; FAIL=0
       tcp_check() {
         local host=$1 port=$2
@@ -383,7 +383,7 @@ experiment:preflight:
       check "K8s API"      "tcp_check kubernetes.default.svc 443"
       # NFS (needed for checkpoints + real-world datasets)
       check "NFS"          "tcp_check 10.0.110.184 2049"
-      # Experiment DBs (informational — may be at 0 replicas, NOT blocking)
+      # Experiment DBs (informational â€” may be at 0 replicas, NOT blocking)
       echo "--- Experiment DBs (info only, not blocking) ---"
       for db_info in "MariaDB:mariadb.databases.svc.cluster.local:3306" \
                      "ClickHouse:clickhouse.databases.svc.cluster.local:8123" \
@@ -469,7 +469,7 @@ experiment:preflight:
         k8s_scale_sts databases mariadb 0
         k8s_scale_sts databases clickhouse 0
         k8s_scale_sts redis redis-cluster 0
-    echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
+        echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
         echo "[Scale] PostgreSQL + MinIO + CockroachDB: unchanged (production)"
         sleep 5
       }
@@ -487,7 +487,7 @@ experiment:preflight:
       if [ -d /datasets/real-world ]; then
         echo "[NFS] Volume mounted at /datasets/real-world (K8s NFS volume)"
       else
-        echo "[NFS] WARNING: NFS volume not available — checkpoints local-only"
+        echo "[NFS] WARNING: NFS volume not available â€” checkpoints local-only"
         mkdir -p /datasets/real-world
       fi
       mkdir -p /datasets/real-world/checkpoints/${DB_SYSTEM}
@@ -521,10 +521,10 @@ experiment:preflight:
           k8s_scale_kafka kafka broker "${DB_REPLICAS}"
           wait_for_db "${DB_HOST}" "${DB_PORT}" 180
         else
-          echo "[Scale] DB_TYPE=${DB_TYPE} — no scaling (production DB)"
+          echo "[Scale] DB_TYPE=${DB_TYPE} â€” no scaling (production DB)"
         fi
       else
-        echo "[Scale] No SA token — skipping DB scaling (non-K8s environment)"
+        echo "[Scale] No SA token â€” skipping DB scaling (non-K8s environment)"
       fi
 
       chmod +x build/dedup-test
@@ -538,7 +538,7 @@ experiment:preflight:
 
         # Check NFS-persistent checkpoint (survives OOM/pod restarts)
         if [ -f "/datasets/real-world/checkpoints/${DB_SYSTEM}/${DB_SYSTEM}_run${RUN}.checkpoint" ]; then
-          echo "[Checkpoint] Run ${RUN} already completed — skipping"
+          echo "[Checkpoint] Run ${RUN} already completed â€” skipping"
           continue
         fi
 
@@ -838,7 +838,7 @@ experiment:cleanup:
   needs: []
   script:
     - echo "=== Post-Experiment Cleanup ==="
-    - echo "Manual cleanup — verify results before running"
+    - echo "Manual cleanup â€” verify results before running"
   rules:
     - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
       when: manual
