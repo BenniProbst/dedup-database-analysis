@@ -21,12 +21,17 @@
 # Exotic nodes (5-8) have no XOR constraint -- fully independent
 # Phase 1: K8s + BM = MANDATORY, Exotic = allow_failure
 
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+
 stages:
   - build
   - aggregate
   - upload
   - experiment-build
   - experiment-preflight
+  - experiment-reset
   - experiment-run
   - experiment-cleanup
 
@@ -43,6 +48,7 @@ variables:
 # --- Lane 1: K8s Build (Docker executor, MANDATORY) ---
 build-k8s:
   stage: build
+  interruptible: true
   timeout: 15 minutes
   image: gcc:${GCC_VERSION}
   tags:
@@ -81,6 +87,7 @@ build-k8s:
 # --- Lane 2: Debian x86_64 (pve1, pve2) -- MANDATORY ---
 build-debian-x86:
   stage: build
+  interruptible: true
   tags:
     - debian
     - x86_64
@@ -112,6 +119,7 @@ build-debian-x86:
 # --- Lane 3: Ubuntu x86_64 (node3, node4) -- MANDATORY ---
 build-ubuntu-x86:
   stage: build
+  interruptible: true
   tags:
     - ubuntu
     - x86_64
@@ -143,6 +151,7 @@ build-ubuntu-x86:
 # --- Lanes 4-7: Exotic Platforms (Shell executor, SOFT-FAIL Phase 1) ---
 .exotic-base:
   stage: build
+  interruptible: true
   allow_failure: true
   before_script:
     - 'echo "=== COMDARE CI v5.4.1 -- Exotic ($(uname -s) $(uname -m)) ==="'
@@ -354,6 +363,7 @@ experiment:preflight:
     - experiment
   image: gcc:14-bookworm
   stage: experiment-preflight
+  interruptible: true
   needs: ["experiment:build"]
   timeout: 10 minutes
   retry:
@@ -361,6 +371,24 @@ experiment:preflight:
     when: [runner_system_failure, script_failure, job_execution_timeout]
   script:
     - |
+      # Auto-cancel other running/pending pipelines for this project
+      echo "[Auto-Cancel] Checking for other active pipelines..."
+      API_URL="http://gitlab-webservice-default.gitlab.svc:8181/api/v4/projects/${CI_PROJECT_ID}/pipelines"
+      CANCELLED=0
+      for status in running pending; do
+        RESPONSE=$(curl -sf --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          "${API_URL}?status=${status}&per_page=100" 2>/dev/null || echo "[]")
+        echo "$RESPONSE" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' | while read PID; do
+          if [ "$PID" != "${CI_PIPELINE_ID}" ]; then
+            echo "[Auto-Cancel] Cancelling pipeline #${PID}"
+            curl -sf --request POST --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+              "${API_URL}/${PID}/cancel" 2>/dev/null || echo "[WARN] Could not cancel #${PID}"
+            CANCELLED=$((CANCELLED+1))
+          fi
+        done
+      done
+      echo "[Auto-Cancel] Done (${CANCELLED} pipelines cancelled)"
+
       echo "=== Pre-Flight: Checking production DBs + K8s API + NFS ==="
       echo "(Experiment DBs like MariaDB/ClickHouse/Redis may be scaled to 0 -- checked per-job)"
       PASS=0; FAIL=0
@@ -400,6 +428,67 @@ experiment:preflight:
       done
       echo "=== Result: ${PASS}/5 production checks passed, ${FAIL}/5 failed ==="
       [ "$FAIL" -eq 0 ] || exit 1
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - "src/cpp/**/*.cpp"
+        - "src/cpp/**/*.hpp"
+        - "src/cpp/**/*.h"
+        - "src/cpp/CMakeLists.txt"
+        - ".gitlab-ci.yml"
+
+# =============================================================================
+# Stage: Experiment Reset (parallel DB resets before experiment runs)
+# All 7 resets run in parallel via background processes in a single job.
+# Requires: kubectl access to DB namespaces (pods/exec RBAC).
+# =============================================================================
+experiment:reset:
+  stage: experiment-reset
+  tags:
+    - experiment
+  image: bitnami/kubectl:latest
+  interruptible: true
+  timeout: 10 minutes
+  needs: ["experiment:preflight"]
+  allow_failure: true
+  script:
+    - |
+      echo "=== Experiment Reset: All 7 databases (parallel) ==="
+      echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "Pipeline: ${CI_PIPELINE_ID} | Commit: ${CI_COMMIT_SHORT_SHA}"
+
+      # Verify kubectl connectivity
+      kubectl version --client 2>/dev/null || echo "[WARN] kubectl version check"
+      kubectl cluster-info 2>/dev/null | head -2 || echo "[WARN] cluster-info check"
+
+      chmod +x scripts/reset/*.sh 2>/dev/null || true
+
+      # Run all 7 resets in parallel (background processes)
+      PIDS=""
+      for db in mariadb clickhouse redis kafka minio postgresql cockroachdb; do
+        echo "[Reset] Starting ${db}..."
+        bash "scripts/reset/reset_${db}.sh" > "/tmp/reset_${db}.log" 2>&1 &
+        PIDS="$PIDS $!"
+      done
+
+      # Wait for all to complete
+      PASS=0; FAIL=0
+      for pid in $PIDS; do
+        if wait $pid; then
+          PASS=$((PASS+1))
+        else
+          FAIL=$((FAIL+1))
+        fi
+      done
+
+      # Print logs
+      for db in mariadb clickhouse redis kafka minio postgresql cockroachdb; do
+        echo "--- ${db} reset log ---"
+        cat "/tmp/reset_${db}.log" 2>/dev/null || echo "(no log)"
+      done
+
+      echo "=== Reset complete: ${PASS}/7 passed, ${FAIL}/7 failed ==="
   rules:
     - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
     - if: $CI_PIPELINE_SOURCE == "push"
@@ -633,7 +722,7 @@ experiment:cockroachdb:
 
 experiment:mariadb:
   <<: *experiment-per-db
-  needs: ["experiment:preflight", "experiment:build"]
+  needs: ["experiment:reset", "experiment:build"]
   variables:
     DB_SYSTEM: "mariadb"
     DB_TYPE: "statefulset"
