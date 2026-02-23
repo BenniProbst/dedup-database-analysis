@@ -588,7 +588,7 @@ experiment:preflight:
         if [ "${DB_TYPE}" = "statefulset" ]; then
           k8s_scale_sts "${DB_NAMESPACE}" "${DB_STATEFULSET}" 0
         elif [ "${DB_TYPE}" = "kafka" ]; then
-    echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
+          echo "[Scale] Kafka: unchanged (metrics trace needs Kafka always running)"
         fi
       fi
 
@@ -613,15 +613,7 @@ experiment:preflight:
             -X PATCH "${APISERVER}/apis/apps/v1/namespaces/${DB_NAMESPACE}/statefulsets/${DB_STATEFULSET}/scale" \
             -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
         elif [ "${DB_TYPE}" = "kafka" ]; then
-          echo "[Scale] Safety: kafka broker+controller -> 0"
-          curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
-            -H "Content-Type: application/merge-patch+json" \
-            -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/kafka/kafkanodepools/broker" \
-            -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
-          curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
-            -H "Content-Type: application/merge-patch+json" \
-            -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/kafka/kafkanodepools/controller" \
-            -d '{"spec":{"replicas":0}}' >/dev/null 2>&1 || true
+          echo "[Scale] Safety: Kafka unchanged (metrics trace needs Kafka always running)"
         fi
       fi
       # NFS volume auto-unmounted by K8s (no manual umount needed)
