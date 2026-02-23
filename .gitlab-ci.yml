@@ -451,7 +451,6 @@ experiment:reset:
   interruptible: true
   timeout: 10 minutes
   needs: ["experiment:preflight"]
-  allow_failure: true
   script:
     - |
       echo "=== Experiment Reset: All 7 databases (parallel) ==="
