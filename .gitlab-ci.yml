@@ -24,6 +24,10 @@
 workflow:
   auto_cancel:
     on_new_commit: interruptible
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
 
 stages:
   - build
