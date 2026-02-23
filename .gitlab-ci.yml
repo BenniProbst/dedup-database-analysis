@@ -311,7 +311,7 @@ upload-to-minio:
     - experiment
   before_script:
     - |
-      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+      # ForceIPv4 removed (DNS on experiment node returns only IPv6 for CDN)
       sed -i 's|http://deb.debian.org|http://cdn-fastly.deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
       apt-get update -qq 2>&1 | tail -3
       apt-get install -y -qq --no-install-recommends \
