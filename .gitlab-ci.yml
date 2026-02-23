@@ -420,6 +420,17 @@ experiment:preflight:
     when: [runner_system_failure, unknown_failure]
   script:
     - |
+      # === DEBUG: Capture all output to artifact file (workaround for broken trace storage) ===
+      mkdir -p results/${DB_SYSTEM:-unknown}
+      exec > >(tee results/${DB_SYSTEM:-unknown}/debug.log) 2>&1
+      echo "[DEBUG] Output capture started at $(date -u)"
+      echo "[DEBUG] Image: $(cat /etc/os-release 2>/dev/null | head -1 || echo unknown)"
+      echo "[DEBUG] pwd=$(pwd) whoami=$(whoami)"
+      echo "[DEBUG] build/dedup-test exists: $(ls -la build/dedup-test 2>&1)"
+      echo "[DEBUG] ldd build/dedup-test:"
+      ldd build/dedup-test 2>&1 || echo "[DEBUG] ldd failed"
+      echo "[DEBUG] === END INITIAL DEBUG ==="
+
       # Keepalive heartbeat (prevents stuck_or_timeout_failure)
       (while true; do sleep 60; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &
       KEEPALIVE_PID=$!
