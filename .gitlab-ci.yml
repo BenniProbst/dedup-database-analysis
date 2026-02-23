@@ -518,6 +518,10 @@ experiment:preflight:
       chmod +x build/dedup-test
       OVERALL_EXIT=0
 
+      # Kafka SASL/SCRAM-SHA-512 credentials for MetricsTrace (dedup-lab KafkaUser)
+      export KAFKA_USER="dedup-lab"
+      export KAFKA_PASSWORD="${DEDUP_KAFKA_PASSWORD}"
+
       for RUN in 1 2 3; do
         echo ""
         echo "===== ${DB_SYSTEM}: Run ${RUN}/3 ====="

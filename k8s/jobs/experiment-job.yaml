@@ -70,6 +70,16 @@ spec:
                 secretKeyRef:
                   name: dedup-credentials
                   key: MINIO_SECRET_KEY
+            - name: KAFKA_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: KAFKA_USER
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dedup-credentials
+                  key: KAFKA_PASSWORD
           volumeMounts:
             - name: config
               mountPath: /config

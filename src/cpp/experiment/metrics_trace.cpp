@@ -85,12 +85,25 @@ MetricsTrace::MetricsTrace(const MetricsTraceConfig& config, bool dry_run)
         rd_kafka_conf_set(conf, "batch.num.messages", "100",
             errstr, sizeof(errstr));
 
+        // SASL/SCRAM-SHA-512 authentication (dedup-lab KafkaUser)
+        if (!config_.sasl_username.empty()) {
+            rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT",
+                errstr, sizeof(errstr));
+            rd_kafka_conf_set(conf, "sasl.mechanism",
+                config_.sasl_mechanism.c_str(), errstr, sizeof(errstr));
+            rd_kafka_conf_set(conf, "sasl.username",
+                config_.sasl_username.c_str(), errstr, sizeof(errstr));
+            rd_kafka_conf_set(conf, "sasl.password",
+                config_.sasl_password.c_str(), errstr, sizeof(errstr));
+        }
+
         kafka_producer_ = rd_kafka_new(RD_KAFKA_PRODUCER, conf, errstr, sizeof(errstr));
         if (!kafka_producer_) {
             LOG_ERR("[metrics_trace] Kafka producer init failed: %s", errstr);
         } else {
-            LOG_INF("[metrics_trace] Kafka producer ready (%s)",
-                config_.kafka_bootstrap.c_str());
+            LOG_INF("[metrics_trace] Kafka producer ready (%s, user=%s)",
+                config_.kafka_bootstrap.c_str(),
+                config_.sasl_username.empty() ? "ANONYMOUS" : config_.sasl_username.c_str());
         }
     }
 #endif

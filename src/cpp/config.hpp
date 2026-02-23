@@ -262,11 +262,16 @@ struct GrafanaConfig {
 // Kafka metrics trace configuration (100ms sampling)
 // Kafka serves DUAL ROLE: DB under test AND metrics log
 struct MetricsTraceConfig {
-    std::string kafka_bootstrap = "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092";
+    std::string kafka_bootstrap = "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094";
     std::string metrics_topic = "dedup-lab-metrics";   // 100ms DB metric snapshots
     std::string events_topic = "dedup-lab-events";     // Experiment stage events/results
     int sample_interval_ms = 100;                      // 10 Hz sampling rate
     bool enabled = true;
+
+    // SASL/SCRAM-SHA-512 auth (dedup-lab KafkaUser via Strimzi)
+    std::string sasl_mechanism = "SCRAM-SHA-512";
+    std::string sasl_username;   // from env KAFKA_USER or config
+    std::string sasl_password;   // from env KAFKA_PASSWORD or config
 };
 
 // Git export configuration (commit+push results before cleanup)
@@ -515,7 +520,16 @@ inline ExperimentConfig ExperimentConfig::from_json(const std::string& path) {
         cfg.metrics_trace.events_topic = mt.value("events_topic", cfg.metrics_trace.events_topic);
         cfg.metrics_trace.sample_interval_ms = mt.value("sample_interval_ms", cfg.metrics_trace.sample_interval_ms);
         cfg.metrics_trace.enabled = mt.value("enabled", cfg.metrics_trace.enabled);
+        cfg.metrics_trace.sasl_mechanism = mt.value("sasl_mechanism", cfg.metrics_trace.sasl_mechanism);
+        cfg.metrics_trace.sasl_username = mt.value("sasl_username", cfg.metrics_trace.sasl_username);
+        cfg.metrics_trace.sasl_password = mt.value("sasl_password", cfg.metrics_trace.sasl_password);
     }
+
+    // Environment variable overrides for Kafka SASL (from dedup-credentials Secret)
+    if (const char* v = std::getenv("KAFKA_USER"))
+        cfg.metrics_trace.sasl_username = v;
+    if (const char* v = std::getenv("KAFKA_PASSWORD"))
+        cfg.metrics_trace.sasl_password = v;
 
     if (j.contains("git_export")) {
         auto& ge = j["git_export"];

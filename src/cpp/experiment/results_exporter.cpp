@@ -51,6 +51,18 @@ std::vector<std::string> ResultsExporter::consume_topic(const std::string& topic
     rd_kafka_conf_set(conf, "auto.offset.reset", "earliest", errstr, sizeof(errstr));
     rd_kafka_conf_set(conf, "enable.auto.commit", "false", errstr, sizeof(errstr));
 
+    // SASL/SCRAM-SHA-512 authentication (dedup-lab KafkaUser)
+    if (!trace_config_.sasl_username.empty()) {
+        rd_kafka_conf_set(conf, "security.protocol", "SASL_PLAINTEXT",
+            errstr, sizeof(errstr));
+        rd_kafka_conf_set(conf, "sasl.mechanism",
+            trace_config_.sasl_mechanism.c_str(), errstr, sizeof(errstr));
+        rd_kafka_conf_set(conf, "sasl.username",
+            trace_config_.sasl_username.c_str(), errstr, sizeof(errstr));
+        rd_kafka_conf_set(conf, "sasl.password",
+            trace_config_.sasl_password.c_str(), errstr, sizeof(errstr));
+    }
+
     rd_kafka_t* consumer = rd_kafka_new(RD_KAFKA_CONSUMER, conf, errstr, sizeof(errstr));
     if (!consumer) {
         LOG_ERR("[exporter] Kafka consumer create failed: %s", errstr);
