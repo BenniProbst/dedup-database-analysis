@@ -370,6 +370,8 @@ MeasureResult KafkaConnector::native_bulk_insert(
     auto ns = get_native_schema(type);
     std::string topic = topic_prefix_ + "-" + ns.table_name;
 
+    auto* rk = static_cast<rd_kafka_t*>(producer_);
+
     Timer timer;
     timer.start();
 
@@ -407,7 +409,7 @@ MeasureResult KafkaConnector::native_bulk_insert(
         json_val += "}";
 
         rd_kafka_resp_err_t err = rd_kafka_producev(
-            producer_, RD_KAFKA_V_TOPIC(topic.c_str()),
+            rk, RD_KAFKA_V_TOPIC(topic.c_str()),
             RD_KAFKA_V_VALUE(json_val.data(), json_val.size()),
             RD_KAFKA_V_END);
 
@@ -417,7 +419,7 @@ MeasureResult KafkaConnector::native_bulk_insert(
         result.bytes_logical += static_cast<int64_t>(json_val.size());
     }
 
-    rd_kafka_flush(producer_, 10000);  // Wait up to 10s for delivery
+    rd_kafka_flush(rk, 10000);  // Wait up to 10s for delivery
 
     timer.stop();
     result.duration_ns = timer.elapsed_ns();
@@ -440,6 +442,8 @@ MeasureResult KafkaConnector::native_perfile_insert(
 #ifdef HAS_RDKAFKA
     auto ns = get_native_schema(type);
     std::string topic = topic_prefix_ + "-" + ns.table_name;
+
+    auto* rk = static_cast<rd_kafka_t*>(producer_);
 
     Timer total_timer;
     total_timer.start();
@@ -487,7 +491,7 @@ MeasureResult KafkaConnector::native_perfile_insert(
         result.bytes_logical += static_cast<int64_t>(json_val.size());
     }
 
-    rd_kafka_flush(producer_, 10000);
+    rd_kafka_flush(rk, 10000);
     total_timer.stop();
     result.duration_ns = total_timer.elapsed_ns();
 #else
