@@ -589,13 +589,12 @@ int main(int argc, char* argv[]) {
     if (cfg.metrics_trace.enabled) {
         LOG_INF("=== EXPORT PHASE (before cleanup) ===");
         dedup::ResultsExporter exporter(cfg.git_export, cfg.metrics_trace, results_dir);
-        bool exported = 
         // Export per-stage ExperimentResults as CSV
         dedup::ResultsExporter::export_results_csv(all_results, results_dir);
         LOG_INF("=== CSV Export: %zu results to %s/experiment_results.csv ===",
                 all_results.size(), results_dir.c_str());
 
-        exporter.export_all();
+        bool exported = exporter.export_all();
         if (!exported) {
             LOG_ERR("Export failed! Results may not be persisted in GitLab.");
             LOG_WRN("Proceeding with cleanup anyway (lab schemas will be dropped).");
