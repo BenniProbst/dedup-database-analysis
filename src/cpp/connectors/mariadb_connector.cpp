@@ -50,7 +50,7 @@ bool MariaDBConnector::connect(const DbConnection& conn) {
     mysql_options(mysql, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
 
     if (!mysql_real_connect(mysql, conn.host.c_str(), conn.user.c_str(),
-                            conn.password.c_str(), conn.database.c_str(),
+                            conn.password.c_str(), nullptr,  // connect without DB; create_lab_schema() does CREATE DATABASE + USE
                             conn.port, nullptr, 0)) {
         LOG_ERR("[mariadb] Connection failed: %s", mysql_error(mysql));
         mysql_close(mysql);
