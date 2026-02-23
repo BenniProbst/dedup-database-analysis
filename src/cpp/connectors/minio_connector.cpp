@@ -513,4 +513,198 @@ int64_t MinioConnector::get_logical_size_bytes() {
     return total;
 }
 
+
+// ============================================================================
+// Native insertion mode (Stage 1) -- MinIO JSON/typed objects
+// ============================================================================
+
+bool MinioConnector::create_native_schema(const std::string& schema_name, PayloadType type) {
+    auto ns = get_native_schema(type);
+    std::string bucket = bucket_prefix_ + "-" + ns.table_name;
+    LOG_INF("[minio] Creating native bucket: %s", bucket.c_str());
+    return create_bucket(bucket);
+}
+
+bool MinioConnector::drop_native_schema(const std::string& schema_name, PayloadType type) {
+    auto ns = get_native_schema(type);
+    std::string bucket = bucket_prefix_ + "-" + ns.table_name;
+    return delete_bucket(bucket);
+}
+
+MeasureResult MinioConnector::native_bulk_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+    LOG_INF("[minio] Native bulk insert: %zu records (type: %s)",
+        records.size(), payload_type_str(type));
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+    auto ns = get_native_schema(type);
+    std::string bucket = bucket_prefix_ + "-" + ns.table_name;
+
+    Timer timer;
+    timer.start();
+
+    int64_t idx = 0;
+    for (const auto& rec : records) {
+        // Determine content type and object key
+        std::string content_type = "application/json";
+        std::string object_key = std::to_string(idx);
+        std::string body;
+
+        // Check if this is a binary type
+        auto payload_it = rec.columns.find("payload");
+        if (payload_it != rec.columns.end() &&
+            std::holds_alternative<std::vector<char>>(payload_it->second)) {
+            // Binary object
+            auto mime_it = rec.columns.find("mime");
+            if (mime_it != rec.columns.end() && std::holds_alternative<std::string>(mime_it->second))
+                content_type = std::get<std::string>(mime_it->second);
+            auto fn_it = rec.columns.find("filename");
+            if (fn_it != rec.columns.end() && std::holds_alternative<std::string>(fn_it->second))
+                object_key = std::get<std::string>(fn_it->second);
+            else
+                object_key = "obj_" + std::to_string(idx) + ".bin";
+
+            const auto& payload = std::get<std::vector<char>>(payload_it->second);
+            body.assign(payload.begin(), payload.end());
+        } else {
+            // JSON serialization
+            object_key = "record_" + std::to_string(idx) + ".json";
+            body = "{";
+            bool first = true;
+            for (const auto& [col_name, val] : rec.columns) {
+                if (!first) body += ",";
+                first = false;
+                body += "\"" + col_name + "\":";
+                std::visit([&](const auto& v) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, std::monostate>) body += "null";
+                    else if constexpr (std::is_same_v<T, bool>) body += v ? "true" : "false";
+                    else if constexpr (std::is_same_v<T, int64_t>) body += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, double>) body += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, std::string>) {
+                        body += "\"";
+                        for (char c : v) {
+                            if (c == '"') body += "\\\"";
+                            else if (c == '\\') body += "\\\\";
+                            else if (c == '\n') body += "\\n";
+                            else body += c;
+                        }
+                        body += "\"";
+                    }
+                    else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                        body += "\"(binary:" + std::to_string(v.size()) + "bytes)\"";
+                    }
+                }, val);
+            }
+            body += "}";
+        }
+
+        if (put_object(bucket, object_key, body, content_type)) {
+            result.rows_affected++;
+        }
+        result.bytes_logical += static_cast<int64_t>(body.size());
+        idx++;
+    }
+
+    timer.stop();
+    result.duration_ns = timer.elapsed_ns();
+    LOG_INF("[minio] Native bulk insert: %lld rows, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, timer.elapsed_ms());
+    return result;
+}
+
+MeasureResult MinioConnector::native_perfile_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+    auto ns = get_native_schema(type);
+    std::string bucket = bucket_prefix_ + "-" + ns.table_name;
+
+    Timer total_timer;
+    total_timer.start();
+
+    int64_t idx = 0;
+    for (const auto& rec : records) {
+        std::string content_type = "application/json";
+        std::string object_key = "record_" + std::to_string(idx) + ".json";
+        std::string body;
+
+        auto payload_it = rec.columns.find("payload");
+        if (payload_it != rec.columns.end() &&
+            std::holds_alternative<std::vector<char>>(payload_it->second)) {
+            auto mime_it = rec.columns.find("mime");
+            if (mime_it != rec.columns.end() && std::holds_alternative<std::string>(mime_it->second))
+                content_type = std::get<std::string>(mime_it->second);
+            auto fn_it = rec.columns.find("filename");
+            if (fn_it != rec.columns.end() && std::holds_alternative<std::string>(fn_it->second))
+                object_key = std::get<std::string>(fn_it->second);
+            else
+                object_key = "obj_" + std::to_string(idx) + ".bin";
+            const auto& payload = std::get<std::vector<char>>(payload_it->second);
+            body.assign(payload.begin(), payload.end());
+        } else {
+            body = "{";
+            bool first = true;
+            for (const auto& [col_name, val] : rec.columns) {
+                if (!first) body += ",";
+                first = false;
+                body += "\"" + col_name + "\":";
+                std::visit([&](const auto& v) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, std::monostate>) body += "null";
+                    else if constexpr (std::is_same_v<T, bool>) body += v ? "true" : "false";
+                    else if constexpr (std::is_same_v<T, int64_t>) body += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, double>) body += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, std::string>) {
+                        body += "\"";
+                        for (char c : v) {
+                            if (c == '"') body += "\\\"";
+                            else if (c == '\\') body += "\\\\";
+                            else if (c == '\n') body += "\\n";
+                            else body += c;
+                        }
+                        body += "\"";
+                    }
+                    else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                        body += "\"(binary)\"";
+                    }
+                }, val);
+            }
+            body += "}";
+        }
+
+        int64_t put_ns = 0;
+        {
+            ScopedTimer st(put_ns);
+            if (put_object(bucket, object_key, body, content_type))
+                result.rows_affected++;
+        }
+        result.per_file_latencies_ns.push_back(put_ns);
+        result.bytes_logical += static_cast<int64_t>(body.size());
+        idx++;
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    return result;
+}
+
+MeasureResult MinioConnector::native_perfile_delete(PayloadType type) {
+    // Same as BLOB delete -- list and delete all objects in bucket
+    return perfile_delete();
+}
+
+int64_t MinioConnector::get_native_logical_size_bytes(PayloadType type) {
+    return get_logical_size_bytes();
+}
+
 } // namespace dedup

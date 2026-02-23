@@ -340,4 +340,169 @@ int64_t KafkaConnector::get_logical_size_bytes() {
 #endif
 }
 
+
+// ============================================================================
+// Native insertion mode (Stage 1) -- Kafka structured JSON messages
+// ============================================================================
+
+bool KafkaConnector::create_native_schema(const std::string& schema_name, PayloadType type) {
+    // Kafka topics are auto-created on produce
+    LOG_INF("[kafka] Native schema for %s: topic auto-creation", payload_type_str(type));
+    return true;
+}
+
+bool KafkaConnector::drop_native_schema(const std::string& schema_name, PayloadType type) {
+    return drop_lab_schema(schema_name);
+}
+
+MeasureResult KafkaConnector::native_bulk_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+    LOG_INF("[kafka] Native bulk insert: %zu records (type: %s)",
+        records.size(), payload_type_str(type));
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+#ifdef HAS_RDKAFKA
+    auto ns = get_native_schema(type);
+    std::string topic = topic_prefix_ + "-" + ns.table_name;
+
+    Timer timer;
+    timer.start();
+
+    for (const auto& rec : records) {
+        // Serialize record as JSON
+        std::string json_val = "{";
+        bool first = true;
+        for (const auto& [col_name, val] : rec.columns) {
+            if (!first) json_val += ",";
+            first = false;
+            json_val += "\"" + col_name + "\":";
+
+            std::visit([&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::monostate>) json_val += "null";
+                else if constexpr (std::is_same_v<T, bool>) json_val += v ? "true" : "false";
+                else if constexpr (std::is_same_v<T, int64_t>) json_val += std::to_string(v);
+                else if constexpr (std::is_same_v<T, double>) json_val += std::to_string(v);
+                else if constexpr (std::is_same_v<T, std::string>) {
+                    json_val += "\"";
+                    for (char c : v) {
+                        if (c == '"') json_val += "\\\"";
+                        else if (c == '\\') json_val += "\\\\";
+                        else if (c == '\n') json_val += "\\n";
+                        else if (c == '\t') json_val += "\\t";
+                        else json_val += c;
+                    }
+                    json_val += "\"";
+                }
+                else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                    json_val += "\"(binary:" + std::to_string(v.size()) + "bytes)\"";
+                }
+            }, val);
+        }
+        json_val += "}";
+
+        rd_kafka_resp_err_t err = rd_kafka_producev(
+            producer_, RD_KAFKA_V_TOPIC(topic.c_str()),
+            RD_KAFKA_V_VALUE(json_val.data(), json_val.size()),
+            RD_KAFKA_V_END);
+
+        if (err == RD_KAFKA_RESP_ERR_NO_ERROR) {
+            result.rows_affected++;
+        }
+        result.bytes_logical += static_cast<int64_t>(json_val.size());
+    }
+
+    rd_kafka_flush(producer_, 10000);  // Wait up to 10s for delivery
+
+    timer.stop();
+    result.duration_ns = timer.elapsed_ns();
+    LOG_INF("[kafka] Native bulk insert: %lld rows, %lld ms",
+        result.rows_affected, timer.elapsed_ms());
+#else
+    result.error = "Kafka not compiled (HAS_RDKAFKA not defined)";
+#endif
+    return result;
+}
+
+MeasureResult KafkaConnector::native_perfile_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+#ifdef HAS_RDKAFKA
+    auto ns = get_native_schema(type);
+    std::string topic = topic_prefix_ + "-" + ns.table_name;
+
+    Timer total_timer;
+    total_timer.start();
+
+    for (const auto& rec : records) {
+        std::string json_val = "{";
+        bool first = true;
+        for (const auto& [col_name, val] : rec.columns) {
+            if (!first) json_val += ",";
+            first = false;
+            json_val += "\"" + col_name + "\":";
+            std::visit([&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::monostate>) json_val += "null";
+                else if constexpr (std::is_same_v<T, bool>) json_val += v ? "true" : "false";
+                else if constexpr (std::is_same_v<T, int64_t>) json_val += std::to_string(v);
+                else if constexpr (std::is_same_v<T, double>) json_val += std::to_string(v);
+                else if constexpr (std::is_same_v<T, std::string>) {
+                    json_val += "\"";
+                    for (char c : v) {
+                        if (c == '"') json_val += "\\\"";
+                        else if (c == '\\') json_val += "\\\\";
+                        else if (c == '\n') json_val += "\\n";
+                        else json_val += c;
+                    }
+                    json_val += "\"";
+                }
+                else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                    json_val += "\"(binary)\"";
+                }
+            }, val);
+        }
+        json_val += "}";
+
+        int64_t produce_ns = 0;
+        {
+            ScopedTimer st(produce_ns);
+            rd_kafka_producev(
+                producer_, RD_KAFKA_V_TOPIC(topic.c_str()),
+                RD_KAFKA_V_VALUE(json_val.data(), json_val.size()),
+                RD_KAFKA_V_END);
+            result.rows_affected++;
+        }
+        result.per_file_latencies_ns.push_back(produce_ns);
+        result.bytes_logical += static_cast<int64_t>(json_val.size());
+    }
+
+    rd_kafka_flush(producer_, 10000);
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+#else
+    result.error = "Kafka not compiled";
+#endif
+    return result;
+}
+
+MeasureResult KafkaConnector::native_perfile_delete(PayloadType type) {
+    // Kafka has no per-record delete -- same as BLOB (topic deletion)
+    return perfile_delete();
+}
+
+int64_t KafkaConnector::get_native_logical_size_bytes(PayloadType type) {
+    return get_logical_size_bytes();
+}
+
 } // namespace dedup

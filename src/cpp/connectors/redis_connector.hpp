@@ -27,6 +27,15 @@ public:
     [[nodiscard]] DbSystem system() const override { return DbSystem::REDIS; }
     [[nodiscard]] const char* system_name() const override { return "redis"; }
 
+
+    // Native insertion mode (Stage 1)
+    bool create_native_schema(const std::string& schema_name, PayloadType type) override;
+    bool drop_native_schema(const std::string& schema_name, PayloadType type) override;
+    MeasureResult native_bulk_insert(const std::vector<NativeRecord>& records, PayloadType type) override;
+    MeasureResult native_perfile_insert(const std::vector<NativeRecord>& records, PayloadType type) override;
+    MeasureResult native_perfile_delete(PayloadType type) override;
+    int64_t get_native_logical_size_bytes(PayloadType type) override;
+
 private:
     static constexpr const char* KEY_PREFIX = "dedup:";
     int64_t delete_all_lab_keys();  // SCAN + DEL for dedup:* keys

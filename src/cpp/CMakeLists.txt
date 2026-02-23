@@ -63,6 +63,7 @@ set(DEDUP_SOURCES
     experiment/db_internal_metrics.cpp
     experiment/metrics_trace.cpp
     experiment/results_exporter.cpp
+    experiment/native_data_parser.cpp
 )
 
 # =============================================================================

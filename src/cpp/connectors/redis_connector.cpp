@@ -361,4 +361,160 @@ int64_t RedisConnector::get_logical_size_bytes() {
 #endif
 }
 
+
+// ============================================================================
+// Native insertion mode (Stage 1) -- Redis HSET for structured data
+// ============================================================================
+
+bool RedisConnector::create_native_schema(const std::string& schema_name, PayloadType type) {
+    // Redis is schemaless -- nothing to create
+    LOG_INF("[redis] Native schema for %s: no-op (schemaless)", payload_type_str(type));
+    return true;
+}
+
+bool RedisConnector::drop_native_schema(const std::string& schema_name, PayloadType type) {
+    // Delete all keys with the native prefix
+    return drop_lab_schema(schema_name);
+}
+
+MeasureResult RedisConnector::native_bulk_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+    LOG_INF("[redis] Native bulk insert: %zu records (type: %s)",
+        records.size(), payload_type_str(type));
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+#ifdef HAS_HIREDIS
+    auto ns = get_native_schema(type);
+    std::string prefix = "dedup:" + ns.table_name + ":";
+
+    Timer timer;
+    timer.start();
+
+    int64_t idx = 0;
+    for (const auto& rec : records) {
+        // Build HSET command: HSET prefix:idx field1 val1 field2 val2 ...
+        std::vector<std::string> args = {"HSET", prefix + std::to_string(idx)};
+
+        for (const auto& [col_name, val] : rec.columns) {
+            args.push_back(col_name);
+            std::visit([&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::monostate>) args.push_back("");
+                else if constexpr (std::is_same_v<T, bool>) args.push_back(v ? "1" : "0");
+                else if constexpr (std::is_same_v<T, int64_t>) args.push_back(std::to_string(v));
+                else if constexpr (std::is_same_v<T, double>) args.push_back(std::to_string(v));
+                else if constexpr (std::is_same_v<T, std::string>) args.push_back(v);
+                else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                    args.push_back(std::string(v.begin(), v.end()));
+                }
+            }, val);
+        }
+
+        // Execute HSET via hiredis
+        std::vector<const char*> argv;
+        std::vector<size_t> argvlen;
+        for (const auto& a : args) {
+            argv.push_back(a.c_str());
+            argvlen.push_back(a.size());
+        }
+
+        redisReply* reply = static_cast<redisReply*>(
+            redisCommandArgv(static_cast<redisContext*>(ctx_),
+                static_cast<int>(argv.size()), argv.data(), argvlen.data()));
+        if (reply) {
+            result.rows_affected++;
+            freeReplyObject(reply);
+        }
+        result.bytes_logical += static_cast<int64_t>(rec.estimated_size_bytes());
+        idx++;
+    }
+
+    timer.stop();
+    result.duration_ns = timer.elapsed_ns();
+    LOG_INF("[redis] Native bulk insert: %lld rows, %lld ms",
+        result.rows_affected, timer.elapsed_ms());
+#else
+    result.error = "Redis not compiled (HAS_HIREDIS not defined)";
+#endif
+    return result;
+}
+
+MeasureResult RedisConnector::native_perfile_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+#ifdef HAS_HIREDIS
+    auto ns = get_native_schema(type);
+    std::string prefix = "dedup:" + ns.table_name + ":";
+
+    Timer total_timer;
+    total_timer.start();
+
+    int64_t idx = 0;
+    for (const auto& rec : records) {
+        std::vector<std::string> args = {"HSET", prefix + std::to_string(idx)};
+        for (const auto& [col_name, val] : rec.columns) {
+            args.push_back(col_name);
+            std::visit([&](const auto& v) {
+                using T = std::decay_t<decltype(v)>;
+                if constexpr (std::is_same_v<T, std::monostate>) args.push_back("");
+                else if constexpr (std::is_same_v<T, bool>) args.push_back(v ? "1" : "0");
+                else if constexpr (std::is_same_v<T, int64_t>) args.push_back(std::to_string(v));
+                else if constexpr (std::is_same_v<T, double>) args.push_back(std::to_string(v));
+                else if constexpr (std::is_same_v<T, std::string>) args.push_back(v);
+                else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                    args.push_back(std::string(v.begin(), v.end()));
+                }
+            }, val);
+        }
+
+        std::vector<const char*> argv;
+        std::vector<size_t> argvlen;
+        for (const auto& a : args) {
+            argv.push_back(a.c_str());
+            argvlen.push_back(a.size());
+        }
+
+        int64_t insert_ns = 0;
+        {
+            ScopedTimer st(insert_ns);
+            redisReply* reply = static_cast<redisReply*>(
+                redisCommandArgv(static_cast<redisContext*>(ctx_),
+                    static_cast<int>(argv.size()), argv.data(), argvlen.data()));
+            if (reply) {
+                result.rows_affected++;
+                freeReplyObject(reply);
+            }
+        }
+        result.per_file_latencies_ns.push_back(insert_ns);
+        result.bytes_logical += static_cast<int64_t>(rec.estimated_size_bytes());
+        idx++;
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+#else
+    result.error = "Redis not compiled";
+#endif
+    return result;
+}
+
+MeasureResult RedisConnector::native_perfile_delete(PayloadType type) {
+    // Same as BLOB delete -- scan and delete all dedup: keys
+    return perfile_delete();
+}
+
+int64_t RedisConnector::get_native_logical_size_bytes(PayloadType type) {
+    return get_logical_size_bytes();
+}
+
 } // namespace dedup

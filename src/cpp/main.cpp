@@ -46,6 +46,8 @@
 #include "experiment/results_exporter.hpp"
 #include "experiment/dataset_generator.hpp"
 #include "experiment/checkpoint.hpp"
+#include "experiment/native_record.hpp"
+#include "experiment/native_data_parser.hpp"
 
 namespace fs = std::filesystem;
 
@@ -77,7 +79,7 @@ static void print_usage(const char* prog) {
         "  --checkpoint-dir D  Directory for checkpoint files (enables resume)\n"
         "  --run-id N          Run identifier (1,2,3) for checkpoint tracking\n"
         "  --max-retries N     Max retries per system on connection loss (default: 3)\n"
-        "  --verbose           Enable debug logging\n"
+        "  --insertion-mode M  Insertion mode: blob, native, or both (default: blob)\n  --verbose           Enable debug logging\n"
         "  --help              Show this help\n"
         "\n"
         "SAFETY: This program operates on SEPARATE lab schemas.\n"
@@ -117,6 +119,7 @@ int main(int argc, char* argv[]) {
     std::string real_world_dir;
     int run_id = 0;
     int max_retries = 3;
+    std::string insertion_mode_str = "blob";
 
 #ifdef DEDUP_DRY_RUN
     dry_run = true;
@@ -158,6 +161,8 @@ int main(int argc, char* argv[]) {
             max_retries = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--real-world-dir") == 0 && i + 1 < argc) {
             real_world_dir = argv[++i];
+        } else if (std::strcmp(argv[i], "--insertion-mode") == 0 && i + 1 < argc) {
+            insertion_mode_str = argv[++i];
         } else if (std::strcmp(argv[i], "--dry-run") == 0) {
             dry_run = true;
         } else if (std::strcmp(argv[i], "--verbose") == 0) {
@@ -190,6 +195,10 @@ int main(int argc, char* argv[]) {
     cfg.results_dir = results_dir;
     cfg.lab_schema = lab_schema;
     cfg.dry_run = dry_run;
+
+    // Parse insertion mode (native adapter extension)
+    dedup::InsertionMode insertion_mode = dedup::parse_insertion_mode(insertion_mode_str);
+    LOG_INF("Insertion mode: %s", dedup::insertion_mode_str(insertion_mode));
 
     // Apply payload types filter BEFORE dataset generation (doku.tex §6.3)
     // MUST be before generate_data block — otherwise filter is never applied
@@ -378,6 +387,10 @@ int main(int argc, char* argv[]) {
     std::vector<dedup::ExperimentResult> all_results;
     int systems_failed = 0;
 
+    // === BLOB INSERTION MODE (existing) ===
+    if (insertion_mode == dedup::InsertionMode::BLOB ||
+        insertion_mode == dedup::InsertionMode::BOTH) {
+
     LOG_INF("=== EXPERIMENT MATRIX: %zu systems x %zu payload types x %zu grades x %zu stages ===",
         entries.size(), cfg.payload_types.size(), grades.size(), cfg.stages.size());
 
@@ -475,6 +488,73 @@ int main(int argc, char* argv[]) {
                 checkpoint->invalidate_system(sys_name);
             }
             systems_failed++;
+        }
+    }
+
+    } // end BLOB insertion mode
+
+
+    // === NATIVE INSERTION MODE ===
+    // Run structured insertion experiments with parsed NativeRecords
+    if (insertion_mode == dedup::InsertionMode::NATIVE ||
+        insertion_mode == dedup::InsertionMode::BOTH) {
+
+        LOG_INF("=== NATIVE INSERTION MODE ===");
+        LOG_INF("=== EXPERIMENT MATRIX: %zu systems x %zu payload types x %zu grades x 4 stages (NATIVE) ===",
+            entries.size(), cfg.payload_types.size(), grades.size());
+
+        for (auto& entry : entries) {
+            std::string sys_name = dedup::db_system_str(entry.db_conn.system);
+            bool system_ok = false;
+
+            for (int attempt = 0; attempt <= max_retries; ++attempt) {
+                if (attempt > 0) {
+                    int backoff_s = 5 * (1 << (attempt - 1));
+                    if (backoff_s > 60) backoff_s = 60;
+                    LOG_WRN("[Native Recovery] %s retry %d/%d in %d s...",
+                        sys_name.c_str(), attempt, max_retries, backoff_s);
+                    std::this_thread::sleep_for(std::chrono::seconds(backoff_s));
+                    if (!entry.connector->ensure_connected(entry.db_conn)) continue;
+                }
+
+                std::vector<dedup::ExperimentResult> system_results;
+                bool had_conn_error = false;
+
+                for (auto pt : cfg.payload_types) {
+                    std::string pt_data_dir = data_dir + "/" + dedup::payload_type_str(pt);
+                    LOG_INF("=== NATIVE %s / %s ===", sys_name.c_str(), dedup::payload_type_str(pt));
+
+                    if (cfg.metrics_trace.enabled) {
+                        trace.publish_event({dedup::now_ms(), "native_system_start", sys_name,
+                            dedup::payload_type_str(pt), "", "", ""});
+                    }
+
+                    auto results = loader.run_native_experiment(
+                        *entry.connector, entry.db_conn, pt_data_dir, lab_schema, grades, pt);
+
+                    for (const auto& r : results) {
+                        if (!r.error.empty() && r.error.find("CONNECTION_LOST") != std::string::npos) {
+                            had_conn_error = true;
+                            break;
+                        }
+                    }
+
+                    if (had_conn_error) break;
+                    system_results.insert(system_results.end(), results.begin(), results.end());
+                }
+
+                if (!had_conn_error) {
+                    all_results.insert(all_results.end(),
+                        system_results.begin(), system_results.end());
+                    system_ok = true;
+                    break;
+                }
+            }
+
+            if (!system_ok) {
+                LOG_ERR("[Native] %s FAILED after %d retries", sys_name.c_str(), max_retries + 1);
+                systems_failed++;
+            }
         }
     }
 

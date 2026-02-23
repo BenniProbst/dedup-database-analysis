@@ -31,7 +31,8 @@ nlohmann::json ExperimentResult::to_json() const {
         {"replica_count", replica_count},
         {"volume_name", volume_name},
         {"timestamp", timestamp},
-        {"error", error}
+        {"error", error},
+        {"insertion_mode", insertion_mode}
     };
 
     // DB-internal instrumentation (doku.tex §6.5)
@@ -332,6 +333,237 @@ std::vector<ExperimentResult> DataLoader::run_full_experiment(
     if (out.is_open()) {
         out << j_results.dump(2);
         LOG_INF("Results saved to %s", outpath.c_str());
+    }
+
+    return results;
+}
+
+
+// ============================================================================
+// Native insertion mode (Stage 1, doku.tex 5.4)
+// ============================================================================
+
+ExperimentResult DataLoader::run_native_stage(
+    DbConnector& connector,
+    const DbConnection& db_conn,
+    Stage stage,
+    DupGrade grade,
+    const std::vector<NativeRecord>& records,
+    const std::string& lab_schema,
+    PayloadType payload_type) {
+
+    ExperimentResult result;
+    result.system = connector.system_name();
+    result.payload_type = payload_type_str(payload_type);
+    result.dup_grade = dup_grade_str(grade);
+    result.stage = stage_str(stage);
+    result.replica_count = replica_count_;
+    result.timestamp = current_timestamp();
+    result.insertion_mode = "native";
+
+    LOG_INF("=== NATIVE %s / %s / %s / %s (%zu records) ===",
+        result.system.c_str(), result.payload_type.c_str(),
+        result.dup_grade.c_str(), result.stage.c_str(), records.size());
+
+    // Connection health check
+    if (!connector.ensure_connected(db_conn)) {
+        result.error = "CONNECTION_LOST: " + std::string(connector.system_name()) +
+                       " unreachable after reconnection attempts";
+        return result;
+    }
+
+    // Resolve Longhorn volume
+    std::string volume_name;
+    if (!db_conn.pvc_name.empty()) {
+        volume_name = metrics_.get_volume_for_pvc(db_conn.pvc_name, db_conn.k8s_namespace);
+    }
+    result.volume_name = volume_name;
+
+    // DB-internal snapshot BEFORE
+    if (db_internal_metrics_) {
+        result.db_internal_before = db_internal::snapshot(db_conn);
+    }
+
+    // BEFORE measurements
+    result.logical_size_before = connector.get_native_logical_size_bytes(payload_type);
+    if (!volume_name.empty()) {
+        result.phys_size_before = metrics_.get_longhorn_actual_size(volume_name);
+    } else if (connector.system() == DbSystem::MINIO) {
+        std::string minio_url = "http://" + db_conn.host + ":" + std::to_string(db_conn.port);
+        result.phys_size_before = metrics_.get_minio_physical_size(minio_url, db_conn.lab_schema);
+    } else {
+        result.phys_size_before = result.logical_size_before;
+    }
+
+    // Execute native stage
+    MeasureResult mr{};
+    switch (stage) {
+        case Stage::BULK_INSERT:
+            mr = connector.native_bulk_insert(records, payload_type);
+            break;
+        case Stage::PERFILE_INSERT:
+            mr = connector.native_perfile_insert(records, payload_type);
+            break;
+        case Stage::PERFILE_DELETE:
+            mr = connector.native_perfile_delete(payload_type);
+            break;
+        case Stage::MAINTENANCE:
+            mr = connector.run_maintenance();
+            break;
+    }
+
+    result.duration_ns = mr.duration_ns;
+    result.rows_affected = mr.rows_affected;
+    result.bytes_logical = mr.bytes_logical;
+    result.error = mr.error;
+
+    // Latency statistics
+    if (!mr.per_file_latencies_ns.empty()) {
+        auto& lats = mr.per_file_latencies_ns;
+        std::sort(lats.begin(), lats.end());
+        result.latency_count = static_cast<int64_t>(lats.size());
+        result.latency_min_ns = lats.front();
+        result.latency_max_ns = lats.back();
+        result.latency_mean_ns = static_cast<double>(
+            std::accumulate(lats.begin(), lats.end(), int64_t{0})) / static_cast<double>(lats.size());
+        auto pctl = [&](double p) -> int64_t {
+            size_t idx = static_cast<size_t>(p * static_cast<double>(lats.size() - 1));
+            return lats[idx];
+        };
+        result.latency_p50_ns = pctl(0.50);
+        result.latency_p95_ns = pctl(0.95);
+        result.latency_p99_ns = pctl(0.99);
+    }
+
+    // Throughput
+    if (result.duration_ns > 0 && result.bytes_logical > 0) {
+        double seconds = static_cast<double>(result.duration_ns) / 1e9;
+        result.throughput_bytes_per_sec = static_cast<double>(result.bytes_logical) / seconds;
+    }
+
+    // Wait for Longhorn settle
+#ifndef DEDUP_DRY_RUN
+    LOG_INF("Waiting 15s for Longhorn metrics to settle...");
+    std::this_thread::sleep_for(std::chrono::seconds(15));
+#endif
+
+    // AFTER measurements
+    result.logical_size_after = connector.get_native_logical_size_bytes(payload_type);
+    if (!volume_name.empty()) {
+        result.phys_size_after = metrics_.get_longhorn_actual_size(volume_name);
+    } else if (connector.system() == DbSystem::MINIO) {
+        std::string minio_url = "http://" + db_conn.host + ":" + std::to_string(db_conn.port);
+        result.phys_size_after = metrics_.get_minio_physical_size(minio_url, db_conn.lab_schema);
+    } else {
+        result.phys_size_after = result.logical_size_after;
+    }
+
+    result.phys_delta = result.phys_size_after - result.phys_size_before;
+
+    // DB-internal snapshot AFTER
+    if (db_internal_metrics_) {
+        result.db_internal_after = db_internal::snapshot(db_conn);
+    }
+
+    // Calculate EDR
+    if (result.bytes_logical > 0 && result.phys_delta > 0) {
+        result.edr = MetricsCollector::calculate_edr(
+            result.bytes_logical, result.phys_delta, replica_count_);
+    }
+
+    // Push Grafana metrics
+    metrics_.push_metric("dedup_native_duration_ms",
+        static_cast<double>(result.duration_ns) / 1e6,
+        result.system, result.payload_type, result.dup_grade, result.stage);
+    metrics_.push_metric("dedup_native_edr", result.edr,
+        result.system, result.payload_type, result.dup_grade, result.stage);
+
+    LOG_INF("Native result: %lld rows, %lld bytes, phys_delta=%lld, %lld ms, EDR=%.3f",
+        result.rows_affected, result.bytes_logical, result.phys_delta,
+        result.duration_ns / 1000000, result.edr);
+
+    return result;
+}
+
+std::vector<ExperimentResult> DataLoader::run_native_experiment(
+    DbConnector& connector,
+    const DbConnection& db_conn,
+    const std::string& data_dir,
+    const std::string& lab_schema,
+    const std::vector<DupGrade>& grades,
+    PayloadType payload_type) {
+
+    std::vector<ExperimentResult> results;
+
+    LOG_INF("=== NATIVE EXPERIMENT: %s / %s ===",
+        connector.system_name(), payload_type_str(payload_type));
+
+    bool aborted = false;
+
+    for (auto grade : grades) {
+        if (aborted) break;
+
+        LOG_INF("--- NATIVE %s / Grade: %s ---",
+            payload_type_str(payload_type), dup_grade_str(grade));
+
+        // Parse data files into NativeRecords
+        std::string grade_dir = data_dir + "/" + dup_grade_str(grade);
+        auto records = NativeDataParser::parse_directory(grade_dir, payload_type);
+        LOG_INF("Parsed %zu native records from %s", records.size(), grade_dir.c_str());
+
+        if (records.empty()) {
+            LOG_WRN("No records parsed for %s/%s -- skipping grade",
+                payload_type_str(payload_type), dup_grade_str(grade));
+            continue;
+        }
+
+        // Create native schema for this payload type
+        connector.reset_native_schema(lab_schema, payload_type);
+
+        auto run_checked = [&](Stage stage) {
+            if (aborted) return;
+            auto r = run_native_stage(connector, db_conn, stage, grade,
+                records, lab_schema, payload_type);
+            results.push_back(r);
+            if (!r.error.empty() && r.error.find("CONNECTION_LOST") != std::string::npos) {
+                aborted = true;
+            }
+        };
+
+        // Stage 1: Native Bulk Insert
+        run_checked(Stage::BULK_INSERT);
+
+        // Reset for Stage 2
+        if (!aborted) connector.reset_native_schema(lab_schema, payload_type);
+
+        // Stage 2: Native Per-File Insert
+        run_checked(Stage::PERFILE_INSERT);
+
+        // Stage 3a: Native Per-File Delete
+        run_checked(Stage::PERFILE_DELETE);
+
+        // Stage 3b: Maintenance
+        run_checked(Stage::MAINTENANCE);
+
+        // Reset after grade
+        if (!aborted) {
+            connector.drop_native_schema(lab_schema, payload_type);
+            connector.create_native_schema(lab_schema, payload_type);
+        }
+    }
+
+    // Save results
+    nlohmann::json j_results = nlohmann::json::array();
+    for (const auto& r : results) {
+        j_results.push_back(r.to_json());
+    }
+
+    std::string outpath = "results/native_" + std::string(connector.system_name()) +
+        "_" + payload_type_str(payload_type) + "_results.json";
+    std::ofstream out(outpath);
+    if (out.is_open()) {
+        out << j_results.dump(2);
+        LOG_INF("Native results saved to %s", outpath.c_str());
     }
 
     return results;

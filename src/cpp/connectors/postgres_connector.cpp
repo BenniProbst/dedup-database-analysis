@@ -3,6 +3,7 @@
 #include "../utils/logger.hpp"
 #include "../utils/sha256.hpp"
 #include <cstring>
+#include "../experiment/native_record.hpp"
 #include <filesystem>
 #include <fstream>
 
@@ -409,6 +410,336 @@ int64_t PostgresConnector::get_logical_size_bytes() {
     int64_t size = 0;
     if (PQntuples(res) > 0) {
         size = std::strtoll(PQgetvalue(res, 0, 0), nullptr, 10);
+    }
+    PQclear(res);
+    return size;
+}
+
+// ============================================================================
+// Native insertion mode methods (Stage 1, doku.tex 5.4)
+// Appended to postgres_connector.cpp
+// ============================================================================
+
+std::string PostgresConnector::pg_type_for(const ColumnDef& col) const {
+    // Map generic type hints to PostgreSQL-specific types
+    const std::string& t = col.type_hint;
+
+    if (t == "SERIAL") return "SERIAL";
+    if (t == "BIGINT") return "BIGINT";
+    if (t == "INT") return "INTEGER";
+    if (t == "DOUBLE") return "DOUBLE PRECISION";
+    if (t == "TEXT") return "TEXT";
+    if (t == "BOOLEAN") return "BOOLEAN";
+    if (t == "BYTEA") return "BYTEA";
+    if (t == "UUID") return "UUID";
+    if (t == "TIMESTAMPTZ") return "TIMESTAMPTZ";
+    if (t == "JSONB") {
+        // CockroachDB also supports JSONB
+        return "JSONB";
+    }
+    if (t.substr(0, 4) == "CHAR") return t;  // CHAR(3) etc.
+
+    return "TEXT";  // Fallback
+}
+
+std::string PostgresConnector::build_create_table_sql(const NativeSchema& ns) const {
+    std::string sql = "CREATE TABLE IF NOT EXISTS " + schema_ + "." + ns.table_name + " (\n";
+
+    for (size_t i = 0; i < ns.columns.size(); ++i) {
+        const auto& col = ns.columns[i];
+        if (i > 0) sql += ",\n";
+        sql += "  " + col.name + " " + pg_type_for(col);
+
+        if (col.is_primary_key && col.type_hint == "SERIAL") {
+            sql += " PRIMARY KEY";
+        } else if (col.is_primary_key && col.type_hint == "UUID") {
+            sql += " PRIMARY KEY";
+            if (!col.default_expr.empty())
+                sql += " DEFAULT " + col.default_expr;
+        } else if (col.is_primary_key) {
+            sql += " PRIMARY KEY";
+        }
+
+        if (col.is_not_null && !col.is_primary_key)
+            sql += " NOT NULL";
+
+        if (!col.default_expr.empty() && !col.is_primary_key)
+            sql += " DEFAULT " + col.default_expr;
+    }
+
+    sql += "\n)";
+    return sql;
+}
+
+std::string PostgresConnector::build_insert_sql(const NativeSchema& ns) const {
+    // Build INSERT with $N placeholders, skipping SERIAL columns
+    std::string cols;
+    std::string params;
+    int param_idx = 0;
+
+    for (const auto& col : ns.columns) {
+        if (col.type_hint == "SERIAL") continue;  // Auto-generated
+
+        if (param_idx > 0) { cols += ", "; params += ", "; }
+        cols += col.name;
+        params += "$" + std::to_string(++param_idx);
+    }
+
+    return "INSERT INTO " + schema_ + "." + ns.table_name +
+           " (" + cols + ") VALUES (" + params + ")";
+}
+
+bool PostgresConnector::bind_and_exec_native(const std::string& sql,
+                                               const NativeSchema& ns,
+                                               const NativeRecord& record) {
+    if (!conn_) return false;
+
+    // Collect non-SERIAL columns
+    std::vector<const ColumnDef*> insert_cols;
+    for (const auto& col : ns.columns) {
+        if (col.type_hint != "SERIAL") insert_cols.push_back(&col);
+    }
+
+    int nparams = static_cast<int>(insert_cols.size());
+    std::vector<const char*> values(nparams, nullptr);
+    std::vector<int> lengths(nparams, 0);
+    std::vector<int> formats(nparams, 0);  // 0=text, 1=binary
+    std::vector<std::string> str_bufs(nparams);  // Keep strings alive
+
+    for (int i = 0; i < nparams; ++i) {
+        const auto& col_name = insert_cols[i]->name;
+        auto it = record.columns.find(col_name);
+
+        if (it == record.columns.end() || std::holds_alternative<std::monostate>(it->second)) {
+            values[i] = nullptr;  // NULL
+            continue;
+        }
+
+        std::visit([&](const auto& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, std::monostate>) {
+                values[i] = nullptr;
+            } else if constexpr (std::is_same_v<T, bool>) {
+                str_bufs[i] = v ? "t" : "f";
+                values[i] = str_bufs[i].c_str();
+            } else if constexpr (std::is_same_v<T, int64_t>) {
+                str_bufs[i] = std::to_string(v);
+                values[i] = str_bufs[i].c_str();
+            } else if constexpr (std::is_same_v<T, double>) {
+                str_bufs[i] = std::to_string(v);
+                values[i] = str_bufs[i].c_str();
+            } else if constexpr (std::is_same_v<T, std::string>) {
+                values[i] = v.c_str();
+                lengths[i] = static_cast<int>(v.size());
+            } else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                values[i] = v.data();
+                lengths[i] = static_cast<int>(v.size());
+                formats[i] = 1;  // Binary format for BYTEA
+            }
+        }, it->second);
+    }
+
+    PGresult* res = PQexecParams(conn_, sql.c_str(), nparams,
+        nullptr, values.data(), lengths.data(), formats.data(), 0);
+    bool ok = (PQresultStatus(res) == PGRES_COMMAND_OK);
+    if (!ok) {
+        LOG_ERR("[%s] Native insert error: %s", system_name(), PQerrorMessage(conn_));
+    }
+    PQclear(res);
+    return ok;
+}
+
+bool PostgresConnector::create_native_schema(const std::string& schema_name, PayloadType type) {
+    schema_ = schema_name;
+    LOG_INF("[%s] Creating native schema for %s in %s",
+        system_name(), payload_type_str(type), schema_name.c_str());
+
+    // Create schema/database if needed
+    char sql[256];
+    if (system_ == DbSystem::COCKROACHDB) {
+        std::snprintf(sql, sizeof(sql),
+            "CREATE DATABASE IF NOT EXISTS %s", schema_name.c_str());
+    } else {
+        std::snprintf(sql, sizeof(sql),
+            "CREATE SCHEMA IF NOT EXISTS %s", schema_name.c_str());
+    }
+    if (!exec(sql)) return false;
+
+    // Create typed table based on NativeSchema
+    auto ns = get_native_schema(type);
+    std::string create_sql = build_create_table_sql(ns);
+    LOG_DBG("[%s] CREATE TABLE SQL: %s", system_name(), create_sql.c_str());
+    return exec(create_sql.c_str());
+}
+
+bool PostgresConnector::drop_native_schema(const std::string& schema_name, PayloadType type) {
+    auto ns = get_native_schema(type);
+    char sql[256];
+    std::snprintf(sql, sizeof(sql), "DROP TABLE IF EXISTS %s.%s CASCADE",
+        schema_name.c_str(), ns.table_name.c_str());
+    return exec(sql);
+}
+
+MeasureResult PostgresConnector::native_bulk_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+
+    MeasureResult result{};
+    LOG_INF("[%s] Native bulk insert: %zu records (type: %s)",
+        system_name(), records.size(), payload_type_str(type));
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+    auto ns = get_native_schema(type);
+    std::string insert_sql = build_insert_sql(ns);
+
+    Timer timer;
+    timer.start();
+
+    exec("BEGIN");
+
+    for (const auto& rec : records) {
+        if (bind_and_exec_native(insert_sql, ns, rec)) {
+            result.rows_affected++;
+            result.bytes_logical += static_cast<int64_t>(rec.estimated_size_bytes());
+        }
+    }
+
+    exec("COMMIT");
+
+    timer.stop();
+    result.duration_ns = timer.elapsed_ns();
+
+    LOG_INF("[%s] Native bulk insert: %lld rows, %lld bytes, %lld ms",
+        system_name(), result.rows_affected, result.bytes_logical, timer.elapsed_ms());
+    return result;
+}
+
+MeasureResult PostgresConnector::native_perfile_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+
+    MeasureResult result{};
+    LOG_INF("[%s] Native per-file insert: %zu records (type: %s)",
+        system_name(), records.size(), payload_type_str(type));
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+    auto ns = get_native_schema(type);
+    std::string insert_sql = build_insert_sql(ns);
+
+    Timer total_timer;
+    total_timer.start();
+
+    for (const auto& rec : records) {
+        int64_t insert_ns = 0;
+        {
+            ScopedTimer st(insert_ns);
+            if (bind_and_exec_native(insert_sql, ns, rec)) {
+                result.rows_affected++;
+            }
+        }
+        result.per_file_latencies_ns.push_back(insert_ns);
+        result.bytes_logical += static_cast<int64_t>(rec.estimated_size_bytes());
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+
+    LOG_INF("[%s] Native per-file insert: %lld rows, %lld bytes, %lld ms",
+        system_name(), result.rows_affected, result.bytes_logical, total_timer.elapsed_ms());
+    return result;
+}
+
+MeasureResult PostgresConnector::native_perfile_delete(PayloadType type) {
+    MeasureResult result{};
+    auto ns = get_native_schema(type);
+    const auto* pk = ns.primary_key();
+
+    LOG_INF("[%s] Native per-file delete from %s.%s",
+        system_name(), schema_.c_str(), ns.table_name.c_str());
+
+#ifdef DEDUP_DRY_RUN
+    return result;
+#endif
+
+    Timer total_timer;
+    total_timer.start();
+
+    // Fetch all primary key values
+    std::string pk_col = pk ? pk->name : "id";
+    char select_sql[256];
+    std::snprintf(select_sql, sizeof(select_sql),
+        "SELECT %s::text FROM %s.%s",
+        pk_col.c_str(), schema_.c_str(), ns.table_name.c_str());
+
+    PGresult* ids_res = query(select_sql);
+    if (ids_res) {
+        int nrows = PQntuples(ids_res);
+        LOG_INF("[%s] Deleting %d native records individually", system_name(), nrows);
+
+        // Build delete SQL based on PK type
+        std::string delete_sql = "DELETE FROM " + schema_ + "." + ns.table_name +
+            " WHERE " + pk_col + " = $1";
+        if (pk && (pk->type_hint == "UUID")) {
+            delete_sql += "::uuid";
+        } else if (pk && (pk->type_hint == "SERIAL" || pk->type_hint == "INT" || pk->type_hint == "BIGINT")) {
+            delete_sql += "::bigint";
+        }
+
+        for (int i = 0; i < nrows; ++i) {
+            const char* id_val = PQgetvalue(ids_res, i, 0);
+            const char* values[1] = { id_val };
+
+            int64_t del_ns = 0;
+            {
+                ScopedTimer st(del_ns);
+                PGresult* del_res = PQexecParams(conn_, delete_sql.c_str(), 1,
+                    nullptr, values, nullptr, nullptr, 0);
+                if (PQresultStatus(del_res) == PGRES_COMMAND_OK) {
+                    result.rows_affected++;
+                }
+                PQclear(del_res);
+            }
+            result.per_file_latencies_ns.push_back(del_ns);
+        }
+        PQclear(ids_res);
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    LOG_INF("[%s] Native per-file delete: %lld rows, %lld ms",
+        system_name(), result.rows_affected, total_timer.elapsed_ms());
+    return result;
+}
+
+int64_t PostgresConnector::get_native_logical_size_bytes(PayloadType type) {
+#ifdef DEDUP_DRY_RUN
+    return 0;
+#endif
+    auto ns = get_native_schema(type);
+    char sql[256];
+    if (system_ == DbSystem::COCKROACHDB) {
+        std::snprintf(sql, sizeof(sql),
+            "SELECT sum(range_size) FROM crdb_internal.ranges "
+            "WHERE database_name = '%s'", schema_.c_str());
+    } else {
+        std::snprintf(sql, sizeof(sql),
+            "SELECT pg_total_relation_size('%s.%s')",
+            schema_.c_str(), ns.table_name.c_str());
+    }
+
+    PGresult* res = query(sql);
+    if (!res) return -1;
+
+    int64_t size = 0;
+    if (PQntuples(res) > 0 && PQntuples(res) > 0) {
+        const char* val = PQgetvalue(res, 0, 0);
+        if (val && val[0]) size = std::strtoll(val, nullptr, 10);
     }
     PQclear(res);
     return size;

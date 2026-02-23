@@ -33,6 +33,7 @@ stages:
 variables:
   GCC_VERSION: "14"
   BUILD_TYPE: "Debug"
+  INSERTION_MODE: "both"  # blob, native, or both
 
 # ============================================================
 # Stage 1: ALL Builds (7 parallel execution lanes)
@@ -530,6 +531,7 @@ experiment:preflight:
         echo "--- Step 1: Generate data (seed=${SEED}) ---"
         build/dedup-test \
           --generate-data \
+          --insertion-mode "${INSERTION_MODE}" \
           --payload-types "${PAYLOAD_TYPES}" \
           --config src/cpp/config.example.json \
           --data-dir /tmp/datasets \
@@ -542,6 +544,7 @@ experiment:preflight:
         build/dedup-test \
           --config src/cpp/config.example.json \
           --systems "${DB_SYSTEM}" \
+          --insertion-mode "${INSERTION_MODE}" \
           --payload-types "${PAYLOAD_TYPES}" \
           --data-dir /tmp/datasets \
           --results-dir "results/${DB_SYSTEM}/run-${RUN}" \

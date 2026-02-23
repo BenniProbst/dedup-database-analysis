@@ -28,6 +28,15 @@ public:
     [[nodiscard]] DbSystem system() const override { return DbSystem::MARIADB; }
     [[nodiscard]] const char* system_name() const override { return "mariadb"; }
 
+
+    // Native insertion mode (Stage 1)
+    bool create_native_schema(const std::string& schema_name, PayloadType type) override;
+    bool drop_native_schema(const std::string& schema_name, PayloadType type) override;
+    MeasureResult native_bulk_insert(const std::vector<NativeRecord>& records, PayloadType type) override;
+    MeasureResult native_perfile_insert(const std::vector<NativeRecord>& records, PayloadType type) override;
+    MeasureResult native_perfile_delete(PayloadType type) override;
+    int64_t get_native_logical_size_bytes(PayloadType type) override;
+
 private:
     void* conn_ = nullptr;  // MYSQL* handle
     std::string schema_;

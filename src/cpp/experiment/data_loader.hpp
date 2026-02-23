@@ -6,6 +6,8 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include "../connectors/db_connector.hpp"
+#include "native_record.hpp"
+#include "native_data_parser.hpp"
 #include "metrics_collector.hpp"
 #include "schema_manager.hpp"
 
@@ -31,6 +33,7 @@ struct ExperimentResult {
     std::string volume_name;            // Longhorn volume name used for measurement
     std::string timestamp;
     std::string error;
+    std::string insertion_mode = "blob";  // "blob" or "native"
 
     // DB-internal instrumentation snapshots (doku.tex §6.5)
     // Captured at stage boundaries when db_internal_metrics is enabled.
@@ -74,6 +77,26 @@ public:
         const std::string& data_dir,
         const std::string& lab_schema,
         PayloadType payload_type = PayloadType::MIXED);
+
+
+    // Native insertion mode (Stage 1, doku.tex 5.4)
+    // Uses parsed NativeRecords instead of raw files
+    ExperimentResult run_native_stage(
+        DbConnector& connector,
+        const DbConnection& db_conn,
+        Stage stage,
+        DupGrade grade,
+        const std::vector<NativeRecord>& records,
+        const std::string& lab_schema,
+        PayloadType payload_type);
+
+    std::vector<ExperimentResult> run_native_experiment(
+        DbConnector& connector,
+        const DbConnection& db_conn,
+        const std::string& data_dir,
+        const std::string& lab_schema,
+        const std::vector<DupGrade>& grades,
+        PayloadType payload_type);
 
 private:
     SchemaManager& schema_mgr_;

@@ -324,4 +324,239 @@ int64_t ClickHouseConnector::get_logical_size_bytes() {
     return std::strtoll(resp.c_str(), nullptr, 10);
 }
 
+
+// ============================================================================
+// Native insertion mode (Stage 1) -- ClickHouse HTTP API
+// ============================================================================
+
+bool ClickHouseConnector::create_native_schema(const std::string& schema_name, PayloadType type) {
+    LOG_INF("[clickhouse] Creating native schema for %s", payload_type_str(type));
+
+    http_exec("CREATE DATABASE IF NOT EXISTS " + schema_name);
+
+    auto ns = get_native_schema(type);
+    std::string sql = "CREATE TABLE IF NOT EXISTS " + schema_name + "." + ns.table_name + " (\n";
+
+    for (size_t i = 0; i < ns.columns.size(); ++i) {
+        const auto& col = ns.columns[i];
+        if (i > 0) sql += ",\n";
+        sql += "  " + col.name + " ";
+
+        // ClickHouse type mapping
+        if (col.type_hint == "SERIAL") sql += "UInt64";
+        else if (col.type_hint == "BIGINT") sql += "Int64";
+        else if (col.type_hint == "INT") sql += "Int32";
+        else if (col.type_hint == "DOUBLE") sql += "Float64";
+        else if (col.type_hint == "TEXT") sql += "String";
+        else if (col.type_hint == "BOOLEAN") sql += "UInt8";
+        else if (col.type_hint == "BYTEA") sql += "String";
+        else if (col.type_hint == "UUID") sql += "UUID";
+        else if (col.type_hint == "TIMESTAMPTZ") sql += "DateTime DEFAULT now()";
+        else if (col.type_hint == "JSONB") sql += "String";  // CH has no native JSON
+        else if (col.type_hint.substr(0, 4) == "CHAR") sql += "FixedString(" + col.type_hint.substr(5, col.type_hint.size()-6) + ")";
+        else sql += "String";
+
+        if (!col.default_expr.empty() && col.type_hint != "TIMESTAMPTZ" && col.type_hint != "SERIAL") {
+            sql += " DEFAULT " + col.default_expr;
+        }
+    }
+
+    // Use MergeTree with appropriate ORDER BY
+    const auto* pk = ns.primary_key();
+    std::string order_by = pk ? pk->name : "tuple()";
+    sql += "\n) ENGINE = MergeTree() ORDER BY " + order_by;
+
+    return http_exec(sql);
+}
+
+bool ClickHouseConnector::drop_native_schema(const std::string& schema_name, PayloadType type) {
+    auto ns = get_native_schema(type);
+    return http_exec("DROP TABLE IF EXISTS " + schema_name + "." + ns.table_name);
+}
+
+MeasureResult ClickHouseConnector::native_bulk_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+    LOG_INF("[clickhouse] Native bulk insert: %zu records (type: %s)",
+        records.size(), payload_type_str(type));
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+    auto ns = get_native_schema(type);
+    std::string cols;
+    std::vector<std::string> insert_col_names;
+    for (const auto& col : ns.columns) {
+        if (col.type_hint == "SERIAL") continue;
+        if (!cols.empty()) cols += ", ";
+        cols += col.name;
+        insert_col_names.push_back(col.name);
+    }
+
+    Timer timer;
+    timer.start();
+
+    // Build TSV data for bulk insert
+    std::string tsv_data;
+    for (const auto& rec : records) {
+        for (size_t i = 0; i < insert_col_names.size(); ++i) {
+            if (i > 0) tsv_data += '\t';
+            auto it = rec.columns.find(insert_col_names[i]);
+            if (it == rec.columns.end() || std::holds_alternative<std::monostate>(it->second)) {
+                tsv_data += "\\N";
+            } else {
+                std::visit([&](const auto& v) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, bool>) tsv_data += v ? "1" : "0";
+                    else if constexpr (std::is_same_v<T, int64_t>) tsv_data += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, double>) tsv_data += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, std::string>) {
+                        // Escape tabs and newlines for TSV
+                        for (char c : v) {
+                            if (c == '\t') tsv_data += "\\t";
+                            else if (c == '\n') tsv_data += "\\n";
+                            else if (c == '\\') tsv_data += "\\\\";
+                            else tsv_data += c;
+                        }
+                    }
+                    else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                        // Base64 or hex encode for binary
+                        for (unsigned char c : v) {
+                            char hex[3];
+                            snprintf(hex, sizeof(hex), "%02x", c);
+                            tsv_data += hex;
+                        }
+                    }
+                    else tsv_data += "\\N";
+                }, it->second);
+            }
+        }
+        tsv_data += '\n';
+        result.rows_affected++;
+        result.bytes_logical += static_cast<int64_t>(rec.estimated_size_bytes());
+    }
+
+    std::string insert_sql = "INSERT INTO " + database_ + "." + ns.table_name +
+        " (" + cols + ") FORMAT TabSeparated\n" + tsv_data;
+    http_exec(insert_sql);
+
+    timer.stop();
+    result.duration_ns = timer.elapsed_ns();
+    LOG_INF("[clickhouse] Native bulk insert: %lld rows, %lld bytes, %lld ms",
+        result.rows_affected, result.bytes_logical, timer.elapsed_ms());
+    return result;
+}
+
+MeasureResult ClickHouseConnector::native_perfile_insert(
+    const std::vector<NativeRecord>& records, PayloadType type) {
+    MeasureResult result{};
+
+#ifdef DEDUP_DRY_RUN
+    result.rows_affected = static_cast<int64_t>(records.size());
+    return result;
+#endif
+
+    auto ns = get_native_schema(type);
+    std::string cols;
+    std::vector<std::string> insert_col_names;
+    for (const auto& col : ns.columns) {
+        if (col.type_hint == "SERIAL") continue;
+        if (!cols.empty()) cols += ", ";
+        cols += col.name;
+        insert_col_names.push_back(col.name);
+    }
+
+    Timer total_timer;
+    total_timer.start();
+
+    for (const auto& rec : records) {
+        std::string values;
+        for (size_t i = 0; i < insert_col_names.size(); ++i) {
+            if (i > 0) values += ", ";
+            auto it = rec.columns.find(insert_col_names[i]);
+            if (it == rec.columns.end() || std::holds_alternative<std::monostate>(it->second)) {
+                values += "NULL";
+            } else {
+                std::visit([&](const auto& v) {
+                    using T = std::decay_t<decltype(v)>;
+                    if constexpr (std::is_same_v<T, bool>) values += v ? "1" : "0";
+                    else if constexpr (std::is_same_v<T, int64_t>) values += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, double>) values += std::to_string(v);
+                    else if constexpr (std::is_same_v<T, std::string>) {
+                        values += "'";
+                        for (char c : v) {
+                            if (c == '\'') values += "\\'";
+                            else if (c == '\\') values += "\\\\";
+                            else values += c;
+                        }
+                        values += "'";
+                    }
+                    else if constexpr (std::is_same_v<T, std::vector<char>>) {
+                        values += "'";
+                        for (unsigned char c : v) {
+                            char hex[3];
+                            snprintf(hex, sizeof(hex), "%02x", c);
+                            values += hex;
+                        }
+                        values += "'";
+                    }
+                    else values += "NULL";
+                }, it->second);
+            }
+        }
+
+        std::string sql = "INSERT INTO " + database_ + "." + ns.table_name +
+            " (" + cols + ") VALUES (" + values + ")";
+
+        int64_t insert_ns = 0;
+        {
+            ScopedTimer st(insert_ns);
+            http_exec(sql);
+            result.rows_affected++;
+        }
+        result.per_file_latencies_ns.push_back(insert_ns);
+        result.bytes_logical += static_cast<int64_t>(rec.estimated_size_bytes());
+    }
+
+    total_timer.stop();
+    result.duration_ns = total_timer.elapsed_ns();
+    return result;
+}
+
+MeasureResult ClickHouseConnector::native_perfile_delete(PayloadType type) {
+    MeasureResult result{};
+    auto ns = get_native_schema(type);
+    const auto* pk = ns.primary_key();
+    std::string pk_col = pk ? pk->name : "id";
+
+    Timer timer;
+    timer.start();
+
+    // ClickHouse lightweight DELETE (ALTER TABLE DELETE)
+    std::string count_sql = "SELECT count() FROM " + database_ + "." + ns.table_name;
+    std::string count_str = http_query(count_sql);
+    int64_t count = 0;
+    try { count = std::stoll(count_str); } catch (...) {}
+
+    // ClickHouse: ALTER TABLE DELETE WHERE 1=1 deletes all rows
+    std::string del_sql = "ALTER TABLE " + database_ + "." + ns.table_name +
+        " DELETE WHERE 1=1";
+    http_exec(del_sql);
+    result.rows_affected = count;
+
+    timer.stop();
+    result.duration_ns = timer.elapsed_ns();
+    return result;
+}
+
+int64_t ClickHouseConnector::get_native_logical_size_bytes(PayloadType type) {
+    auto ns = get_native_schema(type);
+    std::string sql = "SELECT sum(bytes_on_disk) FROM system.parts "
+        "WHERE database = '" + database_ + "' AND table = '" + ns.table_name + "' AND active";
+    std::string result = http_query(sql);
+    try { return std::stoll(result); } catch (...) { return 0; }
+}
+
 } // namespace dedup
