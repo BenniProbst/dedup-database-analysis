@@ -404,6 +404,23 @@ bool DatasetGenerator::write_file(const std::string& path, const std::vector<cha
 // ---- Public API ----
 
 size_t DatasetGenerator::generate_all(const std::string& data_dir, PayloadType type) {
+    // Early exit for NAS-dependent types when NAS directory is unavailable
+    if (is_nas_payload(type)) {
+        const char* subdir = nullptr;
+        if (type == PayloadType::BANK_TRANSACTIONS) subdir = "bankdataset";
+        else if (type == PayloadType::TEXT_CORPUS) subdir = "million_post";
+        else if (type == PayloadType::NUMERIC_DATASET) subdir = "random_numbers";
+
+        if (subdir) {
+            std::string dir_path = cfg_.data_sources.real_world_dir + "/" + subdir;
+            if (!fs::exists(dir_path) || !fs::is_directory(dir_path)) {
+                LOG_WRN("[datagen] Skipping %s: NAS directory not available (%s)",
+                        payload_type_str(type), dir_path.c_str());
+                return 0;
+            }
+        }
+    }
+
     LOG_INF("[datagen] Generating datasets in %s (seed=%llu, %zu files/grade)",
         data_dir.c_str(), static_cast<unsigned long long>(cfg_.seed), cfg_.num_files);
 
