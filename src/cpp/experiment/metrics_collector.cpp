@@ -3,6 +3,8 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <thread>
+#include <chrono>
 
 namespace dedup {
 
@@ -20,21 +22,47 @@ std::string MetricsCollector::prometheus_query(const std::string& query) {
     CURL* curl = curl_easy_init();
     if (!curl) return "";
 
-    std::string url = prometheus_.url + "/api/v1/query?query=" + query;
+    // URL-encode the PromQL query (braces, quotes, etc.)
+    char* escaped = curl_easy_escape(curl, query.c_str(), static_cast<int>(query.length()));
+    std::string url = prometheus_.url + "/api/v1/query?query=" + std::string(escaped);
+    curl_free(escaped);
+
     std::string response;
+    CURLcode res = CURLE_COULDNT_CONNECT;
 
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+    // Retry up to 3 times (Prometheus restarts frequently: 27 restarts observed)
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        response.clear();
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-    CURLcode res = curl_easy_perform(curl);
+        res = curl_easy_perform(curl);
+        if (res == CURLE_OK) break;
+
+        if (attempt < 2) {
+            LOG_WRN("[metrics] Prometheus attempt %d failed: %s -- retrying in 2s",
+                attempt + 1, curl_easy_strerror(res));
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+    }
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        LOG_ERR("[metrics] Prometheus query failed: %s", curl_easy_strerror(res));
+        LOG_ERR("[metrics] Prometheus query failed after 3 attempts: %s", curl_easy_strerror(res));
         return "";
     }
+
+    if (http_code != 200) {
+        LOG_ERR("[metrics] Prometheus returned HTTP %ld for query: %s", http_code, query.c_str());
+        return "";
+    }
+
     return response;
 }
 
