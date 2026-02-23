@@ -522,13 +522,18 @@ bool MinioConnector::create_native_schema(const std::string& schema_name, Payloa
     auto ns = get_native_schema(type);
     std::string bucket = bucket_prefix_ + "-" + ns.table_name;
     LOG_INF("[minio] Creating native bucket: %s", bucket.c_str());
-    return create_bucket(bucket);
+    return s3_create_bucket(bucket);
 }
 
 bool MinioConnector::drop_native_schema(const std::string& schema_name, PayloadType type) {
     auto ns = get_native_schema(type);
     std::string bucket = bucket_prefix_ + "-" + ns.table_name;
-    return delete_bucket(bucket);
+    // Delete all objects first, then the bucket
+    auto keys = s3_list_objects(bucket);
+    for (const auto& key : keys) {
+        s3_delete_object(bucket, key);
+    }
+    return s3_delete_bucket(bucket);
 }
 
 MeasureResult MinioConnector::native_bulk_insert(
@@ -604,7 +609,7 @@ MeasureResult MinioConnector::native_bulk_insert(
             body += "}";
         }
 
-        if (put_object(bucket, object_key, body, content_type)) {
+        if (s3_put_object(bucket, object_key, body.data(), body.size())) {
             result.rows_affected++;
         }
         result.bytes_logical += static_cast<int64_t>(body.size());
@@ -685,7 +690,7 @@ MeasureResult MinioConnector::native_perfile_insert(
         int64_t put_ns = 0;
         {
             ScopedTimer st(put_ns);
-            if (put_object(bucket, object_key, body, content_type))
+            if (s3_put_object(bucket, object_key, body.data(), body.size()))
                 result.rows_affected++;
         }
         result.per_file_latencies_ns.push_back(put_ns);
