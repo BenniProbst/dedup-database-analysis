@@ -554,6 +554,10 @@ experiment:preflight:
           --seed ${SEED} \
           --verbose 2>&1 || echo "[WARN] Data generation exit code: $?"
 
+        REPEAT_ARG=""
+        if [ -n "${REPEAT_DB}" ]; then
+          REPEAT_ARG="--repeat-db ${REPEAT_DB}"
+        fi
         echo "--- Step 2: Run experiment (${DB_SYSTEM}, run ${RUN}) ---"
         build/dedup-test \
           --config src/cpp/config.example.json \
@@ -565,6 +569,7 @@ experiment:preflight:
           --checkpoint-dir "/datasets/real-world/checkpoints/${DB_SYSTEM}" \
           --run-id ${RUN} \
           --max-retries 3 \
+          ${REPEAT_ARG} \
           --verbose 2>&1 || {
             echo "WARNING: Run ${RUN} exited with code $?"
             OVERALL_EXIT=1
