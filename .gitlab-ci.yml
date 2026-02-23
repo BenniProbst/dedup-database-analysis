@@ -412,11 +412,17 @@ experiment:preflight:
   <<: *experiment-default
   stage: experiment-run
   timeout: 6 hours
+  resource_group: experiment-pipeline
   retry:
     max: 2
     when: [runner_system_failure, unknown_failure]
   script:
     - |
+      # Keepalive heartbeat (prevents stuck_or_timeout_failure)
+      (while true; do sleep 60; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &
+      KEEPALIVE_PID=$!
+      trap "kill $KEEPALIVE_PID 2>/dev/null" EXIT
+
       # === K8s API helpers for per-DB scaling ===
       APISERVER=https://kubernetes.default.svc
       SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
@@ -615,7 +621,7 @@ experiment:preflight:
 
 experiment:postgresql:
   <<: *experiment-per-db
-  needs: ["experiment:preflight", "experiment:build"]
+  needs: ["experiment:minio", "experiment:build"]
   variables:
     DB_SYSTEM: "postgresql"
     DB_TYPE: "none"
@@ -635,7 +641,7 @@ experiment:cockroachdb:
 
 experiment:mariadb:
   <<: *experiment-per-db
-  needs: ["experiment:cockroachdb", "experiment:build"]
+  needs: ["experiment:preflight", "experiment:build"]
   variables:
     DB_SYSTEM: "mariadb"
     DB_TYPE: "statefulset"
