@@ -17,10 +17,10 @@ bool PostgresConnector::connect(const DbConnection& conn) {
     // For CockroachDB: same PG wire protocol, works with libpq
     char conninfo[512];
     std::snprintf(conninfo, sizeof(conninfo),
-        "host=%s port=%u dbname=%s user=%s password=%s "
+        "host=%s port=%u dbname=postgres user=%s password=%s "
         "connect_timeout=10 application_name=dedup-test",
         conn.host.c_str(), conn.port,
-        conn.database.c_str(), conn.user.c_str(), conn.password.c_str());
+        conn.user.c_str(), conn.password.c_str());
 
     conn_ = PQconnectdb(conninfo);
     if (PQstatus(conn_) != CONNECTION_OK) {
