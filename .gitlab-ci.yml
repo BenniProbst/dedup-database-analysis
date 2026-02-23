@@ -313,7 +313,7 @@ upload-to-minio:
     - |
       # ForceIPv4 removed (DNS on experiment node returns only IPv6 for CDN)
       sed -i 's|http://deb.debian.org|http://cdn-fastly.deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-      apt-get update -qq 2>&1 | tail -3
+      timeout 120 apt-get update -qq 2>&1 | tail -3
       apt-get install -y -qq --no-install-recommends \
         libpq-dev libhiredis-dev librdkafka-dev libcurl4-openssl-dev \
         libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common curl \
@@ -412,7 +412,7 @@ experiment:preflight:
   <<: *experiment-default
   stage: experiment-run
   timeout: 6 hours
-  resource_group: experiment-pipeline
+  # resource_group removed (deadlock on retry; needs-chain + concurrent=1 ensures serialization)
   retry:
     max: 2
     when: [runner_system_failure, unknown_failure]
