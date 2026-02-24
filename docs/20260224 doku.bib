@@ -1,0 +1,908 @@
+@inproceedings{Muthitacharoen2001,
+  author    = {Athicha Muthitacharoen and Benjie Chen and David Mazi{\`e}res},
+  title     = {A Low-bandwidth Network File System},
+  booktitle = {Proceedings of the 18th ACM Symposium on Operating Systems Principles (SOSP '01)},
+  year      = {2001},
+  publisher = {ACM},
+  address   = {Banff, Canada},
+  month     = {Oct}
+}
+
+
+@inproceedings{Quinlan2002,
+  author    = {Sean Quinlan and Sean Dorward},
+  title     = {{Venti}: A New Approach to Archival Data Storage},
+  booktitle = {2nd USENIX Conference on File and Storage Technologies (FAST '02)},
+  year      = {2002},
+  address   = {Monterey, CA},
+  publisher = {USENIX Association},
+  month     = {Jan}
+}
+
+
+@inproceedings{Zhu2008,
+  author    = {Benjamin Zhu and Kai Li and Hugo Patterson},
+  title     = {Avoiding the Disk Bottleneck in the Data Domain Deduplication File System},
+  booktitle = {6th USENIX Conference on File and Storage Technologies (FAST '08)},
+  year      = {2008},
+  address   = {San Jose, CA},
+  publisher = {USENIX Association},
+  month     = {Feb}
+}
+
+
+@inproceedings{Srinivasan2012,
+  author    = {Kiran Srinivasan and Tim Bisson and Garth Goodson and Kaladhar Voruganti},
+  title     = {{iDedup}: Latency-aware, Inline Data Deduplication for Primary Storage},
+  booktitle = {10th USENIX Conference on File and Storage Technologies (FAST '12)},
+  year      = {2012},
+  address   = {San Jose, CA},
+  publisher = {USENIX Association},
+  month     = {Feb}
+}
+
+
+@inproceedings{Xia2016,
+  author    = {Wen Xia and Yukun Zhou and Hong Jiang and Dan Feng and Yu Hua and Yuchong Hu and Qing Liu and Yucheng Zhang},
+  title     = {{FastCDC}: A Fast and Efficient Content-Defined Chunking Approach for Data Deduplication},
+  booktitle = {2016 USENIX Annual Technical Conference (USENIX ATC '16)},
+  year      = {2016},
+  address   = {Denver, CO},
+  pages     = {101--114},
+  publisher = {USENIX Association},
+  month     = {Jun}
+}
+
+
+@inproceedings{Lillibridge2009,
+  author    = {Mark Lillibridge and Kave Eshghi and Deepavali Bhagwat and Vinay Deolalikar and Greg Trezise and Peter Camble},
+  title     = {Sparse Indexing: Large Scale, Inline Deduplication Using Sampling and Locality},
+  booktitle = {7th USENIX Conference on File and Storage Technologies (FAST '09)},
+  year      = {2009},
+  address   = {San Francisco, CA},
+  publisher = {USENIX Association},
+  month     = {Feb}
+}
+
+
+@article{Paulo2014,
+  author    = {Jo{\~a}o Paulo and Jos{\'e} Pereira},
+  title     = {A Survey and Classification of Storage Deduplication Systems},
+  journal   = {ACM Computing Surveys},
+  year      = {2014},
+  volume    = {47},
+  number    = {1},
+  pages     = {11:1--11:30},
+  doi       = {10.1145/2611778}
+}
+
+
+@article{Fu2025,
+  author    = {Yinjin Fu and Jun Su and Jiahao Ning and Jian Wu and Yutong Lu and Nong Xiao},
+  title     = {Distributed Data Deduplication for Big Data: A Survey},
+  journal   = {ACM Computing Surveys},
+  year      = {2025},
+  volume    = {58},
+  number    = {3},
+  pages     = {1--38},
+  doi       = {10.1145/3735508}
+}
+
+
+@inproceedings{Oh2023,
+  author    = {Myoungwon Oh and Sungmin Lee and Samuel Just and Young Jin Yu and Duck-Ho Bae and Sage Weil and Sangyeun Cho and Heon Y. Yeom},
+  title     = {{TiDedup}: A New Distributed Deduplication Architecture for Ceph},
+  booktitle = {2023 USENIX Annual Technical Conference (USENIX ATC '23)},
+  year      = {2023},
+  address   = {Boston, MA},
+  pages     = {117--131},
+  publisher = {USENIX Association},
+  month     = {Jul}
+}
+
+
+@techreport{Oracle2025,
+  author      = {{Oracle Corporation}},
+  title       = {Oracle Advanced Compression -- SecureFiles Deduplication Technical Brief},
+  year        = {2025},
+  institution = {Oracle Corp.},
+  url         = {https://www.oracle.com/a/ocom/docs/database/advanced-compression-tech-brief.pdf},
+  note        = {Version 23a, Oracle Database Technical Brief}
+}
+
+
+@misc{InfluxDB2023,
+  author = {Tran, Nga and Dix, Paul and Lamb, Andrew and Mikulicic, Marko},
+  title  = {InfluxDB~3.0 System Architecture},
+  year   = {2023},
+  url    = {https://www.influxdata.com/blog/influxdb-3-0-system-architecture/},
+  note   = {InfluxData Engineering Blog, 27. Juni 2023}
+}
+
+
+@misc{Confluent2023,
+  author = {{Confluent, Inc.}},
+  title  = {Apache Kafka Log Compaction (Confluent Documentation)},
+  year   = {2023},
+  url    = {https://docs.confluent.io/kafka/design/log_compaction.html},
+  note   = {Accessed 2025-12-03}
+}
+
+% ---------------------------------------------------------
+% Datenbanken / Mechanismen (für den Systemvergleich)
+% ---------------------------------------------------------
+
+
+@article{Hellerstein2007,
+  author  = {Joseph M. Hellerstein and Michael Stonebraker and James Hamilton},
+  title   = {Architecture of a Database System},
+  journal = {Foundations and Trends in Databases},
+  year    = {2007},
+  volume  = {1},
+  number  = {2},
+  pages   = {141--259},
+  doi     = {10.1561/1900000002},
+  url     = {https://db.cs.berkeley.edu/papers/fntdb07-architecture.pdf},
+  note    = {Open-Access PDF (Berkeley)}
+}
+
+
+@inproceedings{RaasveldtMuhleisen2019DuckDB,
+  author    = {Mark Raasveldt and Hannes M{\"u}hleisen},
+  title     = {DuckDB: an Embeddable Analytical Database},
+  booktitle = {Proceedings of the 2019 International Conference on Management of Data (SIGMOD '19)},
+  year      = {2019},
+  pages     = {1981--1984},
+  publisher = {ACM},
+  doi       = {10.1145/3299869.3320212},
+  url       = {https://duckdb.org/pdf/SIGMOD2019-demo-duckdb.pdf},
+  note      = {Demo Paper (Open PDF)}
+}
+
+
+@misc{DuckDBConstraints,
+  author = {{DuckDB Project}},
+  title  = {DuckDB Documentation: Constraints},
+  year   = {2026},
+  url    = {https://duckdb.org/docs/stable/sql/constraints.html},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{DuckDBIndexes,
+  author = {{DuckDB Project}},
+  title  = {DuckDB Documentation: Indexes},
+  year   = {2026},
+  url    = {https://duckdb.org/docs/stable/sql/indexes.html},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{DuckDBStorageInternals,
+  author = {{DuckDB Project}},
+  title  = {DuckDB Documentation: Storage Versions and Format (Compression Algorithms)},
+  year   = {2026},
+  url    = {https://duckdb.org/docs/stable/internals/storage.html},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@article{DuckDBFSSTPaper,
+  author  = {Peter Boncz and Thomas Neumann and Viktor Leis},
+  title   = {FSST: Fast Random Access String Compression},
+  journal = {Proceedings of the VLDB Endowment},
+  year    = {2020},
+  volume  = {13},
+  number  = {11},
+  pages   = {2649--2661},
+  doi     = {10.14778/3407790.3407851},
+  url     = {https://www.vldb.org/pvldb/vol13/p2649-boncz.pdf},
+  note    = {Open-Access PDF}
+}
+
+
+@misc{PostgresTOAST,
+  author = {{PostgreSQL Global Development Group}},
+  title  = {PostgreSQL Documentation: TOAST},
+  year   = {2026},
+  url    = {https://www.postgresql.org/docs/current/storage-toast.html},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{PostgresBtree,
+  author = {{PostgreSQL Global Development Group}},
+  title  = {PostgreSQL Documentation: B-Tree Indexes (Deduplication)},
+  year   = {2026},
+  url    = {https://www.postgresql.org/docs/current/btree.html},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{Postgres13ReleaseNotes,
+  author = {{PostgreSQL Global Development Group}},
+  title  = {PostgreSQL 13.0 Release Notes},
+  year   = {2020},
+  url    = {https://www.postgresql.org/docs/release/13.0/},
+  note   = {B-Tree index entry de-duplication; Zugriff: 2026-01-06}
+}
+
+
+@article{SchulzeEtAl2024ClickHouse,
+  author  = {Robert Schulze and Tom Schreiber and Ilya Yatsishin and Ryadh Dahimene and Alexey Milovidov},
+  title   = {ClickHouse -- Lightning Fast Analytics for Everyone},
+  journal = {Proceedings of the VLDB Endowment},
+  year    = {2024},
+  volume  = {17},
+  number  = {12},
+  pages   = {3731--3744},
+  doi     = {10.14778/3685800.3685802},
+  url     = {https://www.vldb.org/pvldb/vol17/p3731-schulze.pdf},
+  note    = {Open-Access PDF}
+}
+
+
+@misc{ClickHouseLowCardinality,
+  author = {{ClickHouse, Inc.}},
+  title  = {ClickHouse Documentation: LowCardinality(T) (Dictionary Coding)},
+  year   = {2026},
+  url    = {https://clickhouse.com/docs/sql-reference/data-types/lowcardinality},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{ClickHouseReplacingMergeTree,
+  author = {{ClickHouse, Inc.}},
+  title  = {ClickHouse Documentation: ReplacingMergeTree Table Engine},
+  year   = {2026},
+  url    = {https://clickhouse.com/docs/engines/table-engines/mergetree-family/replacingmergetree},
+  note   = {Deduplication during merge; Zugriff: 2026-01-06}
+}
+
+
+@misc{ClickHouseDedupRetries,
+  author = {{ClickHouse, Inc.}},
+  title  = {ClickHouse Documentation: Deduplicating Inserts on Retries},
+  year   = {2026},
+  url    = {https://clickhouse.com/docs/guides/developer/deduplicating-inserts-on-retries},
+  note   = {insert\_deduplication\_token, deduplication windows; Zugriff: 2026-01-06}
+}
+
+
+@article{LakshmanMalik2010Cassandra,
+  author  = {Avinash Lakshman and Prashant Malik},
+  title   = {Cassandra: a decentralized structured storage system},
+  journal = {ACM SIGOPS Operating Systems Review},
+  year    = {2010},
+  volume  = {44},
+  number  = {2},
+  pages   = {35--40},
+  doi     = {10.1145/1773912.1773922}
+}
+
+
+@misc{CassandraDDLPrimaryKey,
+  author = {{Apache Cassandra Project}},
+  title  = {Apache Cassandra Documentation: Data Definition (PRIMARY KEY)},
+  year   = {2026},
+  url    = {https://cassandra.apache.org/doc/4.0/cassandra/cql/ddl.html},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{CassandraTombstones,
+  author = {{Apache Cassandra Project}},
+  title  = {Apache Cassandra Documentation: Tombstones},
+  year   = {2026},
+  url    = {https://cassandra.apache.org/doc/latest/cassandra/managing/operating/compaction/tombstones.html},
+  note   = {Tombstone-Grace und Entfernung in Compaction; Zugriff: 2026-01-06}
+}
+
+
+@article{SchultzDemirbas2025MongoTxns,
+  author  = {William Schultz and Murat Demirbas},
+  title   = {Design and Modular Verification of Distributed Transactions in MongoDB},
+  journal = {Proceedings of the VLDB Endowment},
+  year    = {2025},
+  volume  = {18},
+  number  = {12},
+  pages   = {5045--5058},
+  url     = {https://www.vldb.org/pvldb/vol18/p5045-schultz.pdf},
+  note    = {Open-Access PDF}
+}
+
+
+@misc{MongoUniqueIndexes,
+  author = {{MongoDB, Inc.}},
+  title  = {MongoDB Manual: Unique Indexes},
+  year   = {2026},
+  url    = {https://www.mongodb.com/docs/manual/core/index-unique/},
+  note   = {Zugriff: 2026-01-06}
+}
+
+
+@misc{MongoShardedUnique,
+  author = {{MongoDB, Inc.}},
+  title  = {MongoDB Manual: Sharded Collections with Unique Indexes},
+  year   = {2026},
+  url    = {https://www.mongodb.com/docs/v8.0/tutorial/shard-collection-with-unique-index/},
+  note   = {Unique nur mit Shard-Key (Pr\"afix); Zugriff: 2026-01-06}
+}
+
+
+@misc{MongoWiredTiger,
+  author = {{MongoDB, Inc.}},
+  title  = {MongoDB Manual: WiredTiger Storage Engine (Compression Defaults)},
+  year   = {2026},
+  url    = {https://www.mongodb.com/docs/manual/core/wiredtiger/},
+  note   = {Block- und Prefix-Kompression; Zugriff: 2026-01-06}
+}
+
+
+@misc{GHArchive2026,
+  author       = {GH Archive},
+  title        = {GH Archive: GitHub Event Data},
+  year         = {2026},
+  howpublished = {\url{https://www.gharchive.org/}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{KafkaTopicConfig2026,
+  author       = {Apache Kafka},
+  title        = {Kafka Documentation: Topic-Level Configs (cleanup.policy)},
+  year         = {2026},
+  howpublished = {\url{https://kafka.apache.org/documentation/#topicconfigs_cleanup.policy}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{LonghornConcepts2026,
+  author       = {Longhorn},
+  title        = {Longhorn Documentation: Concepts (Architecture, Engine, Replicas, Thin Provisioning)},
+  year         = {2026},
+  howpublished = {\url{https://longhorn.io/docs/latest/concepts/}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{LonghornMetrics2026,
+  author       = {Longhorn},
+  title        = {Longhorn Documentation: Metrics (Prometheus)},
+  year         = {2026},
+  howpublished = {\url{https://longhorn.io/docs/latest/monitoring/metrics/}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{MinIOGitHub2026,
+  author       = {MinIO, Inc.},
+  title        = {MinIO: High Performance Object Storage (S3-compatible)},
+  year         = {2026},
+  howpublished = {\url{https://github.com/minio/minio}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{NASAImagesLibrary2026,
+  author       = {NASA},
+  title        = {NASA Image and Video Library},
+  year         = {2026},
+  howpublished = {\url{https://images.nasa.gov/}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{NASAMediaGuidelines2026,
+  author       = {NASA},
+  title        = {NASA Media Usage Guidelines},
+  year         = {2026},
+  howpublished = {\url{https://www.nasa.gov/nasa-brand-center/images-and-media/}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{NASAUltraDeepField2026,
+  author       = {NASA},
+  title        = {Hubble Ultra Deep Field (Image Download)},
+  year         = {2026},
+  howpublished = {\url{https://science.nasa.gov/image-detail/hubble-ultra-deep-field/}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{PostgresVacuum2026,
+  author       = {PostgreSQL Global Development Group},
+  title        = {PostgreSQL Documentation: VACUUM},
+  year         = {2026},
+  howpublished = {\url{https://www.postgresql.org/docs/current/sql-vacuum.html}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{ProjectGutenbergTerms2026,
+  author       = {Project Gutenberg},
+  title        = {Project Gutenberg: Terms of Use},
+  year         = {2026},
+  howpublished = {\url{https://www.gutenberg.org/policy/terms_of_use.html}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@inproceedings{TaftEtAl2020CockroachDB,
+  author    = {Taft, Rebecca and Sharif, Irfan and Matei, Andrei and VanBenschoten, Nathan and Lewis, Jordan and Grieger, Tobias and Niemi, Kai and Woods, Andy and Birzin, Anne and Poss, Raphael and Bardea, Paul and Ranade, Amruta and Darnell, Ben and Gruneir, Bram and Jaffray, Justin and Zhang, Lucy and Mattis, Peter},
+  title     = {CockroachDB: The Resilient Geo-Distributed SQL Database},
+  booktitle = {Proceedings of the 2020 ACM SIGMOD International Conference on Management of Data},
+  year      = {2020},
+  doi       = {10.1145/3318464.3386134},
+  url       = {https://doi.org/10.1145/3318464.3386134}
+}}
+
+
+@misc{WikimediaBigBuckBunny2026,
+  author       = {Wikimedia Commons},
+  title        = {Category: Big Buck Bunny (Open Movie Files)},
+  year         = {2026},
+  howpublished = {\url{https://commons.wikimedia.org/wiki/Category:Big_Buck_Bunny}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{WikimediaSintel2026,
+  author       = {Wikimedia Commons},
+  title        = {Category: Sintel (Open Movie Files)},
+  year         = {2026},
+  howpublished = {\url{https://commons.wikimedia.org/wiki/Category:Sintel}},
+  note         = {Accessed: 2026-01-27}
+}
+
+
+@misc{WikimediaTearsOfSteel2026,
+  author       = {Wikimedia Commons},
+  title        = {File: Tears of Steel (Open Movie File)},
+  year         = {2026},
+  howpublished = {\url{https://commons.wikimedia.org/wiki/Category:Tears_of_Steel}},
+  note         = {Accessed: 2026-01-27}
+}
+% --- Added sources for experimental setup and DB-specific features (2026-02) ---
+
+@misc{TUDresdenModuleINF-D-960,
+  author       = {{Technische Universit{\"a}t Dresden}},
+  title        = {Modulbeschreibung {INF-D-960}: Analyse eines Forschungsthemas},
+  year         = {2010},
+  howpublished = {PDF, Studien- und Pr{\"u}fungsordnung Diplom-Informatik (Anlage 2)},
+  url          = {https://www.inf.tu-dresden.de/content/study/regulations/download/dipl_inf_so_app2_de.pdf},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{HardkernelOdroidH4Ultra2026,
+  author       = {{Hardkernel Co., Ltd.}},
+  title        = {{ODROID-H4 Ultra} product page and specifications},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.hardkernel.com/shop/odroid-h4-ultra/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{CiscoCBS350Datasheet2026,
+  author       = {{Cisco Systems, Inc.}},
+  title        = {{Cisco Business CBS350 Series Managed Switches} Data Sheet},
+  year         = {2026},
+  howpublished = {Online datasheet},
+  url          = {https://www.cisco.com/c/en/us/products/collateral/switches/business-350-series-managed-switches/nb-06-bus350-series-switches-ds-cte-en.html},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{Samsung860EvoDatasheet2026,
+  author       = {{Samsung Electronics}},
+  title        = {Samsung {860 EVO} {SATA} {SSD} Specifications (2\,TB class)},
+  year         = {2026},
+  howpublished = {Online product specification},
+  url          = {https://www.samsung.com/semiconductor/minisite/ssd/product/consumer/860evo/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{TalosRelease1124,
+  author       = {{Sidero Labs}},
+  title        = {{Talos Linux} Release v1.12.4},
+  year         = {2026},
+  howpublished = {GitHub release notes},
+  url          = {https://github.com/siderolabs/talos/releases/tag/v1.12.4},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{LonghornRelease1110,
+  author       = {{Longhorn Authors}},
+  title        = {{Longhorn} Release v1.11.0},
+  year         = {2026},
+  howpublished = {GitHub release notes},
+  url          = {https://github.com/longhorn/longhorn/releases/tag/v1.11.0},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{GitLabRelease1881,
+  author       = {{GitLab Inc.}},
+  title        = {GitLab 18.8.1 released},
+  year         = {2026},
+  howpublished = {Release announcement},
+  url          = {https://about.gitlab.com/releases/2026/01/19/gitlab-18-8-1-released/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{GitLabRunner1880,
+  author       = {{GitLab Inc.}},
+  title        = {GitLab Runner 18.8.0 (release tag)},
+  year         = {2026},
+  howpublished = {GitLab project releases},
+  url          = {https://gitlab.com/gitlab-org/gitlab-runner/-/releases},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{KafkaRelease420,
+  author       = {{Apache Software Foundation}},
+  title        = {{Apache Kafka} 4.2.0 release (downloads and release notes)},
+  year         = {2026},
+  howpublished = {Project website},
+  url          = {https://kafka.apache.org/downloads},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{KafkaCompactionDocs2026,
+  author       = {{Apache Software Foundation}},
+  title        = {{Apache Kafka} documentation: Log Compaction},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://kafka.apache.org/documentation/#compaction},
+  note         = {Accessed: 2026-02-18}
+}
+
+@inproceedings{Cooper2010YCSB,
+  author    = {Brian F. Cooper and Adam Silberstein and Erwin Tam and Raghu Ramakrishnan and Russell Sears},
+  title     = {Benchmarking Cloud Serving Systems with {YCSB}},
+  booktitle = {Proceedings of the 1st ACM Symposium on Cloud Computing (SoCC '10)},
+  year      = {2010},
+  publisher = {ACM},
+  doi       = {10.1145/1807128.1807152}
+}
+
+@misc{PostgreSQLToast2026,
+  author       = {{PostgreSQL Global Development Group}},
+  title        = {PostgreSQL Documentation: {TOAST} and column storage (EXTENDED/EXTERNAL/PLAIN/MAIN)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.postgresql.org/docs/current/storage-toast.html},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{PostgreSQLVacuum2026,
+  author       = {{PostgreSQL Global Development Group}},
+  title        = {PostgreSQL Documentation: {VACUUM} and {VACUUM FULL}},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.postgresql.org/docs/current/sql-vacuum.html},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{MariaDBCompression2026,
+  author       = {{MariaDB Foundation}},
+  title        = {MariaDB Documentation: {InnoDB} Compression and Page/Table Compression},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://mariadb.com/kb/en/innodb-compression/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{MariaDBOptimize2026,
+  author       = {{MariaDB Foundation}},
+  title        = {MariaDB Documentation: {OPTIMIZE TABLE}},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://mariadb.com/kb/en/optimize-table/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{ClickHouseReplacingMergeTree2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Documentation: {ReplacingMergeTree} table engine},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/replacingmergetree},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{ClickHouseCompressionCodecs2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Documentation: Compression Codecs},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/en/sql-reference/statements/create/table/#compression},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{ClickHouseDropCaches2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Documentation: {SYSTEM} commands for dropping caches},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/en/sql-reference/statements/system},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{CockroachGCTTL2026,
+  author       = {{Cockroach Labs}},
+  title        = {CockroachDB Documentation: {GC TTL} (\texttt{gc.ttlseconds}) and MVCC garbage collection},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.cockroachlabs.com/docs/stable/configure-zone.html},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{CockroachRowTTL2026,
+  author       = {{Cockroach Labs}},
+  title        = {CockroachDB Documentation: Row-Level {TTL}},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.cockroachlabs.com/docs/stable/row-level-ttl.html},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{RedisRDBCompression2026,
+  author       = {{Redis Ltd.}},
+  title        = {Redis Documentation: Configuration option \texttt{rdbcompression}},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://redis.io/docs/management/config/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{MinIOErasureCoding2026,
+  author       = {{MinIO, Inc.}},
+  title        = {MinIO Documentation: Erasure Coding (distributed mode)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://min.io/docs/minio/linux/operations/erasure-code.html},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{BlenderOpenMovies2026,
+  author       = {{Blender Foundation}},
+  title        = {Blender Open Movies (Sintel, Big Buck Bunny, Tears of Steel) -- Download and license information},
+  year         = {2026},
+  howpublished = {Project website},
+  url          = {https://www.blender.org/about/projects/},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{KaggleDatasets2026,
+  author       = {{Kaggle}},
+  title        = {Kaggle Datasets: Access and distribution of datasets},
+  year         = {2026},
+  howpublished = {Website documentation},
+  url          = {https://www.kaggle.com/datasets},
+  note         = {Accessed: 2026-02-18}
+}
+
+@misc{PostgresBtreeImplementation,
+  author       = {{PostgreSQL Global Development Group}},
+  title        = {PostgreSQL Documentation: {B-Tree Index Implementation} (Index Deduplication)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.postgresql.org/docs/current/btree-implementation.html},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{PostgresFileLayout2026,
+  author       = {{PostgreSQL Global Development Group}},
+  title        = {PostgreSQL Documentation: Database File Layout (relation forks: main, \_fsm, \_vm)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.postgresql.org/docs/current/storage-file-layout.html},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{PostgresVisibilityMap2026,
+  author       = {{PostgreSQL Global Development Group}},
+  title        = {PostgreSQL Documentation: Visibility Map},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.postgresql.org/docs/current/storage-vm.html},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MariaDBUndoLog2026,
+  author       = {{MariaDB Foundation}},
+  title        = {MariaDB Documentation: {InnoDB} Undo Log},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-undo-log},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MariaDBPurge2026,
+  author       = {{MariaDB Foundation}},
+  title        = {MariaDB Documentation: {InnoDB} Purge},
+  year         = {2025},
+  howpublished = {Online documentation},
+  url          = {https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-purge},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MariaDBChangeBuffer2026,
+  author       = {{MariaDB Foundation}},
+  title        = {MariaDB Documentation: {InnoDB} Change Buffering},
+  year         = {2025},
+  howpublished = {Online documentation},
+  url          = {https://mariadb.com/docs/server/server-usage/storage-engines/innodb/innodb-change-buffering},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MariaDBRowFormatCompressed2026,
+  author       = {{MariaDB Foundation}},
+  title        = {MariaDB Documentation: InnoDB Row Formats (COMPRESSED)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://mariadb.com/kb/en/innodb-row-formats-overview/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{ClickHouseMergeTreeDocs2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Documentation: MergeTree Table Engine (granules and marks)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/engines/table-engines/mergetree-family/mergetree},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{ClickHouseSparsePrimaryIndex2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Guide: Sparse Primary Indexes (marks and granules)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/guides/best-practices/sparse-primary-indexes},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{ClickHouseSystemParts2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Documentation: \texttt{system.parts} table},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/operations/system-tables/parts},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{ClickHouseMutationsGuide2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Guide: Updating and Deleting Data with Mutations},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/guides/developer/mutations},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{ClickHouseDeleteMutations2026,
+  author       = {{ClickHouse, Inc.}},
+  title        = {ClickHouse Documentation: Delete Mutations (\texttt{ALTER TABLE ... DELETE})},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://clickhouse.com/docs/managing-data/delete_mutations},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{CockroachStorageLayer,
+  author       = {{Cockroach Labs}},
+  title        = {CockroachDB Documentation: Storage Layer (Pebble, amplification, compaction)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://www.cockroachlabs.com/docs/stable/architecture/storage-layer},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{CockroachValueSeparation2026,
+  author       = {{Cockroach Labs}},
+  title        = {Cockroach Labs Blog: Value Separation in Pebble (write amplification and compaction I/O)},
+  year         = {2026},
+  howpublished = {Blog post},
+  url          = {https://www.cockroachlabs.com/blog/value-separation-pebble-optimization/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{KafkaProducerConfigs2026,
+  author       = {{Apache Kafka}},
+  title        = {Apache Kafka Documentation: Producer Configs (\texttt{enable.idempotence})},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://kafka.apache.org/41/configuration/producer-configs/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{KafkaStorageInternals2026,
+  author       = {{Strimzi Project}},
+  title        = {Strimzi Blog: Deep dive into Kafka storage internals (segments and indexes)},
+  year         = {2021},
+  howpublished = {Blog post},
+  url          = {https://strimzi.io/blog/2021/12/17/kafka-segment-retention/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{KafkaSegmentRetention2026,
+  author       = {{Strimzi Project}},
+  title        = {Strimzi Blog: Kafka segment retention and producer snapshots (idempotence state)},
+  year         = {2021},
+  howpublished = {Blog post},
+  url          = {https://strimzi.io/blog/2021/12/17/kafka-segment-retention/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{KafkaLogCompactionDesign2026,
+  author       = {{Confluent, Inc.}},
+  title        = {Kafka Design Documentation: Log Compaction},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://docs.confluent.io/kafka/design/log_compaction.html},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{RedisPersistence2026,
+  author       = {{Redis Ltd.}},
+  title        = {Redis Documentation: Persistence (RDB and AOF)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{RedisObjectEncoding2026,
+  author       = {{Redis Ltd.}},
+  title        = {Redis Documentation: \texttt{OBJECT ENCODING}},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://redis.io/docs/latest/commands/object-encoding/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{RedisMemoryOptimization2026,
+  author       = {{Redis Ltd.}},
+  title        = {Redis Documentation: Memory Optimization},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/memory-optimization/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{RedisBGREWRITEAOF2026,
+  author       = {{Redis Ltd.}},
+  title        = {Redis Documentation: \texttt{BGREWRITEAOF} (AOF rewrite)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://redis.io/docs/latest/commands/bgrewriteaof/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MinIOMythsDedupCompression2023,
+  author       = {{MinIO, Inc.}},
+  title        = {Myths about Deduplication and Compression in Storage},
+  year         = {2023},
+  howpublished = {Blog post},
+  url          = {https://blog.min.io/myths-about-deduplication-and-compression/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MinIOErasureCodingDocs2026,
+  author       = {{MinIO, Inc.}},
+  title        = {MinIO Documentation: Erasure Coding (core concepts)},
+  year         = {2026},
+  howpublished = {Online documentation},
+  url          = {https://docs.min.io/enterprise/aistor-object-store/operations/core-concepts/erasure-coding/},
+  note         = {Accessed: 2026-02-24}
+}
+
+@misc{MinIOTransparentCompression2022,
+  author       = {{MinIO, Inc.}},
+  title        = {MinIO Blog: Transparent Data Compression},
+  year         = {2022},
+  howpublished = {Blog post},
+  url          = {https://blog.min.io/transparent-data-compression/},
+  note         = {Accessed: 2026-02-24}
+}
