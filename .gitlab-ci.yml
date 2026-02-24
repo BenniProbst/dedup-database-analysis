@@ -612,16 +612,10 @@ experiment:reset:
       chmod +x build/dedup-test
       OVERALL_EXIT=0
 
-      # Kafka SASL/SCRAM-SHA-512 credentials for MetricsTrace (dedup-lab KafkaUser)
-      export KAFKA_USER="dedup-lab"
-      export KAFKA_PASSWORD="${DEDUP_KAFKA_PASSWORD}"
-      echo "[DEBUG] KAFKA_USER=${KAFKA_USER}, KAFKA_PASSWORD length=${#KAFKA_PASSWORD}"
-      # Fallback: Read from mounted K8s secret if CI variable is empty
-      if [ -z "${KAFKA_PASSWORD}" ]; then
-        echo "[WARN] DEDUP_KAFKA_PASSWORD CI var empty. Trying mounted secret..."
-        export KAFKA_PASSWORD=$(cat /secrets/dedup-kafka/KAFKA_PASSWORD 2>/dev/null || echo "")
-        echo "[DEBUG] After fallback: KAFKA_PASSWORD length=${#KAFKA_PASSWORD}"
-      fi
+      # Kafka: Use PLAINTEXT port 9092 (no SASL). SCRAM-SHA-512 broken with
+      # Debian bookworm librdkafka<2.6.1 + Kafka 4.x KRaft nonce bug.
+      # When librdkafka>=2.6.1 is available, switch back to port 9094 + SCRAM.
+      unset KAFKA_USER KAFKA_PASSWORD 2>/dev/null || true
 
       # Reset: Clear NFS checkpoints for this DB so all runs execute fresh
       # (Without this, completed runs from cancelled pipelines would be skipped)

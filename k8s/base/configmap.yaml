@@ -56,14 +56,14 @@ data:
         {
           "system": "kafka",
           "host": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local",
-          "port": 9094,
-          "user": "dedup-lab",
+          "port": 9092,
+          "user": "",
           "password": "",
           "lab_schema": "dedup-lab",
           "pvc_name": "data-kafka-cluster-broker-0",
           "k8s_namespace": "kafka",
           "max_experiment_bytes": 0,
-          "_comment": "SCRAM-SHA-512 on port 9094. Password from KAFKA_PASSWORD env var."
+          "_comment": "PLAINTEXT on port 9092. SCRAM-SHA-512 broken with librdkafka<2.6.1+Kafka4.x KRaft."
         },
         {
           "system": "minio",
@@ -144,7 +144,7 @@ data:
       },
 
       "metrics_trace": {
-        "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094",
+        "kafka_bootstrap": "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092",
         "kafka_topic": "dedup-lab-metrics",
         "events_topic": "dedup-lab-events",
         "sample_interval_ms": 100,
