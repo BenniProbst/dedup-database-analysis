@@ -1,4 +1,8 @@
-# COMDARE Multi-Platform CI/CD Template v6.0.3 (BS-3040, S2660)
+# COMDARE Multi-Platform CI/CD Template v6.1.0 (BS-3040, S2660b)
+# v6.1.0: Multi-OS Docker Build Matrix (K8s Debian + K8s Ubuntu, User-Direktive S2660b)
+#   - build-k8s split into build-k8s-debian (gcc:14) + build-k8s-ubuntu (ubuntu:24.04)
+#   - 4 mandatory jobs: K8s-Debian, K8s-Ubuntu, BM-Debian, BM-Ubuntu
+#   - 4 exotic allow_failure jobs: macOS x86/ARM, Linux ARM64, Linux RISC-V
 # v6.0.3: BM jobs mandatory (Debian+Ubuntu+K8s ALL must pass, User-Direktive S2660)
 # v6.0.3: Layer-aware dependency resolution + cmake install + artifact sharing
 #   - Download upstream module artifacts from MinIO (buildsystem-deps bucket)
@@ -51,9 +55,81 @@ variables:
   BEP_LAYER: ""
 
 # ============================================================
-# Stage 1: K8s Build (Docker executor, max 4 pods via AntiAffinity)
+# Stage 1: K8s Docker Builds (2 jobs parallel: Debian + Ubuntu)
 # ============================================================
-build-k8s:
+
+# --- K8s shared dependency download (YAML anchor) ---
+.k8s-deps-download: &k8s-deps-download |
+  if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
+    echo "=== Downloading ${BEP_MODULE_DEPS} from MinIO ==="
+    mkdir -p "$BEP_DEPS_DIR"
+    python3 << 'DEPSEOF'
+  import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error, tarfile, io, ssl
+  ctx = ssl.create_default_context()
+  ctx.check_hostname = False
+  ctx.verify_mode = ssl.CERT_NONE
+
+  def get_signing_key(secret, datestamp, region, service):
+      k = hmac.new(('AWS4' + secret).encode(), datestamp.encode(), hashlib.sha256).digest()
+      k = hmac.new(k, region.encode(), hashlib.sha256).digest()
+      k = hmac.new(k, service.encode(), hashlib.sha256).digest()
+      return hmac.new(k, b'aws4_request', hashlib.sha256).digest()
+
+  def s3_get(bucket, obj_key, endpoint, access, secret):
+      parsed = urllib.parse.urlparse(endpoint)
+      host, scheme = parsed.netloc, parsed.scheme
+      t = datetime.datetime.utcnow()
+      amz_date, ds = t.strftime('%Y%m%dT%H%M%SZ'), t.strftime('%Y%m%d')
+      region, service = 'us-east-1', 's3'
+      uri = '/' + bucket + '/' + obj_key
+      payload_hash = hashlib.sha256(b'').hexdigest()
+      headers_str = f'host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n'
+      signed_h = 'host;x-amz-content-sha256;x-amz-date'
+      creq = f'GET\n{uri}\n\n{headers_str}\n{signed_h}\n{payload_hash}'
+      scope = f'{ds}/{region}/{service}/aws4_request'
+      sts = f'AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashlib.sha256(creq.encode()).hexdigest()}'
+      sig = hmac.new(get_signing_key(secret, ds, region, service), sts.encode(), hashlib.sha256).hexdigest()
+      auth = f'AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed_h}, Signature={sig}'
+      url = f'{scheme}://{host}{uri}'
+      req = urllib.request.Request(url, method='GET')
+      req.add_header('Authorization', auth)
+      req.add_header('x-amz-date', amz_date)
+      req.add_header('x-amz-content-sha256', payload_hash)
+      try:
+          resp = urllib.request.urlopen(req, context=ctx, timeout=60)
+          return resp.read()
+      except urllib.error.HTTPError as e:
+          return None
+
+  endpoint = os.environ.get('MINIO_ENDPOINT', '')
+  access = os.environ.get('MINIO_ACCESS_KEY', '')
+  secret = os.environ.get('MINIO_SECRET_KEY', '')
+  deps_dir = os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps')
+  deps_bucket = os.environ.get('BEP_DEPS_BUCKET', 'buildsystem-deps')
+  deps_list = os.environ.get('BEP_MODULE_DEPS', '').split()
+
+  ok = 0
+  for mod in deps_list:
+      obj_key = f'{mod}/latest/linux-x86_64/install.tar.gz'
+      data = s3_get(deps_bucket, obj_key, endpoint, access, secret)
+      if data:
+          dest = os.path.join(deps_dir, mod)
+          os.makedirs(dest, exist_ok=True)
+          with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+              tar.extractall(dest)
+          print(f'  [OK] {mod} -> {dest}')
+          ok += 1
+      else:
+          print(f'  [SKIP] {mod} (not in {deps_bucket})')
+  print(f'Downloaded {ok}/{len(deps_list)} dependencies')
+  DEPSEOF
+    export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
+  else
+    echo "No upstream deps configured (BEP_MODULE_DEPS empty or MinIO not set)"
+  fi
+
+# --- K8s Job 1: Debian (gcc:14, Debian bookworm) — MANDATORY ---
+build-k8s-debian:
   stage: build-k8s
   timeout: 15 minutes
   image: gcc:${GCC_VERSION}
@@ -66,91 +142,22 @@ build-k8s:
     - 'pip install gcovr --break-system-packages -q --retries 3 || echo "WARN: gcovr install failed — coverage will be skipped"'
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
-    # v6.0: Download upstream dependencies from MinIO
-    - |
-      if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
-        echo "=== Downloading ${BEP_MODULE_DEPS} from MinIO ==="
-        mkdir -p "$BEP_DEPS_DIR"
-        python3 << 'DEPSEOF'
-      import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error, tarfile, io, ssl
-      ctx = ssl.create_default_context()
-      ctx.check_hostname = False
-      ctx.verify_mode = ssl.CERT_NONE
-
-      def get_signing_key(secret, datestamp, region, service):
-          k = hmac.new(('AWS4' + secret).encode(), datestamp.encode(), hashlib.sha256).digest()
-          k = hmac.new(k, region.encode(), hashlib.sha256).digest()
-          k = hmac.new(k, service.encode(), hashlib.sha256).digest()
-          return hmac.new(k, b'aws4_request', hashlib.sha256).digest()
-
-      def s3_get(bucket, obj_key, endpoint, access, secret):
-          parsed = urllib.parse.urlparse(endpoint)
-          host, scheme = parsed.netloc, parsed.scheme
-          t = datetime.datetime.utcnow()
-          amz_date, ds = t.strftime('%Y%m%dT%H%M%SZ'), t.strftime('%Y%m%d')
-          region, service = 'us-east-1', 's3'
-          uri = '/' + bucket + '/' + obj_key
-          payload_hash = hashlib.sha256(b'').hexdigest()
-          headers_str = f'host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n'
-          signed_h = 'host;x-amz-content-sha256;x-amz-date'
-          creq = f'GET\n{uri}\n\n{headers_str}\n{signed_h}\n{payload_hash}'
-          scope = f'{ds}/{region}/{service}/aws4_request'
-          sts = f'AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashlib.sha256(creq.encode()).hexdigest()}'
-          sig = hmac.new(get_signing_key(secret, ds, region, service), sts.encode(), hashlib.sha256).hexdigest()
-          auth = f'AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed_h}, Signature={sig}'
-          url = f'{scheme}://{host}{uri}'
-          req = urllib.request.Request(url, method='GET')
-          req.add_header('Authorization', auth)
-          req.add_header('x-amz-date', amz_date)
-          req.add_header('x-amz-content-sha256', payload_hash)
-          try:
-              resp = urllib.request.urlopen(req, context=ctx, timeout=60)
-              return resp.read()
-          except urllib.error.HTTPError as e:
-              return None
-
-      endpoint = os.environ.get('MINIO_ENDPOINT', '')
-      access = os.environ.get('MINIO_ACCESS_KEY', '')
-      secret = os.environ.get('MINIO_SECRET_KEY', '')
-      deps_dir = os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps')
-      deps_bucket = os.environ.get('BEP_DEPS_BUCKET', 'buildsystem-deps')
-      deps_list = os.environ.get('BEP_MODULE_DEPS', '').split()
-
-      ok = 0
-      for mod in deps_list:
-          obj_key = f'{mod}/latest/linux-x86_64/install.tar.gz'
-          data = s3_get(deps_bucket, obj_key, endpoint, access, secret)
-          if data:
-              dest = os.path.join(deps_dir, mod)
-              os.makedirs(dest, exist_ok=True)
-              with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
-                  tar.extractall(dest)
-              print(f'  [OK] {mod} -> {dest}')
-              ok += 1
-          else:
-              print(f'  [SKIP] {mod} (not in {deps_bucket})')
-      print(f'Downloaded {ok}/{len(deps_list)} dependencies')
-      DEPSEOF
-        export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
-      else
-        echo "No upstream deps configured (BEP_MODULE_DEPS empty or MinIO not set)"
-      fi
+    - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v6.0.3 — K8s (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v6.1.0 — K8s Debian (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
-    - cmake -B build-k8s -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
-    - cmake --build build-k8s -j $(nproc)
-    - cd build-k8s && ctest --output-on-failure -j$(nproc) || true
+    - cmake -B build-k8s-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
+    - cmake --build build-k8s-debian -j $(nproc)
+    - cd build-k8s-debian && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
     - kill $KEEPALIVE_PID 2>/dev/null || true
     - sleep 1
-    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s/_deps' --print-summary --xml coverage-k8s.xml || true
-    # v6.0: Install and create tarball for downstream consumers
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s-debian/_deps' --print-summary --xml coverage-k8s-debian.xml || true
     - |
-      cmake --install build-k8s --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
+      cmake --install build-k8s-debian --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
       if [ -d "${BEP_INSTALL_PREFIX}" ] && [ "$(ls -A ${BEP_INSTALL_PREFIX} 2>/dev/null)" ]; then
-        tar czf install-k8s.tar.gz -C "${BEP_INSTALL_PREFIX}" .
+        tar czf install-k8s-debian.tar.gz -C "${BEP_INSTALL_PREFIX}" .
         echo "Install tree created: $(du -sh ${BEP_INSTALL_PREFIX} | cut -f1)"
       else
         echo "No install rules — skipping install tree (header-only module, FetchContent handles deps)"
@@ -158,13 +165,62 @@ build-k8s:
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
-      - coverage-k8s.xml
-      - build-k8s/
-      - install-k8s.tar.gz
+      - coverage-k8s-debian.xml
+      - build-k8s-debian/
+      - install-k8s-debian.tar.gz
     reports:
       coverage_report:
         coverage_format: cobertura
-        path: coverage-k8s.xml
+        path: coverage-k8s-debian.xml
+    expire_in: 30 days
+    when: always
+
+# --- K8s Job 2: Ubuntu 24.04 (gcc-14 installed) — MANDATORY ---
+build-k8s-ubuntu:
+  stage: build-k8s
+  timeout: 15 minutes
+  image: ubuntu:24.04
+  tags:
+    - kubernetes
+  before_script:
+    - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
+    - KEEPALIVE_PID=$!
+    - export DEBIAN_FRONTEND=noninteractive
+    - apt-get update -qq && apt-get install -y -qq gcc-14 g++-14 cmake ninja-build git python3-pip >/dev/null 2>&1
+    - update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 --slave /usr/bin/g++ g++ /usr/bin/g++-14
+    - 'pip install gcovr --break-system-packages -q --retries 3 || echo "WARN: gcovr install failed — coverage will be skipped"'
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
+    - *k8s-deps-download
+  script:
+    - echo "=== COMDARE CI v6.1.0 — K8s Ubuntu 24.04 (gcc-14, x86_64, C++${CXX_STANDARD}) ==="
+    - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
+    - cmake -B build-k8s-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
+    - cmake --build build-k8s-ubuntu -j $(nproc)
+    - cd build-k8s-ubuntu && ctest --output-on-failure -j$(nproc) || true
+    - cd $CI_PROJECT_DIR
+    - kill $KEEPALIVE_PID 2>/dev/null || true
+    - sleep 1
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s-ubuntu/_deps' --print-summary --xml coverage-k8s-ubuntu.xml || true
+    - |
+      cmake --install build-k8s-ubuntu --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
+      if [ -d "${BEP_INSTALL_PREFIX}" ] && [ "$(ls -A ${BEP_INSTALL_PREFIX} 2>/dev/null)" ]; then
+        tar czf install-k8s-ubuntu.tar.gz -C "${BEP_INSTALL_PREFIX}" .
+        echo "Install tree created: $(du -sh ${BEP_INSTALL_PREFIX} | cut -f1)"
+      else
+        echo "No install rules — skipping install tree (header-only module, FetchContent handles deps)"
+      fi
+  coverage: '/lines:\s+(\d+\.\d+)%/'
+  artifacts:
+    paths:
+      - coverage-k8s-ubuntu.xml
+      - build-k8s-ubuntu/
+      - install-k8s-ubuntu.tar.gz
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-k8s-ubuntu.xml
     expire_in: 30 days
     when: always
 
@@ -180,7 +236,7 @@ build-debian-x86:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.0.3 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.1.0 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
@@ -238,7 +294,7 @@ build-ubuntu-x86:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.0.3 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.1.0 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
@@ -296,7 +352,7 @@ build-ubuntu-x86:
   dependencies: []
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v6.0.3 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.1.0 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
     - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
   script:
@@ -349,21 +405,25 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v6.0.3 — Aggregate Results ==="
+    - echo "=== COMDARE CI v6.1.0 — Aggregate Results ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - '[ -n "$BEP_MODULE_DEPS" ] && echo "Deps: $BEP_MODULE_DEPS" || true'
-    - echo "Platform build results:"
-    - '[ -f coverage-k8s.xml ] && echo "  K8s Docker (x86_64):  OK" || echo "  K8s Docker (x86_64):  MISSING"'
-    - '[ -f coverage-debian.xml ] && echo "  Debian BM (x86_64):   OK" || echo "  Debian BM (x86_64):   MISSING"'
-    - '[ -f coverage-ubuntu.xml ] && echo "  Ubuntu BM (x86_64):   OK" || echo "  Ubuntu BM (x86_64):   MISSING"'
-    - '[ -f install-k8s.tar.gz ] && echo "  Install tree:          $(du -sh install-k8s.tar.gz | cut -f1)" || echo "  Install tree:          none (header-only)"'
+    - echo "Platform build results (4 mandatory + 4 exotic):"
+    - '[ -f coverage-k8s-debian.xml ] && echo "  K8s Debian (x86_64):  OK" || echo "  K8s Debian (x86_64):  MISSING"'
+    - '[ -f coverage-k8s-ubuntu.xml ] && echo "  K8s Ubuntu (x86_64):  OK" || echo "  K8s Ubuntu (x86_64):  MISSING"'
+    - '[ -f coverage-debian.xml ] && echo "  BM Debian (x86_64):   OK" || echo "  BM Debian (x86_64):   MISSING"'
+    - '[ -f coverage-ubuntu.xml ] && echo "  BM Ubuntu (x86_64):   OK" || echo "  BM Ubuntu (x86_64):   MISSING"'
+    - '[ -f install-k8s-debian.tar.gz ] && echo "  Install tree (Debian): $(du -sh install-k8s-debian.tar.gz | cut -f1)" || echo "  Install tree (Debian): none"'
+    - '[ -f install-k8s-ubuntu.tar.gz ] && echo "  Install tree (Ubuntu): $(du -sh install-k8s-ubuntu.tar.gz | cut -f1)" || echo "  Install tree (Ubuntu): none"'
     - echo "Pipeline $CI_PIPELINE_ID complete on $(date -u)"
   artifacts:
     paths:
-      - coverage-k8s.xml
+      - coverage-k8s-debian.xml
+      - coverage-k8s-ubuntu.xml
       - coverage-debian.xml
       - coverage-ubuntu.xml
-      - install-k8s.tar.gz
+      - install-k8s-debian.tar.gz
+      - install-k8s-ubuntu.tar.gz
     expire_in: 30 days
     when: always
 
@@ -376,7 +436,7 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v6.0.3 — MinIO Upload (artifacts + deps) ==="
+    - echo "=== COMDARE CI v6.1.0 — MinIO Upload (artifacts + deps) ==="
     - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
@@ -433,11 +493,12 @@ upload-to-minio:
       # === Part 1: buildsystem-artifacts (coverage + binaries, versioned by pipeline) ===
       bucket_artifacts = 'buildsystem-artifacts'
       uploads = [
-          ('coverage-k8s.xml', f'{proj}/linux/x86_64/k8s/{pid}/coverage/coverage-k8s.xml'),
+          ('coverage-k8s-debian.xml', f'{proj}/linux/x86_64/k8s-debian/{pid}/coverage/coverage-k8s-debian.xml'),
+          ('coverage-k8s-ubuntu.xml', f'{proj}/linux/x86_64/k8s-ubuntu/{pid}/coverage/coverage-k8s-ubuntu.xml'),
           ('coverage-debian.xml', f'{proj}/linux/x86_64/debian/{pid}/coverage/coverage-debian.xml'),
           ('coverage-ubuntu.xml', f'{proj}/linux/x86_64/ubuntu/{pid}/coverage/coverage-ubuntu.xml'),
       ]
-      for build_dir, platform in [('build-k8s', 'k8s'), ('build-debian', 'debian'), ('build-ubuntu', 'ubuntu')]:
+      for build_dir, platform in [('build-k8s-debian', 'k8s-debian'), ('build-k8s-ubuntu', 'k8s-ubuntu'), ('build-debian', 'debian'), ('build-ubuntu', 'ubuntu')]:
           for ext in ['*.a', '*.so', '*.dylib']:
               for f in glob.glob(f'{build_dir}/**/{ext}', recursive=True):
                   if not os.path.isfile(f): continue
@@ -461,20 +522,18 @@ upload-to-minio:
 
       # === Part 2: buildsystem-deps (install tree for downstream, "latest" key) ===
       bucket_deps = os.environ.get('BEP_DEPS_BUCKET', 'buildsystem-deps')
-      install_tarball = 'install-k8s.tar.gz'
-      if os.path.exists(install_tarball):
-          # Extract module name from project path (last component)
-          module_name = proj.split('/')[-1] if '/' in proj else proj
-          deps_key = f'{module_name}/latest/linux-x86_64/install.tar.gz'
-          code = s3_put(install_tarball, bucket_deps, deps_key, endpoint, access, secret)
-          status = 'OK' if code == 200 else f'FAIL({code})'
-          print(f'\n  {status} {bucket_deps}/{deps_key}')
-          # Also version-tagged
-          versioned_key = f'{module_name}/{pid}/linux-x86_64/install.tar.gz'
-          code2 = s3_put(install_tarball, bucket_deps, versioned_key, endpoint, access, secret)
-          status2 = 'OK' if code2 == 200 else f'FAIL({code2})'
-          print(f'  {status2} {bucket_deps}/{versioned_key}')
-      else:
+      module_name = proj.split('/')[-1] if '/' in proj else proj
+      for tarball, label in [('install-k8s-debian.tar.gz', 'debian'), ('install-k8s-ubuntu.tar.gz', 'ubuntu')]:
+          if os.path.exists(tarball):
+              deps_key = f'{module_name}/latest/linux-x86_64-{label}/install.tar.gz'
+              code = s3_put(tarball, bucket_deps, deps_key, endpoint, access, secret)
+              status = 'OK' if code == 200 else f'FAIL({code})'
+              print(f'\n  {status} {bucket_deps}/{deps_key}')
+              versioned_key = f'{module_name}/{pid}/linux-x86_64-{label}/install.tar.gz'
+              code2 = s3_put(tarball, bucket_deps, versioned_key, endpoint, access, secret)
+              status2 = 'OK' if code2 == 200 else f'FAIL({code2})'
+              print(f'  {status2} {bucket_deps}/{versioned_key}')
+      if not any(os.path.exists(t) for t in ['install-k8s-debian.tar.gz', 'install-k8s-ubuntu.tar.gz']):
           print(f'\nNo install tree — header-only module (deps managed via FetchContent)')
 
       print(f'\nUpload complete for pipeline {pid}')
