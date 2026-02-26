@@ -1,6 +1,6 @@
-# COMDARE Multi-Platform CI/CD Template v6.0.2 (BS-3040, S2660)
-# v6.0.2: BM jobs mandatory (Debian+Ubuntu+K8s ALL must pass, User-Direktive S2660)
-# v6.0.2: Layer-aware dependency resolution + cmake install + artifact sharing
+# COMDARE Multi-Platform CI/CD Template v6.0.3 (BS-3040, S2660)
+# v6.0.3: BM jobs mandatory (Debian+Ubuntu+K8s ALL must pass, User-Direktive S2660)
+# v6.0.3: Layer-aware dependency resolution + cmake install + artifact sharing
 #   - Download upstream module artifacts from MinIO (buildsystem-deps bucket)
 #   - cmake --install + upload install tree for downstream consumers
 #   - BEP_MODULE_DEPS variable: space-separated list of upstream module names
@@ -136,7 +136,7 @@ build-k8s:
         echo "No upstream deps configured (BEP_MODULE_DEPS empty or MinIO not set)"
       fi
   script:
-    - echo "=== COMDARE CI v6.0.2 — K8s (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v6.0.3 — K8s (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
@@ -172,7 +172,7 @@ build-k8s:
 # Stage 2: Bare-Metal Builds (after K8s finishes -> XOR enforced)
 # ============================================================
 
-# --- Pool 2: Debian x86_64 (pve1, pve2) — MANDATORY (v6.0.2: User-Direktive S2660) ---
+# --- Pool 2: Debian x86_64 (pve1, pve2) — MANDATORY (v6.0.3: User-Direktive S2660) ---
 build-debian-x86:
   stage: build-bm
   dependencies: []
@@ -180,7 +180,7 @@ build-debian-x86:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.0.2 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.0.3 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
@@ -193,20 +193,20 @@ build-debian-x86:
         for mod in $BEP_MODULE_DEPS; do
           if command -v python3 >/dev/null; then
             python3 -c "
-import urllib.request, ssl, os, tarfile, io
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
-try:
-    data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
-    dest = os.path.join(os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps'), '${mod}')
-    os.makedirs(dest, exist_ok=True)
-    tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
-    print(f'  [OK] ${mod}')
-except Exception as e:
-    print(f'  [SKIP] ${mod} ({e})')
-" || true
+      import urllib.request, ssl, os, tarfile, io
+      ctx = ssl.create_default_context()
+      ctx.check_hostname = False
+      ctx.verify_mode = ssl.CERT_NONE
+      url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
+      try:
+          data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
+          dest = os.path.join(os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps'), '${mod}')
+          os.makedirs(dest, exist_ok=True)
+          tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
+          print(f'  [OK] ${mod}')
+      except Exception as e:
+          print(f'  [SKIP] ${mod} ({e})')
+      " || true
           fi
         done
         export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
@@ -230,7 +230,7 @@ except Exception as e:
     expire_in: 30 days
     when: always
 
-# --- Pool 3: Ubuntu x86_64 (node3, node4) — MANDATORY (v6.0.2: User-Direktive S2660) ---
+# --- Pool 3: Ubuntu x86_64 (node3, node4) — MANDATORY (v6.0.3: User-Direktive S2660) ---
 build-ubuntu-x86:
   stage: build-bm
   dependencies: []
@@ -238,7 +238,7 @@ build-ubuntu-x86:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.0.2 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.0.3 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
@@ -251,20 +251,20 @@ build-ubuntu-x86:
         for mod in $BEP_MODULE_DEPS; do
           if command -v python3 >/dev/null; then
             python3 -c "
-import urllib.request, ssl, os, tarfile, io
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
-try:
-    data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
-    dest = os.path.join(os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps'), '${mod}')
-    os.makedirs(dest, exist_ok=True)
-    tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
-    print(f'  [OK] ${mod}')
-except Exception as e:
-    print(f'  [SKIP] ${mod} ({e})')
-" || true
+      import urllib.request, ssl, os, tarfile, io
+      ctx = ssl.create_default_context()
+      ctx.check_hostname = False
+      ctx.verify_mode = ssl.CERT_NONE
+      url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
+      try:
+          data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
+          dest = os.path.join(os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps'), '${mod}')
+          os.makedirs(dest, exist_ok=True)
+          tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
+          print(f'  [OK] ${mod}')
+      except Exception as e:
+          print(f'  [SKIP] ${mod} ({e})')
+      " || true
           fi
         done
         export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
@@ -296,7 +296,7 @@ except Exception as e:
   dependencies: []
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v6.0.2 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.0.3 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
     - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
   script:
@@ -349,7 +349,7 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v6.0.2 — Aggregate Results ==="
+    - echo "=== COMDARE CI v6.0.3 — Aggregate Results ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - '[ -n "$BEP_MODULE_DEPS" ] && echo "Deps: $BEP_MODULE_DEPS" || true'
     - echo "Platform build results:"
@@ -376,7 +376,7 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v6.0.2 — MinIO Upload (artifacts + deps) ==="
+    - echo "=== COMDARE CI v6.0.3 — MinIO Upload (artifacts + deps) ==="
     - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
