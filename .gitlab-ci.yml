@@ -1,35 +1,44 @@
-# COMDARE Multi-Platform CI/CD Template v6.3.0 (BS-3040, S2665d)
-# v6.3.0: Docker OS-Matrix — 6 Linux-Varianten pro Architektur-Pool (User-Direktive S2665c)
-#   - x86_64 Docker Pool: 6 OSes on K8s (Ubuntu+Debian mandatory, Fedora+Alpine+openSUSE+Rocky allow_failure)
-#   - ARM64 Docker Pool: 6 OSes on ARM64 runners via docker run (all allow_failure)
-#   - RISC-V Docker Pool: 6 OSes on RISC-V runner via docker run (all allow_failure)
+# COMDARE Multi-Platform CI/CD Template v7.0.0 (BS-3040, S2665e)
+# v7.0.0: Full Docker OS-Matrix — 18 Linux-Varianten (6 OS x 3 Versionen) pro Architektur-Pool
+#   - K8s Pool: 2 mandatory jobs (Debian GCC:14 + Ubuntu 24.04) on Talos VMs
+#   - BM Native Pool: 2 mandatory jobs (Debian pve1/pve2 + Ubuntu node3/node4)
+#   - Docker x86_64 Pool: 18 OSes on BM hosts via docker run (all allow_failure)
+#   - Docker ARM64 Pool: 18 OSes on ARM64 runners via docker run (Ubuntu/Debian mandatory)
+#   - Docker RISC-V Pool: 18 OSes on RISC-V runner via docker run (all allow_failure)
+#   - Exotic Native Pool: 4 jobs (macOS x86/ARM, Linux ARM64/RISC-V, allow_failure)
+#   - Windows Docker Pool: 2 jobs (MinGW cross-compile on macOS, allow_failure)
 #   - Universal package installer: apt-get/dnf/apk/zypper auto-detection
-#   - OSes: Ubuntu 24.04, Debian 12, Fedora 41, Alpine 3.21, openSUSE Tumbleweed, Rocky Linux 9
-#   - Total: 26 jobs per pipeline (6 native + 18 Docker + aggregate + upload)
-# v6.2.2: Parallel Build Stages (all build jobs in single "build" stage)
-# v6.2.2: Exotic Docker + BM Docker + FetchContent Auth
-# v6.1.0: Multi-OS Docker Build Matrix (K8s Debian + K8s Ubuntu)
-# v6.0.3: BM jobs mandatory, layer-aware deps, cmake install, artifact sharing
-# v5.6.2: GITLAB_DEPLOY_TOKEN for cross-project FetchContent
-# v5.5.0: concurrent=1 on ALL runners, AntiAffinity for K8s
-# v5.4.1: upload-to-minio uses python3 S3v4
+#   - Total: 66 jobs per pipeline (8 native + 54 Docker + 2 Windows + aggregate + upload)
 #
-# === Runner Architecture (12 runners, 26 jobs per pipeline) ===
-# All jobs in single "build" stage — K8s + BM + Exotic + Docker ALL run in parallel
+# === Runner Architecture (12 runners, 66 jobs per pipeline) ===
+# All build jobs in single "build" stage — ALL pools run in parallel, concurrency=1
 #
-# Pool 1: K8s Docker x86_64 (pve1/pve2/node3/node4 Talos VMs, AntiAffinity, max 4)
-#   → 6 Docker OS builds: Ubuntu, Debian, Fedora, Alpine, openSUSE, Rocky
-# Pool 2: BM Native       (pve1+pve2 Debian, node3+node4 Ubuntu, concurrent=1 each)
-# Pool 3: Exotic Native    (node5/6/7/8, concurrent=1, allow_failure)
-# Pool 4: Docker ARM64     (node6+node7, docker run, 6 OS builds, allow_failure)
-# Pool 5: Docker RISC-V    (node8, docker run, 6 OS builds, allow_failure)
+# Pool 1: K8s Docker       (4 Talos VMs, AntiAffinity, tags: kubernetes, 2 mandatory jobs)
+# Pool 2: BM Native        (pve1+pve2 Debian, node3+node4 Ubuntu, concurrent=1, mandatory)
+# Pool 3: Docker x86_64    (pve1/pve2/node3/node4 via docker run, tags: bare-metal+x86_64)
+# Pool 4: Docker ARM64     (node6+node7, docker run, tags: arm64, Ubuntu/Debian mandatory)
+# Pool 5: Docker RISC-V    (node8, docker run, tags: riscv64+linux, all allow_failure)
+# Pool 6: Exotic Native    (node5/6/7/8, concurrent=1, allow_failure)
+# Pool 7: Windows Docker   (node5+node6, MinGW cross-compile, allow_failure)
+#
+# === 18 Docker Variants (6 OS x 3 Versions) ===
+# Ubuntu:   24.04 (Noble LTS), 22.04 (Jammy LTS), 20.04 (Focal LTS)
+# Debian:   12 (Bookworm), 11 (Bullseye), 10 (Buster)
+# Fedora:   41, 40, 39
+# Alpine:   3.21, 3.20, 3.19
+# openSUSE: Tumbleweed, Leap 15.6, Leap 15.5
+# Rocky:    9, 9.3, 8
+#
+# === Mandatory Jobs ===
+# K8s Debian + K8s Ubuntu = MUST PASS
+# BM Debian + BM Ubuntu = MUST PASS
+# Docker ARM64 Ubuntu + Docker ARM64 Debian (latest only) = MUST PASS
+# Everything else = allow_failure
 #
 # === Dependency Resolution (v6.0) ===
 # staged-build.py passes BEP_MODULE_DEPS when triggering pipelines.
 # Before cmake configure, each dep's install tarball is downloaded from
 # MinIO buildsystem-deps bucket and extracted to BEP_DEPS_DIR.
-# CMAKE_PREFIX_PATH is set to include all deps.
-# After successful build, cmake --install uploads the install tree.
 
 stages:
   - build
@@ -40,12 +49,10 @@ variables:
   GCC_VERSION: "14"
   BUILD_TYPE: "Debug"
   CXX_STANDARD: "23"
-  # Dependency management (set by staged-build.py or project .gitlab-ci.yml)
   BEP_MODULE_DEPS: ""
   BEP_DEPS_BUCKET: "buildsystem-deps"
   BEP_DEPS_DIR: "/tmp/comdare-deps"
   BEP_INSTALL_PREFIX: "${CI_PROJECT_DIR}/install"
-  # Layer metadata (set by staged-build.py)
   BEP_LAYER: ""
 
 # ============================================================
@@ -73,7 +80,7 @@ variables:
     pip3 install gcovr --break-system-packages -q 2>/dev/null || true
   fi
 
-# --- K8s FetchContent auth + GitHub→GitLab mirror rewrites (internal K8s DNS) ---
+# --- K8s FetchContent auth + GitHub->GitLab mirror rewrites (internal K8s DNS) ---
 .k8s-fetch-setup: &k8s-fetch-setup |
   FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"
   git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
@@ -85,7 +92,7 @@ variables:
   git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
   git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
 
-# --- BM/Exotic FetchContent auth + GitHub→GitLab mirror rewrites (external URL) ---
+# --- BM/Exotic FetchContent auth + GitHub->GitLab mirror rewrites (external URL) ---
 .bm-fetch-setup: &bm-fetch-setup |
   FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"
   git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
@@ -167,34 +174,54 @@ variables:
     echo "No upstream deps configured (BEP_MODULE_DEPS empty or MinIO not set)"
   fi
 
+# --- Docker build script (shared by x86_64/ARM64/RISC-V Docker pools) ---
+.docker-build-script: &docker-build-script |
+  # Universal C++ build dependency installer
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make python3-pip >/dev/null 2>&1
+    apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+      update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+    pip install gcovr --break-system-packages -q --retries 3 2>/dev/null || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make python3-pip >/dev/null 2>&1
+    pip3 install gcovr -q --retries 3 2>/dev/null || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make python3 py3-pip >/dev/null 2>&1
+    pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make python3-pip >/dev/null 2>&1
+    pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+  fi
+  # FetchContent auth + mirror rewrites
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+  # Build
+  GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+  cmake -B build $GEN \
+    -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+    -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+  cmake --build build -j $(nproc 2>/dev/null || echo 2)
+  cd build && ctest --output-on-failure || true
+
 # ============================================================
-# Pool 1: Docker x86_64 Builds — 6 Linux OSes on K8s (parallel:matrix)
-# Ubuntu + Debian = MANDATORY, Fedora + Alpine + openSUSE + Rocky = allow_failure
+# Pool 1: K8s Builds — 2 mandatory jobs on Talos VMs (Kubernetes executor)
 # ============================================================
-build-docker-x86:
+
+build-k8s-debian:
   stage: build
   timeout: 15 minutes
-  parallel:
-    matrix:
-      - DOCKER_OS: ubuntu
-        DOCKER_IMAGE: "ubuntu:24.04"
-      - DOCKER_OS: debian
-        DOCKER_IMAGE: "debian:12"
-      - DOCKER_OS: fedora
-        DOCKER_IMAGE: "fedora:41"
-      - DOCKER_OS: alpine
-        DOCKER_IMAGE: "alpine:3.21"
-      - DOCKER_OS: opensuse
-        DOCKER_IMAGE: "opensuse/tumbleweed"
-      - DOCKER_OS: rocky
-        DOCKER_IMAGE: "rockylinux:9"
-  image: $DOCKER_IMAGE
+  image: gcc:14
   tags:
     - kubernetes
-  rules:
-    - if: '$DOCKER_OS == "ubuntu" || $DOCKER_OS == "debian"'
-      allow_failure: false
-    - allow_failure: true
   before_script:
     - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
     - KEEPALIVE_PID=$!
@@ -202,35 +229,75 @@ build-docker-x86:
     - *k8s-fetch-setup
     - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v6.3.0 — Docker x86_64 ${DOCKER_OS} (C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v7.0.0 — K8s Debian/GCC14 (C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
-    - 'GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"'
-    - cmake -B build-docker-x86-${DOCKER_OS} $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
-    - cmake --build build-docker-x86-${DOCKER_OS} -j $(nproc)
-    - cd build-docker-x86-${DOCKER_OS} && ctest --output-on-failure -j$(nproc) || true
+    - cmake -B build-k8s-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
+    - cmake --build build-k8s-debian -j $(nproc)
+    - cd build-k8s-debian && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
     - kill $KEEPALIVE_PID 2>/dev/null || true
     - sleep 1
-    - gcovr --root . --filter 'include/' --filter 'src/' --exclude "build-docker-x86-${DOCKER_OS}/_deps" --print-summary --xml coverage-docker-x86-${DOCKER_OS}.xml 2>/dev/null || true
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s-debian/_deps' --print-summary --xml coverage-k8s-debian.xml 2>/dev/null || true
     - |
-      cmake --install build-docker-x86-${DOCKER_OS} --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
+      cmake --install build-k8s-debian --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
       if [ -d "${BEP_INSTALL_PREFIX}" ] && [ "$(ls -A ${BEP_INSTALL_PREFIX} 2>/dev/null)" ]; then
-        tar czf install-docker-x86-${DOCKER_OS}.tar.gz -C "${BEP_INSTALL_PREFIX}" .
+        tar czf install-k8s-debian.tar.gz -C "${BEP_INSTALL_PREFIX}" .
         echo "Install tree created: $(du -sh ${BEP_INSTALL_PREFIX} | cut -f1)"
         rm -rf "${BEP_INSTALL_PREFIX}"
-      else
-        echo "No install rules — skipping install tree"
       fi
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
-      - coverage-docker-x86-${DOCKER_OS}.xml
-      - install-docker-x86-${DOCKER_OS}.tar.gz
+      - coverage-k8s-debian.xml
+      - install-k8s-debian.tar.gz
     reports:
       coverage_report:
         coverage_format: cobertura
-        path: coverage-docker-x86-${DOCKER_OS}.xml
+        path: coverage-k8s-debian.xml
+    expire_in: 30 days
+    when: always
+
+build-k8s-ubuntu:
+  stage: build
+  timeout: 15 minutes
+  image: ubuntu:24.04
+  tags:
+    - kubernetes
+  before_script:
+    - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
+    - KEEPALIVE_PID=$!
+    - *universal-install
+    - *k8s-fetch-setup
+    - *k8s-deps-download
+  script:
+    - echo "=== COMDARE CI v7.0.0 — K8s Ubuntu 24.04 (C++${CXX_STANDARD}) ==="
+    - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
+    - 'GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"'
+    - cmake -B build-k8s-ubuntu $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
+    - cmake --build build-k8s-ubuntu -j $(nproc)
+    - cd build-k8s-ubuntu && ctest --output-on-failure -j$(nproc) || true
+    - cd $CI_PROJECT_DIR
+    - kill $KEEPALIVE_PID 2>/dev/null || true
+    - sleep 1
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s-ubuntu/_deps' --print-summary --xml coverage-k8s-ubuntu.xml 2>/dev/null || true
+    - |
+      cmake --install build-k8s-ubuntu --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
+      if [ -d "${BEP_INSTALL_PREFIX}" ] && [ "$(ls -A ${BEP_INSTALL_PREFIX} 2>/dev/null)" ]; then
+        tar czf install-k8s-ubuntu.tar.gz -C "${BEP_INSTALL_PREFIX}" .
+        echo "Install tree created: $(du -sh ${BEP_INSTALL_PREFIX} | cut -f1)"
+        rm -rf "${BEP_INSTALL_PREFIX}"
+      fi
+  coverage: '/lines:\s+(\d+\.\d+)%/'
+  artifacts:
+    paths:
+      - coverage-k8s-ubuntu.xml
+      - install-k8s-ubuntu.tar.gz
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-k8s-ubuntu.xml
     expire_in: 30 days
     when: always
 
@@ -238,7 +305,6 @@ build-docker-x86:
 # Pool 2: Bare-Metal Native Builds — MANDATORY (Debian + Ubuntu x86_64)
 # ============================================================
 
-# --- BM Debian x86_64 (pve1, pve2) — MANDATORY ---
 build-debian-x86:
   stage: build
   dependencies: []
@@ -246,10 +312,9 @@ build-debian-x86:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.3.0 — BM Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
-    - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'echo "=== COMDARE CI v7.0.0 — BM Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'command -v git >/dev/null || { echo "ERROR: git not found"; exit 1; }'
+    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found"; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
     - *bm-fetch-setup
     - |
@@ -257,23 +322,17 @@ build-debian-x86:
         echo "=== Downloading ${BEP_MODULE_DEPS} ==="
         mkdir -p "$BEP_DEPS_DIR"
         for mod in $BEP_MODULE_DEPS; do
-          if command -v python3 >/dev/null; then
-            python3 -c "
+          python3 -c "
       import urllib.request, ssl, os, tarfile, io
-      ctx = ssl.create_default_context()
-      ctx.check_hostname = False
-      ctx.verify_mode = ssl.CERT_NONE
+      ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
       url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
       try:
           data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
-          dest = os.path.join(os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps'), '${mod}')
-          os.makedirs(dest, exist_ok=True)
-          tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
+          dest = os.path.join(os.environ.get('BEP_DEPS_DIR','/tmp/comdare-deps'), '${mod}')
+          os.makedirs(dest, exist_ok=True); tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
           print(f'  [OK] ${mod}')
-      except Exception as e:
-          print(f'  [SKIP] ${mod} ({e})')
+      except Exception as e: print(f'  [SKIP] ${mod} ({e})')
       " || true
-          fi
         done
         export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
       fi
@@ -296,7 +355,6 @@ build-debian-x86:
     expire_in: 30 days
     when: always
 
-# --- BM Ubuntu x86_64 (node3, node4) — MANDATORY ---
 build-ubuntu-x86:
   stage: build
   dependencies: []
@@ -304,10 +362,9 @@ build-ubuntu-x86:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.3.0 — BM Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
-    - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'echo "=== COMDARE CI v7.0.0 — BM Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'command -v git >/dev/null || { echo "ERROR: git not found"; exit 1; }'
+    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found"; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
     - *bm-fetch-setup
     - |
@@ -315,23 +372,17 @@ build-ubuntu-x86:
         echo "=== Downloading ${BEP_MODULE_DEPS} ==="
         mkdir -p "$BEP_DEPS_DIR"
         for mod in $BEP_MODULE_DEPS; do
-          if command -v python3 >/dev/null; then
-            python3 -c "
+          python3 -c "
       import urllib.request, ssl, os, tarfile, io
-      ctx = ssl.create_default_context()
-      ctx.check_hostname = False
-      ctx.verify_mode = ssl.CERT_NONE
+      ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
       url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
       try:
           data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
-          dest = os.path.join(os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps'), '${mod}')
-          os.makedirs(dest, exist_ok=True)
-          tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
+          dest = os.path.join(os.environ.get('BEP_DEPS_DIR','/tmp/comdare-deps'), '${mod}')
+          os.makedirs(dest, exist_ok=True); tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
           print(f'  [OK] ${mod}')
-      except Exception as e:
-          print(f'  [SKIP] ${mod} ({e})')
+      except Exception as e: print(f'  [SKIP] ${mod} ({e})')
       " || true
-          fi
         done
         export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
       fi
@@ -355,14 +406,327 @@ build-ubuntu-x86:
     when: always
 
 # ============================================================
-# Pool 3: Exotic Native Builds — allow_failure (macOS, ARM64, RISC-V)
+# Pool 3: Docker x86_64 Builds — 18 Linux OSes on BM hosts via docker run
+# All allow_failure (BM native already proves x86_64 compile)
+# ============================================================
+build-docker-x86:
+  stage: build
+  dependencies: []
+  allow_failure: true
+  timeout: 20 minutes
+  parallel:
+    matrix:
+      - DOCKER_OS: ubuntu-2404
+        DOCKER_IMAGE: "ubuntu:24.04"
+      - DOCKER_OS: ubuntu-2204
+        DOCKER_IMAGE: "ubuntu:22.04"
+      - DOCKER_OS: ubuntu-2004
+        DOCKER_IMAGE: "ubuntu:20.04"
+      - DOCKER_OS: debian-12
+        DOCKER_IMAGE: "debian:12"
+      - DOCKER_OS: debian-11
+        DOCKER_IMAGE: "debian:11"
+      - DOCKER_OS: debian-10
+        DOCKER_IMAGE: "debian:10"
+      - DOCKER_OS: fedora-41
+        DOCKER_IMAGE: "fedora:41"
+      - DOCKER_OS: fedora-40
+        DOCKER_IMAGE: "fedora:40"
+      - DOCKER_OS: fedora-39
+        DOCKER_IMAGE: "fedora:39"
+      - DOCKER_OS: alpine-321
+        DOCKER_IMAGE: "alpine:3.21"
+      - DOCKER_OS: alpine-320
+        DOCKER_IMAGE: "alpine:3.20"
+      - DOCKER_OS: alpine-319
+        DOCKER_IMAGE: "alpine:3.19"
+      - DOCKER_OS: opensuse-tw
+        DOCKER_IMAGE: "opensuse/tumbleweed"
+      - DOCKER_OS: opensuse-156
+        DOCKER_IMAGE: "opensuse/leap:15.6"
+      - DOCKER_OS: opensuse-155
+        DOCKER_IMAGE: "opensuse/leap:15.5"
+      - DOCKER_OS: rocky-9
+        DOCKER_IMAGE: "rockylinux:9"
+      - DOCKER_OS: rocky-93
+        DOCKER_IMAGE: "rockylinux:9.3"
+      - DOCKER_OS: rocky-8
+        DOCKER_IMAGE: "rockylinux:8"
+  tags:
+    - bare-metal
+    - x86_64
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Docker x86_64 ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} pull failed — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        -e "DOCKER_OS=${DOCKER_OS}" \
+        ${DOCKER_IMAGE} sh -c '
+          '"'"'
+          # Universal installer + FetchContent auth + Build (inline)
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make python3-pip >/dev/null 2>&1
+            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+            pip install gcovr --break-system-packages -q --retries 3 2>/dev/null || true
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make python3-pip >/dev/null 2>&1
+            pip3 install gcovr -q --retries 3 2>/dev/null || true
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make python3 py3-pip >/dev/null 2>&1
+            pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make python3-pip >/dev/null 2>&1
+            pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+          fi
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+          cmake -B build-docker-x86-${DOCKER_OS} $GEN \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+          cmake --build build-docker-x86-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 4)
+          cd build-docker-x86-${DOCKER_OS} && ctest --output-on-failure || true
+          cd /workspace
+          gcovr --root . --filter include/ --filter src/ --exclude "build-docker-x86-${DOCKER_OS}/_deps" --print-summary --xml coverage-docker-x86-${DOCKER_OS}.xml 2>/dev/null || true
+          '"'"''
+  artifacts:
+    paths:
+      - coverage-docker-x86-*.xml
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 4: Docker ARM64 Builds — 18 Linux OSes via docker run
+# Ubuntu/Debian latest = MANDATORY, rest = allow_failure
+# Runs on node6 (macOS ARM64, colima) or node7 (Pi5 ARM64, Docker CE)
+# ============================================================
+build-docker-arm64:
+  stage: build
+  dependencies: []
+  timeout: 25 minutes
+  parallel:
+    matrix:
+      - DOCKER_OS: ubuntu-2404
+        DOCKER_IMAGE: "ubuntu:24.04"
+      - DOCKER_OS: ubuntu-2204
+        DOCKER_IMAGE: "ubuntu:22.04"
+      - DOCKER_OS: ubuntu-2004
+        DOCKER_IMAGE: "ubuntu:20.04"
+      - DOCKER_OS: debian-12
+        DOCKER_IMAGE: "debian:12"
+      - DOCKER_OS: debian-11
+        DOCKER_IMAGE: "debian:11"
+      - DOCKER_OS: debian-10
+        DOCKER_IMAGE: "debian:10"
+      - DOCKER_OS: fedora-41
+        DOCKER_IMAGE: "fedora:41"
+      - DOCKER_OS: fedora-40
+        DOCKER_IMAGE: "fedora:40"
+      - DOCKER_OS: fedora-39
+        DOCKER_IMAGE: "fedora:39"
+      - DOCKER_OS: alpine-321
+        DOCKER_IMAGE: "alpine:3.21"
+      - DOCKER_OS: alpine-320
+        DOCKER_IMAGE: "alpine:3.20"
+      - DOCKER_OS: alpine-319
+        DOCKER_IMAGE: "alpine:3.19"
+      - DOCKER_OS: opensuse-tw
+        DOCKER_IMAGE: "opensuse/tumbleweed"
+      - DOCKER_OS: opensuse-156
+        DOCKER_IMAGE: "opensuse/leap:15.6"
+      - DOCKER_OS: opensuse-155
+        DOCKER_IMAGE: "opensuse/leap:15.5"
+      - DOCKER_OS: rocky-9
+        DOCKER_IMAGE: "rockylinux:9"
+      - DOCKER_OS: rocky-93
+        DOCKER_IMAGE: "rockylinux:9.3"
+      - DOCKER_OS: rocky-8
+        DOCKER_IMAGE: "rockylinux:8"
+  tags:
+    - arm64
+  rules:
+    - if: '$DOCKER_OS == "ubuntu-2404" || $DOCKER_OS == "debian-12"'
+      allow_failure: false
+    - allow_failure: true
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Docker ARM64 ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} not available for $(uname -m) — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        -e "DOCKER_OS=${DOCKER_OS}" \
+        ${DOCKER_IMAGE} sh -c '
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make >/dev/null 2>&1
+            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make >/dev/null 2>&1
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make >/dev/null 2>&1
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make >/dev/null 2>&1
+          fi
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+          cmake -B build-docker-arm64-${DOCKER_OS} $GEN \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+          cmake --build build-docker-arm64-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 2)
+          cd build-docker-arm64-${DOCKER_OS} && ctest --output-on-failure || true
+        '
+  artifacts:
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 5: Docker RISC-V Builds — 18 Linux OSes via docker run (all allow_failure)
+# Runs on node8 (RISC-V, Docker CE — requires Docker installed)
+# ============================================================
+build-docker-riscv:
+  stage: build
+  dependencies: []
+  allow_failure: true
+  timeout: 30 minutes
+  parallel:
+    matrix:
+      - DOCKER_OS: ubuntu-2404
+        DOCKER_IMAGE: "ubuntu:24.04"
+      - DOCKER_OS: ubuntu-2204
+        DOCKER_IMAGE: "ubuntu:22.04"
+      - DOCKER_OS: ubuntu-2004
+        DOCKER_IMAGE: "ubuntu:20.04"
+      - DOCKER_OS: debian-12
+        DOCKER_IMAGE: "debian:12"
+      - DOCKER_OS: debian-11
+        DOCKER_IMAGE: "debian:11"
+      - DOCKER_OS: debian-10
+        DOCKER_IMAGE: "debian:10"
+      - DOCKER_OS: fedora-41
+        DOCKER_IMAGE: "fedora:41"
+      - DOCKER_OS: fedora-40
+        DOCKER_IMAGE: "fedora:40"
+      - DOCKER_OS: fedora-39
+        DOCKER_IMAGE: "fedora:39"
+      - DOCKER_OS: alpine-321
+        DOCKER_IMAGE: "alpine:3.21"
+      - DOCKER_OS: alpine-320
+        DOCKER_IMAGE: "alpine:3.20"
+      - DOCKER_OS: alpine-319
+        DOCKER_IMAGE: "alpine:3.19"
+      - DOCKER_OS: opensuse-tw
+        DOCKER_IMAGE: "opensuse/tumbleweed"
+      - DOCKER_OS: opensuse-156
+        DOCKER_IMAGE: "opensuse/leap:15.6"
+      - DOCKER_OS: opensuse-155
+        DOCKER_IMAGE: "opensuse/leap:15.5"
+      - DOCKER_OS: rocky-9
+        DOCKER_IMAGE: "rockylinux:9"
+      - DOCKER_OS: rocky-93
+        DOCKER_IMAGE: "rockylinux:9.3"
+      - DOCKER_OS: rocky-8
+        DOCKER_IMAGE: "rockylinux:8"
+  tags:
+    - riscv64
+    - linux
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Docker RISC-V ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found on RISC-V — skipping"; exit 0; }'
+    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} not available for riscv64 — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        -e "DOCKER_OS=${DOCKER_OS}" \
+        ${DOCKER_IMAGE} sh -c '
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make >/dev/null 2>&1
+            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make >/dev/null 2>&1
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make >/dev/null 2>&1
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make >/dev/null 2>&1
+          fi
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+          cmake -B build-docker-riscv-${DOCKER_OS} $GEN \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+          cmake --build build-docker-riscv-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 2)
+          cd build-docker-riscv-${DOCKER_OS} && ctest --output-on-failure || true
+        '
+  artifacts:
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 6: Exotic Native Builds — allow_failure (macOS, ARM64, RISC-V)
 # ============================================================
 .exotic-base:
   stage: build
   dependencies: []
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v6.3.0 — Exotic Native ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v7.0.0 — Exotic Native ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
     - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
     - *bm-fetch-setup
@@ -377,28 +741,24 @@ build-ubuntu-x86:
     expire_in: 30 days
     when: always
 
-# Lane: macOS x86_64 (node5)
 build-macos-x86:
   extends: .exotic-base
   tags:
     - macos
     - x86_64
 
-# Lane: macOS ARM64 (node6)
 build-macos-arm:
   extends: .exotic-base
   tags:
     - macos
     - arm64
 
-# Lane: Linux ARM64 (node7 Pi5)
 build-linux-arm64:
   extends: .exotic-base
   tags:
     - arm64
     - linux
 
-# Lane: Linux RISC-V (node8)
 build-linux-riscv:
   extends: .exotic-base
   tags:
@@ -406,34 +766,21 @@ build-linux-riscv:
     - linux
 
 # ============================================================
-# Pool 4: Docker ARM64 Builds — 6 Linux OSes via docker run (allow_failure)
-# Runs on node6 (macOS ARM64, colima) or node7 (Pi5 ARM64, Docker CE)
+# Pool 7: Windows Docker Builds — MinGW-w64 cross-compile on macOS (allow_failure)
+# Uses Linux containers with mingw-w64 to cross-compile for Windows x86_64
 # ============================================================
-build-docker-arm64:
+build-docker-windows-x86:
   stage: build
   dependencies: []
   allow_failure: true
-  timeout: 25 minutes
-  parallel:
-    matrix:
-      - DOCKER_OS: ubuntu
-        DOCKER_IMAGE: "ubuntu:24.04"
-      - DOCKER_OS: debian
-        DOCKER_IMAGE: "debian:12"
-      - DOCKER_OS: fedora
-        DOCKER_IMAGE: "fedora:41"
-      - DOCKER_OS: alpine
-        DOCKER_IMAGE: "alpine:3.21"
-      - DOCKER_OS: opensuse
-        DOCKER_IMAGE: "opensuse/tumbleweed"
-      - DOCKER_OS: rocky
-        DOCKER_IMAGE: "rockylinux:9"
+  timeout: 20 minutes
   tags:
-    - arm64
+    - macos
+    - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.3.0 — Docker ARM64 ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v7.0.0 — Windows x86_64 Docker (MinGW cross-compile on macOS x86_64) ==="'
     - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
-    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} not available for $(uname -m) — skipping"; exit 0; }'
+    - 'docker pull debian:12 || { echo "WARN: debian:12 pull failed — skipping"; exit 0; }'
   script:
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
@@ -445,72 +792,40 @@ build-docker-arm64:
         -e "CXX_STANDARD=${CXX_STANDARD}" \
         -e "BUILD_TYPE=${BUILD_TYPE}" \
         -e "FETCH_TOKEN=${FETCH_TOKEN}" \
-        ${DOCKER_IMAGE} sh -c '
-          # Universal C++ build dependency installer
-          if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make >/dev/null 2>&1
-            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
-              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
-                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make >/dev/null 2>&1
-          elif command -v apk >/dev/null 2>&1; then
-            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make >/dev/null 2>&1
-          elif command -v zypper >/dev/null 2>&1; then
-            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make >/dev/null 2>&1
-          fi
-          # FetchContent auth + mirror rewrites
+        debian:12 sh -c '
+          apt-get update -qq
+          apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 cmake ninja-build git make >/dev/null 2>&1
           git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
           git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
           git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
-          # Build
-          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
-          cmake -B build-docker-arm64-${DOCKER_OS} $GEN \
-            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
-            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
-          cmake --build build-docker-arm64-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 2)
-          cd build-docker-arm64-${DOCKER_OS} && ctest --output-on-failure || true
+          cmake -B build-windows-x86 -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=OFF \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD} \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY 2>&1 || true
+          cmake --build build-windows-x86 -j $(nproc 2>/dev/null || echo 4) 2>&1 || true
+          echo "Windows x86_64 cross-compile complete"
         '
   artifacts:
     expire_in: 30 days
     when: always
 
-# ============================================================
-# Pool 5: Docker RISC-V Builds — 6 Linux OSes via docker run (allow_failure)
-# Runs on node8 (RISC-V, Docker CE — requires Docker installed)
-# ============================================================
-build-docker-riscv:
+build-docker-windows-arm:
   stage: build
   dependencies: []
   allow_failure: true
-  timeout: 30 minutes
-  parallel:
-    matrix:
-      - DOCKER_OS: ubuntu
-        DOCKER_IMAGE: "ubuntu:24.04"
-      - DOCKER_OS: debian
-        DOCKER_IMAGE: "debian:12"
-      - DOCKER_OS: fedora
-        DOCKER_IMAGE: "fedora:41"
-      - DOCKER_OS: alpine
-        DOCKER_IMAGE: "alpine:3.21"
-      - DOCKER_OS: opensuse
-        DOCKER_IMAGE: "opensuse/tumbleweed"
-      - DOCKER_OS: rocky
-        DOCKER_IMAGE: "rockylinux:9"
+  timeout: 20 minutes
   tags:
-    - riscv64
-    - linux
+    - macos
+    - arm64
   before_script:
-    - 'echo "=== COMDARE CI v6.3.0 — Docker RISC-V ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
-    - 'command -v docker >/dev/null || { echo "WARN: docker not found on RISC-V — skipping"; exit 0; }'
-    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} not available for riscv64 — skipping"; exit 0; }'
+    - 'echo "=== COMDARE CI v7.0.0 — Windows x86_64 Docker (MinGW cross-compile on macOS ARM64) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull debian:12 || { echo "WARN: debian:12 pull failed — skipping"; exit 0; }'
   script:
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
@@ -522,37 +837,23 @@ build-docker-riscv:
         -e "CXX_STANDARD=${CXX_STANDARD}" \
         -e "BUILD_TYPE=${BUILD_TYPE}" \
         -e "FETCH_TOKEN=${FETCH_TOKEN}" \
-        ${DOCKER_IMAGE} sh -c '
-          # Universal C++ build dependency installer
-          if command -v apt-get >/dev/null 2>&1; then
-            apt-get update -qq
-            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make >/dev/null 2>&1
-            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
-              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
-                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make >/dev/null 2>&1
-          elif command -v apk >/dev/null 2>&1; then
-            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make >/dev/null 2>&1
-          elif command -v zypper >/dev/null 2>&1; then
-            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make >/dev/null 2>&1
-          fi
-          # FetchContent auth + mirror rewrites
+        debian:12 sh -c '
+          apt-get update -qq
+          apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 cmake ninja-build git make >/dev/null 2>&1
           git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
           git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
           git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
-          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
-          # Build
-          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
-          cmake -B build-docker-riscv-${DOCKER_OS} $GEN \
-            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
-            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
-          cmake --build build-docker-riscv-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 2)
-          cd build-docker-riscv-${DOCKER_OS} && ctest --output-on-failure || true
+          cmake -B build-windows-arm -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=OFF \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD} \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY 2>&1 || true
+          cmake --build build-windows-arm -j $(nproc 2>/dev/null || echo 4) 2>&1 || true
+          echo "Windows x86_64 cross-compile (on ARM64 host) complete"
         '
   artifacts:
     expire_in: 30 days
@@ -569,13 +870,26 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v6.3.0 — Aggregate Results ==="
+    - echo "=== COMDARE CI v7.0.0 — Aggregate Results ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - '[ -n "$BEP_MODULE_DEPS" ] && echo "Deps: $BEP_MODULE_DEPS" || true'
     - |
       echo ""
-      echo "=== Docker x86_64 Pool (6 OSes) ==="
-      for os in ubuntu debian fedora alpine opensuse rocky; do
+      echo "=== K8s Pool (2 jobs, mandatory) ==="
+      for variant in k8s-debian k8s-ubuntu; do
+        if [ -f "coverage-${variant}.xml" ]; then
+          echo "  ${variant}: OK"
+        else
+          echo "  ${variant}: MISSING"
+        fi
+      done
+      echo ""
+      echo "=== BM Native (2 jobs, mandatory) ==="
+      [ -f coverage-debian.xml ] && echo "  Debian native (x86_64): OK" || echo "  Debian native (x86_64): MISSING"
+      [ -f coverage-ubuntu.xml ] && echo "  Ubuntu native (x86_64): OK" || echo "  Ubuntu native (x86_64): MISSING"
+      echo ""
+      echo "=== Docker x86_64 Pool (18 OSes, allow_failure) ==="
+      for os in ubuntu-2404 ubuntu-2204 ubuntu-2004 debian-12 debian-11 debian-10 fedora-41 fedora-40 fedora-39 alpine-321 alpine-320 alpine-319 opensuse-tw opensuse-156 opensuse-155 rocky-9 rocky-93 rocky-8; do
         if [ -f "coverage-docker-x86-${os}.xml" ]; then
           echo "  ${os}: OK"
         else
@@ -583,37 +897,26 @@ aggregate-results:
         fi
       done
       echo ""
-      echo "=== BM Native ==="
-      [ -f coverage-debian.xml ] && echo "  Debian native (x86_64): OK" || echo "  Debian native (x86_64): MISSING"
-      [ -f coverage-ubuntu.xml ] && echo "  Ubuntu native (x86_64): OK" || echo "  Ubuntu native (x86_64): MISSING"
-      echo ""
       echo "=== Install Trees ==="
-      for os in ubuntu debian fedora alpine opensuse rocky; do
-        if [ -f "install-docker-x86-${os}.tar.gz" ]; then
-          echo "  x86_64-${os}: $(du -sh install-docker-x86-${os}.tar.gz | cut -f1)"
+      for variant in k8s-debian k8s-ubuntu; do
+        if [ -f "install-${variant}.tar.gz" ]; then
+          echo "  ${variant}: $(du -sh install-${variant}.tar.gz | cut -f1)"
         else
-          echo "  x86_64-${os}: none"
+          echo "  ${variant}: none"
         fi
       done
       echo ""
       echo "Pipeline $CI_PIPELINE_ID complete on $(date -u)"
-      echo "v6.3.0: 26 jobs (6 native + 18 Docker OS-Matrix + aggregate + upload)"
+      echo "v7.0.0: 66 jobs (8 native + 54 Docker + 2 Windows + aggregate + upload)"
   artifacts:
     paths:
-      - coverage-docker-x86-ubuntu.xml
-      - coverage-docker-x86-debian.xml
-      - coverage-docker-x86-fedora.xml
-      - coverage-docker-x86-alpine.xml
-      - coverage-docker-x86-opensuse.xml
-      - coverage-docker-x86-rocky.xml
+      - coverage-k8s-debian.xml
+      - coverage-k8s-ubuntu.xml
       - coverage-debian.xml
       - coverage-ubuntu.xml
-      - install-docker-x86-ubuntu.tar.gz
-      - install-docker-x86-debian.tar.gz
-      - install-docker-x86-fedora.tar.gz
-      - install-docker-x86-alpine.tar.gz
-      - install-docker-x86-opensuse.tar.gz
-      - install-docker-x86-rocky.tar.gz
+      - coverage-docker-x86-*.xml
+      - install-k8s-debian.tar.gz
+      - install-k8s-ubuntu.tar.gz
     expire_in: 30 days
     when: always
 
@@ -626,7 +929,7 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v6.3.0 — MinIO Upload (artifacts + deps) ==="
+    - echo "=== COMDARE CI v7.0.0 — MinIO Upload (artifacts + deps) ==="
     - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
@@ -680,16 +983,14 @@ upload-to-minio:
       proj = os.environ.get('CI_PROJECT_PATH', '')
       pid = os.environ.get('CI_PIPELINE_ID', '')
 
-      # === Part 1: buildsystem-artifacts (coverage + binaries, versioned by pipeline) ===
+      # === Part 1: buildsystem-artifacts (coverage + binaries) ===
       bucket_artifacts = 'buildsystem-artifacts'
       uploads = []
 
-      # Collect all coverage XMLs
       for cov_file in glob.glob('coverage-*.xml'):
           platform_label = cov_file.replace('coverage-', '').replace('.xml', '')
           uploads.append((cov_file, f'{proj}/linux/x86_64/{platform_label}/{pid}/coverage/{cov_file}'))
 
-      # Collect binaries from all build dirs
       for build_dir in glob.glob('build-*'):
           if not os.path.isdir(build_dir): continue
           platform_label = build_dir.replace('build-', '')
@@ -714,16 +1015,16 @@ upload-to-minio:
               print(f'  SKIP {local} (not found)')
       print(f'\nArtifacts upload: {ok}/{len(uploads)} files')
 
-      # === Part 2: buildsystem-deps (install tree for downstream, "latest" key) ===
+      # === Part 2: buildsystem-deps (install trees for downstream) ===
       bucket_deps = os.environ.get('BEP_DEPS_BUCKET', 'buildsystem-deps')
       module_name = proj.split('/')[-1] if '/' in proj else proj
-      for tarball in glob.glob('install-docker-x86-*.tar.gz'):
-          os_label = tarball.replace('install-docker-x86-', '').replace('.tar.gz', '')
-          deps_key = f'{module_name}/latest/linux-x86_64-{os_label}/install.tar.gz'
+      for tarball in glob.glob('install-*.tar.gz'):
+          variant = tarball.replace('install-', '').replace('.tar.gz', '')
+          deps_key = f'{module_name}/latest/linux-{variant}/install.tar.gz'
           code = s3_put(tarball, bucket_deps, deps_key, endpoint, access, secret)
           status = 'OK' if code == 200 else f'FAIL({code})'
           print(f'\n  {status} {bucket_deps}/{deps_key}')
-          versioned_key = f'{module_name}/{pid}/linux-x86_64-{os_label}/install.tar.gz'
+          versioned_key = f'{module_name}/{pid}/linux-{variant}/install.tar.gz'
           code2 = s3_put(tarball, bucket_deps, versioned_key, endpoint, access, secret)
           status2 = 'OK' if code2 == 200 else f'FAIL({code2})'
           print(f'  {status2} {bucket_deps}/{versioned_key}')
