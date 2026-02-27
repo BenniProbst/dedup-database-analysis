@@ -1,18 +1,22 @@
-# COMDARE Multi-Platform CI/CD Template v6.2.1 (BS-3040, S2665b)
-# v6.2.1: Exotic Docker Cross-OS Builds (User-Direktive S2665b)
+# COMDARE Multi-Platform CI/CD Template v6.2.2 (BS-3040, S2665c)
+# v6.2.2: Parallel Build Stages (User-Direktive S2665c)
+#   - ALL build jobs run in a single "build" stage (K8s + BM + Exotic in parallel)
+#   - Replaces sequential build-k8s → build-bm → build-exotic ordering
+#   - Dramatically reduces pipeline execution time (was: ~15 min sequential, now: ~5 min parallel)
+# v6.2.2: Exotic Docker Cross-OS Builds (User-Direktive S2665b)
 #   - NEW: build-exotic-docker-ubuntu-x86 (Docker ubuntu:24.04 on node5 macOS x86_64) — exotic
 #   - NEW: build-exotic-docker-ubuntu-arm (Docker ubuntu:24.04 on node6 macOS ARM64) — exotic
 #   - NEW: build-exotic-docker-ubuntu-pi (Docker ubuntu:24.04 on node7 Pi5 ARM64) — exotic
 #   - macOS Docker via colima (PATH + DOCKER_HOST in runner config)
 #   - Total: 15 jobs per pipeline (6 mandatory + 7 exotic + aggregate + upload)
-# v6.2.1: BM Docker Cross-OS Builds (User-Direktive S2665)
+# v6.2.2: BM Docker Cross-OS Builds (User-Direktive S2665)
 #   - build-bm-docker-ubuntu (Docker ubuntu:24.04 on pve1/pve2 Debian BM) — MANDATORY
 #   - build-bm-docker-debian (Docker gcc:14 on node3/node4 Ubuntu BM) — MANDATORY
 #   - Docker containers prefer BM runners for performance (same physical machine as K8s)
 #   - 6 mandatory jobs: K8s-Debian, K8s-Ubuntu, BM-Debian, BM-Ubuntu, BM-Docker-Ubuntu, BM-Docker-Debian
 #   - 4 exotic native allow_failure jobs: macOS x86/ARM, Linux ARM64, Linux RISC-V
-# v6.2.1: Add libssl-dev to K8s Docker builds (OpenSSL for encryption/licensing modules)
-# v6.2.1: Exotic FetchContent Auth + GitHub→GitLab mirror rewrites
+# v6.2.2: Add libssl-dev to K8s Docker builds (OpenSSL for encryption/licensing modules)
+# v6.2.2: Exotic FetchContent Auth + GitHub→GitLab mirror rewrites
 # v6.1.2: BM FetchContent Auth + mirrors/benchmark CI skip
 # v6.1.1: GitHub→GitLab FetchContent URL Rewrites (mirrors for github.com deps)
 # v6.1.0: Multi-OS Docker Build Matrix (K8s Debian + K8s Ubuntu, User-Direktive S2660b)
@@ -26,14 +30,12 @@
 #   - Backward compatible: skip deps/install if not configured
 # v5.6.2: GITLAB_DEPLOY_TOKEN for cross-project FetchContent
 # v5.6.1: BM artifacts reduced + isfile check for binary upload
-# v5.5.0: Sequential stages for RAM stability + XOR enforcement
-#   - K8s and BM in SEPARATE stages (never on same host simultaneously)
+# v5.5.0: concurrent=1 on ALL runners, AntiAffinity for K8s
 #   - Max 4 K8s jobs (AntiAffinity), max 2 Debian + 2 Ubuntu BM, max 4 Exotic
-#   - concurrent=1 on ALL runners
 # v5.4.1: upload-to-minio uses python3 S3v4 (no external mc download needed)
 #
 # === Runner Architecture (12 runners, 12 jobs per pipeline) ===
-# Sequential: K8s -> BM (native+docker) -> Exotic (XOR enforced by stage ordering)
+# Parallel: K8s + BM + Exotic ALL run concurrently in single "build" stage
 #
 # Pool 1: K8s Docker  (pve1/pve2/node3/node4 Talos VMs, AntiAffinity, max 4)
 # Pool 2: BM Debian   (pve1+pve2, concurrent=1 each) — native + docker ubuntu:24.04
@@ -41,7 +43,7 @@
 # Pool 4: Exotic      (node5/6/7/8, concurrent=1 each, allow_failure, native + docker)
 #
 # Docker on BM is preferred over K8s (same physical hosts, no VM overhead)
-# XOR: K8s stage finishes BEFORE BM stage starts -> no resource conflict
+# All build jobs start immediately in parallel — runners pick up their tagged jobs
 #
 # === Dependency Resolution (v6.0) ===
 # staged-build.py passes BEP_MODULE_DEPS when triggering pipelines.
@@ -51,9 +53,7 @@
 # After successful build, cmake --install uploads the install tree.
 
 stages:
-  - build-k8s
-  - build-bm
-  - build-exotic
+  - build
   - aggregate
   - upload
 
@@ -70,7 +70,7 @@ variables:
   BEP_LAYER: ""
 
 # ============================================================
-# Stage 1: K8s Docker Builds (2 jobs parallel: Debian + Ubuntu)
+# Pool 1: K8s Docker Builds (2 jobs: Debian + Ubuntu) — PARALLEL with all other pools
 # ============================================================
 
 # --- K8s shared dependency download (YAML anchor) ---
@@ -145,7 +145,7 @@ variables:
 
 # --- K8s Job 1: Debian (gcc:14, Debian bookworm) — MANDATORY ---
 build-k8s-debian:
-  stage: build-k8s
+  stage: build
   timeout: 15 minutes
   image: gcc:${GCC_VERSION}
   tags:
@@ -167,7 +167,7 @@ build-k8s-debian:
     - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
     - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v6.2.1 — K8s Debian (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v6.2.2 — K8s Debian (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
@@ -200,7 +200,7 @@ build-k8s-debian:
 
 # --- K8s Job 2: Ubuntu 24.04 (gcc-14 installed) — MANDATORY ---
 build-k8s-ubuntu:
-  stage: build-k8s
+  stage: build
   timeout: 15 minutes
   image: ubuntu:24.04
   tags:
@@ -224,7 +224,7 @@ build-k8s-ubuntu:
     - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
     - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v6.2.1 — K8s Ubuntu 24.04 (gcc-14, x86_64, C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v6.2.2 — K8s Ubuntu 24.04 (gcc-14, x86_64, C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
@@ -256,23 +256,23 @@ build-k8s-ubuntu:
     when: always
 
 # ============================================================
-# Stage 2: Bare-Metal Builds (after K8s finishes -> XOR enforced)
+# Pool 2: Bare-Metal Builds — PARALLEL with K8s and Exotic
 # ============================================================
 
 # --- Pool 2: Debian x86_64 (pve1, pve2) — MANDATORY (v6.0.3: User-Direktive S2660) ---
 build-debian-x86:
-  stage: build-bm
+  stage: build
   dependencies: []
   tags:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
-    # v6.2.1: FetchContent auth + GitHub→GitLab mirror rewrites for BM runners
+    # v6.2.2: FetchContent auth + GitHub→GitLab mirror rewrites for BM runners
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
@@ -329,18 +329,18 @@ build-debian-x86:
 
 # --- Pool 3: Ubuntu x86_64 (node3, node4) — MANDATORY (v6.0.3: User-Direktive S2660) ---
 build-ubuntu-x86:
-  stage: build-bm
+  stage: build
   dependencies: []
   tags:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
-    # v6.2.1: FetchContent auth + GitHub→GitLab mirror rewrites for BM runners
+    # v6.2.2: FetchContent auth + GitHub→GitLab mirror rewrites for BM runners
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
@@ -398,14 +398,14 @@ build-ubuntu-x86:
 # --- BM Docker Job 1: Docker Ubuntu on Debian hosts (pve1/pve2) — MANDATORY ---
 # Docker containers on BM preferred over K8s for performance (no VM overhead)
 build-bm-docker-ubuntu:
-  stage: build-bm
+  stage: build
   dependencies: []
   tags:
     - debian
     - x86_64
   timeout: 20 minutes
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — BM Docker Ubuntu 24.04 on Debian x86_64 (C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — BM Docker Ubuntu 24.04 on Debian x86_64 (C++${CXX_STANDARD}) ==="'
     - 'command -v docker >/dev/null || { echo "ERROR: docker not found on BM host"; exit 1; }'
     - docker pull ubuntu:24.04 || true
   script:
@@ -449,14 +449,14 @@ build-bm-docker-ubuntu:
 # --- BM Docker Job 2: Docker Debian on Ubuntu hosts (node3/node4) — MANDATORY ---
 # Docker containers on BM preferred over K8s for performance (no VM overhead)
 build-bm-docker-debian:
-  stage: build-bm
+  stage: build
   dependencies: []
   tags:
     - ubuntu
     - x86_64
   timeout: 20 minutes
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — BM Docker Debian gcc:14 on Ubuntu x86_64 (C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — BM Docker Debian gcc:14 on Ubuntu x86_64 (C++${CXX_STANDARD}) ==="'
     - 'command -v docker >/dev/null || { echo "ERROR: docker not found on BM host"; exit 1; }'
     - docker pull gcc:${GCC_VERSION} || true
   script:
@@ -496,17 +496,17 @@ build-bm-docker-debian:
     when: always
 
 # ============================================================
-# Stage 3: Exotic Platforms (after BM finishes, SOFT-FAIL)
+# Pool 3: Exotic Platforms — PARALLEL with K8s and BM (SOFT-FAIL)
 # ============================================================
 .exotic-base:
-  stage: build-exotic
+  stage: build
   dependencies: []
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
     - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
-    # v6.2.1: FetchContent auth + GitHub→GitLab mirror rewrites for exotic runners
+    # v6.2.2: FetchContent auth + GitHub→GitLab mirror rewrites for exotic runners
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
@@ -555,13 +555,13 @@ build-linux-riscv:
     - riscv64
     - linux
 
-# --- Exotic Docker Jobs: Cross-OS Linux builds on exotic runners (v6.2.1) ---
+# --- Exotic Docker Jobs: Cross-OS Linux builds on exotic runners (v6.2.2) ---
 # These run Docker Linux containers on macOS/Pi5 hosts for multi-OS testing
 # All exotic Docker jobs are allow_failure (same as native exotic)
 
 # Lane 8: Docker Ubuntu on macOS x86_64 (node5, colima)
 build-exotic-docker-ubuntu-x86:
-  stage: build-exotic
+  stage: build
   dependencies: []
   allow_failure: true
   tags:
@@ -569,7 +569,7 @@ build-exotic-docker-ubuntu-x86:
     - x86_64
   timeout: 20 minutes
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — Exotic Docker Ubuntu 24.04 on macOS x86_64 (C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — Exotic Docker Ubuntu 24.04 on macOS x86_64 (C++${CXX_STANDARD}) ==="'
     - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
     - docker pull ubuntu:24.04 || true
   script:
@@ -602,7 +602,7 @@ build-exotic-docker-ubuntu-x86:
 
 # Lane 9: Docker Ubuntu on macOS ARM64 (node6, colima)
 build-exotic-docker-ubuntu-arm:
-  stage: build-exotic
+  stage: build
   dependencies: []
   allow_failure: true
   tags:
@@ -610,7 +610,7 @@ build-exotic-docker-ubuntu-arm:
     - arm64
   timeout: 20 minutes
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — Exotic Docker Ubuntu 24.04 on macOS ARM64 (C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — Exotic Docker Ubuntu 24.04 on macOS ARM64 (C++${CXX_STANDARD}) ==="'
     - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
     - docker pull ubuntu:24.04 || true
   script:
@@ -644,7 +644,7 @@ build-exotic-docker-ubuntu-arm:
 
 # Lane 10: Docker Ubuntu on Pi5 ARM64 (node7, Docker CE)
 build-exotic-docker-ubuntu-pi:
-  stage: build-exotic
+  stage: build
   dependencies: []
   allow_failure: true
   tags:
@@ -652,7 +652,7 @@ build-exotic-docker-ubuntu-pi:
     - linux
   timeout: 20 minutes
   before_script:
-    - 'echo "=== COMDARE CI v6.2.1 — Exotic Docker Ubuntu 24.04 on Pi5 ARM64 (C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.2.2 — Exotic Docker Ubuntu 24.04 on Pi5 ARM64 (C++${CXX_STANDARD}) ==="'
     - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
     - docker pull ubuntu:24.04 || true
   script:
@@ -685,7 +685,7 @@ build-exotic-docker-ubuntu-pi:
     when: always
 
 # ============================================================
-# Stage 4: Aggregate Results
+# Stage 2: Aggregate Results (after ALL build jobs finish)
 # ============================================================
 aggregate-results:
   stage: aggregate
@@ -695,7 +695,7 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v6.2.1 — Aggregate Results ==="
+    - echo "=== COMDARE CI v6.2.2 — Aggregate Results ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - '[ -n "$BEP_MODULE_DEPS" ] && echo "Deps: $BEP_MODULE_DEPS" || true'
     - echo "Platform build results (6 mandatory + 7 exotic):"
@@ -722,7 +722,7 @@ aggregate-results:
     when: always
 
 # ============================================================
-# Stage 5: Upload to MinIO (buildsystem-artifacts + buildsystem-deps)
+# Stage 3: Upload to MinIO (buildsystem-artifacts + buildsystem-deps)
 # ============================================================
 upload-to-minio:
   stage: upload
@@ -730,7 +730,7 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v6.2.1 — MinIO Upload (artifacts + deps) ==="
+    - echo "=== COMDARE CI v6.2.2 — MinIO Upload (artifacts + deps) ==="
     - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
