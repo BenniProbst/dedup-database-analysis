@@ -1,4 +1,6 @@
-# COMDARE Multi-Platform CI/CD Template v6.1.2 (BS-3040, S2660b)
+# COMDARE Multi-Platform CI/CD Template v6.1.4 (BS-3040, S2660b)
+# v6.1.4: Add libssl-dev to K8s Docker builds (OpenSSL for encryption/licensing modules)
+# v6.1.4: Exotic FetchContent Auth + GitHub→GitLab mirror rewrites
 # v6.1.2: BM FetchContent Auth + mirrors/benchmark CI skip
 # v6.1.1: GitHub→GitLab FetchContent URL Rewrites (mirrors for github.com deps)
 # v6.1.0: Multi-OS Docker Build Matrix (K8s Debian + K8s Ubuntu, User-Direktive S2660b)
@@ -140,7 +142,7 @@ build-k8s-debian:
   before_script:
     - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
     - KEEPALIVE_PID=$!
-    - apt-get update -qq && apt-get install -y -qq cmake ninja-build git python3-pip >/dev/null 2>&1
+    - apt-get update -qq && apt-get install -y -qq cmake ninja-build git python3-pip libssl-dev >/dev/null 2>&1
     - 'pip install gcovr --break-system-packages -q --retries 3 || echo "WARN: gcovr install failed — coverage will be skipped"'
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
@@ -154,7 +156,7 @@ build-k8s-debian:
     - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
     - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v6.1.2 — K8s Debian (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v6.1.4 — K8s Debian (gcc:${GCC_VERSION}, x86_64, C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
@@ -196,7 +198,7 @@ build-k8s-ubuntu:
     - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
     - KEEPALIVE_PID=$!
     - export DEBIAN_FRONTEND=noninteractive
-    - apt-get update -qq && apt-get install -y -qq gcc-14 g++-14 cmake ninja-build git python3-pip >/dev/null 2>&1
+    - apt-get update -qq && apt-get install -y -qq gcc-14 g++-14 cmake ninja-build git python3-pip libssl-dev >/dev/null 2>&1
     - update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 --slave /usr/bin/g++ g++ /usr/bin/g++-14
     - 'pip install gcovr --break-system-packages -q --retries 3 || echo "WARN: gcovr install failed — coverage will be skipped"'
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
@@ -211,7 +213,7 @@ build-k8s-ubuntu:
     - git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
     - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v6.1.2 — K8s Ubuntu 24.04 (gcc-14, x86_64, C++${CXX_STANDARD}) ==="
+    - echo "=== COMDARE CI v6.1.4 — K8s Ubuntu 24.04 (gcc-14, x86_64, C++${CXX_STANDARD}) ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
     - cmake -B build-k8s-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
@@ -254,14 +256,21 @@ build-debian-x86:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.1.2 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.1.4 — Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
-    # v6.1.2: FetchContent auth for cross-project deps on BM runners
+    # v6.1.4: FetchContent auth + GitHub→GitLab mirror rewrites for BM runners
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
     # v6.0: Dependency download (BM runners have persistent deps cache)
     - |
       if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
@@ -315,14 +324,21 @@ build-ubuntu-x86:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v6.1.2 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.1.4 — Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
-    # v6.1.2: FetchContent auth for cross-project deps on BM runners
+    # v6.1.4: FetchContent auth + GitHub→GitLab mirror rewrites for BM runners
     - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
     - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
     # v6.0: Dependency download
     - |
       if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
@@ -376,9 +392,19 @@ build-ubuntu-x86:
   dependencies: []
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v6.1.2 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'echo "=== COMDARE CI v6.1.4 — Exotic ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
     - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
     - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
+    # v6.1.4: FetchContent auth + GitHub→GitLab mirror rewrites for exotic runners
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+    - git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
   script:
     - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
     - 'GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"'
@@ -429,7 +455,7 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v6.1.2 — Aggregate Results ==="
+    - echo "=== COMDARE CI v6.1.4 — Aggregate Results ==="
     - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
     - '[ -n "$BEP_MODULE_DEPS" ] && echo "Deps: $BEP_MODULE_DEPS" || true'
     - echo "Platform build results (4 mandatory + 4 exotic):"
@@ -460,7 +486,7 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v6.1.2 — MinIO Upload (artifacts + deps) ==="
+    - echo "=== COMDARE CI v6.1.4 — MinIO Upload (artifacts + deps) ==="
     - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
