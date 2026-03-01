@@ -1,4 +1,5 @@
-# COMDARE Multi-Platform CI/CD Template v7.0.0 (BS-3040, S2665e)
+# COMDARE Multi-Platform CI/CD Template v7.0.1 (BS-3040, S2666-K8)
+# v7.0.1: Fix Docker x86 Pool shell quoting bug ('"'"' removed, matching ARM64/RISC-V pattern)
 # v7.0.0: Full Docker OS-Matrix — 18 Linux-Varianten (6 OS x 3 Versionen) pro Architektur-Pool
 #   - K8s Pool: 2 mandatory jobs (Debian GCC:14 + Ubuntu 24.04) on Talos VMs
 #   - BM Native Pool: 2 mandatory jobs (Debian pve1/pve2 + Ubuntu node3/node4)
@@ -472,8 +473,6 @@ build-docker-x86:
         -e "FETCH_TOKEN=${FETCH_TOKEN}" \
         -e "DOCKER_OS=${DOCKER_OS}" \
         ${DOCKER_IMAGE} sh -c '
-          '"'"'
-          # Universal installer + FetchContent auth + Build (inline)
           if command -v apt-get >/dev/null 2>&1; then
             export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
@@ -508,7 +507,7 @@ build-docker-x86:
           cd build-docker-x86-${DOCKER_OS} && ctest --output-on-failure || true
           cd /workspace
           gcovr --root . --filter include/ --filter src/ --exclude "build-docker-x86-${DOCKER_OS}/_deps" --print-summary --xml coverage-docker-x86-${DOCKER_OS}.xml 2>/dev/null || true
-          '"'"''
+        '
   artifacts:
     paths:
       - coverage-docker-x86-*.xml
