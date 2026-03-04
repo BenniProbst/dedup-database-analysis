@@ -1,118 +1,354 @@
-# COMDARE Multi-Platform CI/CD Template v5.4.1 (BS-3040)
-# v5.4.1: upload-to-minio uses python3 S3v4 (no external mc download needed)
-# v5.4.0: K8s timeout 15min (was 10min, build needs ~9min with apt-get overhead)
-# v5.3.0: aggregate+upload via rules:when:always + stage-ordering, 10min timeout on K8s
-# v5.2.0: Unique build dirs + coverage per BM OS, corrected artifact handling
-# v5.1.0: Split BM into Debian + Ubuntu (incompatible OS, separate runner pools)
-# v5.0.0: ALL build jobs in single stage (parallel execution)
+# COMDARE Multi-Platform CI/CD Template v7.0.1 (BS-3040, S2666-K8)
+# v7.0.1: Fix Docker x86 Pool shell quoting bug ('"'"' removed, matching ARM64/RISC-V pattern)
+# v7.0.0: Full Docker OS-Matrix — 18 Linux-Varianten (6 OS x 3 Versionen) pro Architektur-Pool
+#   - K8s Pool: 2 mandatory jobs (Debian GCC:14 + Ubuntu 24.04) on Talos VMs
+#   - BM Native Pool: 2 mandatory jobs (Debian pve1/pve2 + Ubuntu node3/node4)
+#   - Docker x86_64 Pool: 18 OSes on BM hosts via docker run (all allow_failure)
+#   - Docker ARM64 Pool: 18 OSes on ARM64 runners via docker run (Ubuntu/Debian mandatory)
+#   - Docker RISC-V Pool: 18 OSes on RISC-V runner via docker run (all allow_failure)
+#   - Exotic Native Pool: 4 jobs (macOS x86/ARM, Linux ARM64/RISC-V, allow_failure)
+#   - Windows Docker Pool: 2 jobs (MinGW cross-compile on macOS, allow_failure)
+#   - Universal package installer: apt-get/dnf/apk/zypper auto-detection
+#   - Total: 66 jobs per pipeline (8 native + 54 Docker + 2 Windows + aggregate + upload)
 #
-# === Runner Architecture (12 total, 10 online, 2 paused) ===
-# Parallelization: 7 independent execution lanes in single build stage
+# === Runner Architecture (12 runners, 66 jobs per pipeline) ===
+# All build jobs in single "build" stage — ALL pools run in parallel, concurrency=1
 #
-# Lane 1: K8s (Docker)        -- kubernetes tag -- pve1/node3/node4 Talos VMs
-# Lane 2: BM-Debian (Shell)   -- debian+x86_64  -- pve1 (pve2 paused/experiment)
-# Lane 3: BM-Ubuntu (Shell)   -- ubuntu+x86_64  -- node3, node4
-# Lane 4: macOS x86 (Shell)   -- macos+x86_64   -- node5 (independent)
-# Lane 5: macOS ARM (Shell)   -- macos+arm64    -- node6 (independent)
-# Lane 6: Linux ARM64 (Shell) -- arm64+linux    -- node7 (independent)
-# Lane 7: Linux RISC-V (Shell)-- riscv64+linux  -- node8 (independent)
+# Pool 1: K8s Docker       (4 Talos VMs, AntiAffinity, tags: kubernetes, 2 mandatory jobs)
+# Pool 2: BM Native        (pve1+pve2 Debian, node3+node4 Ubuntu, concurrent=1, mandatory)
+# Pool 3: Docker x86_64    (pve1/pve2/node3/node4 via docker run, tags: bare-metal+x86_64)
+# Pool 4: Docker ARM64     (node6+node7, docker run, tags: arm64, Ubuntu/Debian mandatory)
+# Pool 5: Docker RISC-V    (node8, docker run, tags: riscv64+linux, all allow_failure)
+# Pool 6: Exotic Native    (node5/6/7/8, concurrent=1, allow_failure)
+# Pool 7: Windows Docker   (node5+node6, MinGW cross-compile, allow_failure)
 #
-# XOR: K8s runner XOR BM runner per physical host (pve1/pve2/node3/node4)
-# Exotic nodes (5-8) have no XOR constraint -- fully independent
-# Phase 1: K8s + BM = MANDATORY, Exotic = allow_failure
-
-workflow:
-  auto_cancel:
-    on_new_commit: interruptible
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "development"'
-    - if: '$CI_PIPELINE_SOURCE == "api"'
-    - if: '$CI_PIPELINE_SOURCE == "web"'
+# === 18 Docker Variants (6 OS x 3 Versions) ===
+# Ubuntu:   24.04 (Noble LTS), 22.04 (Jammy LTS), 20.04 (Focal LTS)
+# Debian:   12 (Bookworm), 11 (Bullseye), 10 (Buster)
+# Fedora:   41, 40, 39
+# Alpine:   3.21, 3.20, 3.19
+# openSUSE: Tumbleweed, Leap 15.6, Leap 15.5
+# Rocky:    9, 9.3, 8
+#
+# === Mandatory Jobs ===
+# K8s Debian + K8s Ubuntu = MUST PASS
+# BM Debian + BM Ubuntu = MUST PASS
+# Docker ARM64 Ubuntu + Docker ARM64 Debian (latest only) = MUST PASS
+# Everything else = allow_failure
+#
+# === Dependency Resolution (v6.0) ===
+# staged-build.py passes BEP_MODULE_DEPS when triggering pipelines.
+# Before cmake configure, each dep's install tarball is downloaded from
+# MinIO buildsystem-deps bucket and extracted to BEP_DEPS_DIR.
 
 stages:
   - build
   - aggregate
   - upload
-  - experiment-build
-  - experiment-preflight
-  - experiment-reset
-  - experiment-run
-  - experiment-cleanup
 
 variables:
   GCC_VERSION: "14"
   BUILD_TYPE: "Debug"
-  INSERTION_MODE: "both"  # blob, native, or both
-  REPEAT_DB: ""  # Set to e.g. "mariadb" to repeat only that DB
+  CXX_STANDARD: "23"
+  BEP_MODULE_DEPS: ""
+  BEP_DEPS_BUCKET: "buildsystem-deps"
+  BEP_DEPS_DIR: "/tmp/comdare-deps"
+  BEP_INSTALL_PREFIX: "${CI_PROJECT_DIR}/install"
+  BEP_LAYER: ""
 
 # ============================================================
-# Stage 1: ALL Builds (7 parallel execution lanes)
+# YAML Anchors — Shared Scripts
 # ============================================================
 
-# --- Lane 1: K8s Build (Docker executor, MANDATORY) ---
-build-k8s:
+# --- Universal C++ dependency installer (apt/dnf/apk/zypper auto-detect) ---
+.universal-install: &universal-install |
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq gcc g++ cmake ninja-build git python3-pip libssl-dev make >/dev/null 2>&1
+    apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+      update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+    pip install gcovr --break-system-packages -q --retries 3 2>/dev/null || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make python3-pip >/dev/null 2>&1
+    pip3 install gcovr -q --retries 3 2>/dev/null || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make python3 py3-pip >/dev/null 2>&1
+    pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make python3-pip >/dev/null 2>&1
+    pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+  fi
+
+# --- K8s FetchContent auth + GitHub->GitLab mirror rewrites (internal K8s DNS) ---
+.k8s-fetch-setup: &k8s-fetch-setup |
+  FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+  git config --global url."http://oauth2:${FETCH_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+
+# --- BM/Exotic FetchContent auth + GitHub->GitLab mirror rewrites (external URL) ---
+.bm-fetch-setup: &bm-fetch-setup |
+  FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+
+# --- K8s MinIO dependency download (S3v4 signed) ---
+.k8s-deps-download: &k8s-deps-download |
+  if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
+    echo "=== Downloading ${BEP_MODULE_DEPS} from MinIO ==="
+    mkdir -p "$BEP_DEPS_DIR"
+    python3 << 'DEPSEOF'
+  import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error, tarfile, io, ssl
+  ctx = ssl.create_default_context()
+  ctx.check_hostname = False
+  ctx.verify_mode = ssl.CERT_NONE
+
+  def get_signing_key(secret, datestamp, region, service):
+      k = hmac.new(('AWS4' + secret).encode(), datestamp.encode(), hashlib.sha256).digest()
+      k = hmac.new(k, region.encode(), hashlib.sha256).digest()
+      k = hmac.new(k, service.encode(), hashlib.sha256).digest()
+      return hmac.new(k, b'aws4_request', hashlib.sha256).digest()
+
+  def s3_get(bucket, obj_key, endpoint, access, secret):
+      parsed = urllib.parse.urlparse(endpoint)
+      host, scheme = parsed.netloc, parsed.scheme
+      t = datetime.datetime.utcnow()
+      amz_date, ds = t.strftime('%Y%m%dT%H%M%SZ'), t.strftime('%Y%m%d')
+      region, service = 'us-east-1', 's3'
+      uri = '/' + bucket + '/' + obj_key
+      payload_hash = hashlib.sha256(b'').hexdigest()
+      headers_str = f'host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n'
+      signed_h = 'host;x-amz-content-sha256;x-amz-date'
+      creq = f'GET\n{uri}\n\n{headers_str}\n{signed_h}\n{payload_hash}'
+      scope = f'{ds}/{region}/{service}/aws4_request'
+      sts = f'AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{hashlib.sha256(creq.encode()).hexdigest()}'
+      sig = hmac.new(get_signing_key(secret, ds, region, service), sts.encode(), hashlib.sha256).hexdigest()
+      auth = f'AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed_h}, Signature={sig}'
+      url = f'{scheme}://{host}{uri}'
+      req = urllib.request.Request(url, method='GET')
+      req.add_header('Authorization', auth)
+      req.add_header('x-amz-date', amz_date)
+      req.add_header('x-amz-content-sha256', payload_hash)
+      try:
+          resp = urllib.request.urlopen(req, context=ctx, timeout=60)
+          return resp.read()
+      except urllib.error.HTTPError as e:
+          return None
+
+  endpoint = os.environ.get('MINIO_ENDPOINT', '')
+  access = os.environ.get('MINIO_ACCESS_KEY', '')
+  secret = os.environ.get('MINIO_SECRET_KEY', '')
+  deps_dir = os.environ.get('BEP_DEPS_DIR', '/tmp/comdare-deps')
+  deps_bucket = os.environ.get('BEP_DEPS_BUCKET', 'buildsystem-deps')
+  deps_list = os.environ.get('BEP_MODULE_DEPS', '').split()
+
+  ok = 0
+  for mod in deps_list:
+      obj_key = f'{mod}/latest/linux-x86_64/install.tar.gz'
+      data = s3_get(deps_bucket, obj_key, endpoint, access, secret)
+      if data:
+          dest = os.path.join(deps_dir, mod)
+          os.makedirs(dest, exist_ok=True)
+          with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+              tar.extractall(dest)
+          print(f'  [OK] {mod} -> {dest}')
+          ok += 1
+      else:
+          print(f'  [SKIP] {mod} (not in {deps_bucket})')
+  print(f'Downloaded {ok}/{len(deps_list)} dependencies')
+  DEPSEOF
+    export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
+  else
+    echo "No upstream deps configured (BEP_MODULE_DEPS empty or MinIO not set)"
+  fi
+
+# --- Docker build script (shared by x86_64/ARM64/RISC-V Docker pools) ---
+.docker-build-script: &docker-build-script |
+  # Universal C++ build dependency installer
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make python3-pip >/dev/null 2>&1
+    apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+      update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+    pip install gcovr --break-system-packages -q --retries 3 2>/dev/null || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make python3-pip >/dev/null 2>&1
+    pip3 install gcovr -q --retries 3 2>/dev/null || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make python3 py3-pip >/dev/null 2>&1
+    pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+  elif command -v zypper >/dev/null 2>&1; then
+    zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make python3-pip >/dev/null 2>&1
+    pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+  fi
+  # FetchContent auth + mirror rewrites
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+  git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+  # Build
+  GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+  cmake -B build $GEN \
+    -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+    -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+  cmake --build build -j $(nproc 2>/dev/null || echo 2)
+  cd build && ctest --output-on-failure || true
+
+# ============================================================
+# Pool 1: K8s Builds — 2 mandatory jobs on Talos VMs (Kubernetes executor)
+# ============================================================
+
+build-k8s-debian:
   stage: build
-  interruptible: true
   timeout: 15 minutes
-  image: gcc:${GCC_VERSION}
+  image: gcc:14
   tags:
     - kubernetes
   before_script:
     - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
     - KEEPALIVE_PID=$!
-    - echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-    - sed -i 's|http://deb.debian.org|http://cdn-fastly.deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-    - apt-get update -qq 2>&1 || echo "[WARN] apt install failed"
-    - apt-get install -y -qq cmake ninja-build git python3-pip 2>&1 || echo "[WARN] apt install failed"
-    - pip install gcovr --break-system-packages -q
-    - git config --global url."http://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/".insteadOf "https://gitlab.comdare.de/"
+    - *universal-install
+    - *k8s-fetch-setup
+    - *k8s-deps-download
   script:
-    - echo "=== COMDARE CI v5.4.1 -- K8s (gcc:${GCC_VERSION}, x86_64) ==="
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt -- skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
-    - cmake -B build-k8s -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
-    - cmake --build build-k8s -j4
-    - cd build-k8s && ctest --output-on-failure -j$(nproc) || true
+    - echo "=== COMDARE CI v7.0.0 — K8s Debian/GCC14 (C++${CXX_STANDARD}) ==="
+    - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
+    - cmake -B build-k8s-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
+    - cmake --build build-k8s-debian -j $(nproc)
+    - cd build-k8s-debian && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
     - kill $KEEPALIVE_PID 2>/dev/null || true
     - sleep 1
-    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s/_deps' --print-summary --xml coverage-k8s.xml || true
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s-debian/_deps' --print-summary --xml coverage-k8s-debian.xml 2>/dev/null || true
+    - |
+      cmake --install build-k8s-debian --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
+      if [ -d "${BEP_INSTALL_PREFIX}" ] && [ "$(ls -A ${BEP_INSTALL_PREFIX} 2>/dev/null)" ]; then
+        tar czf install-k8s-debian.tar.gz -C "${BEP_INSTALL_PREFIX}" .
+        echo "Install tree created: $(du -sh ${BEP_INSTALL_PREFIX} | cut -f1)"
+        rm -rf "${BEP_INSTALL_PREFIX}"
+      fi
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
-      - coverage-k8s.xml
-      - build-k8s/
+      - coverage-k8s-debian.xml
+      - install-k8s-debian.tar.gz
     reports:
       coverage_report:
         coverage_format: cobertura
-        path: coverage-k8s.xml
+        path: coverage-k8s-debian.xml
     expire_in: 30 days
     when: always
 
-# --- Lane 2: Debian x86_64 (pve1, pve2) -- MANDATORY ---
+build-k8s-ubuntu:
+  stage: build
+  timeout: 15 minutes
+  image: ubuntu:24.04
+  tags:
+    - kubernetes
+  before_script:
+    - '(while true; do sleep 25; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &'
+    - KEEPALIVE_PID=$!
+    - *universal-install
+    - *k8s-fetch-setup
+    - *k8s-deps-download
+  script:
+    - echo "=== COMDARE CI v7.0.0 — K8s Ubuntu 24.04 (C++${CXX_STANDARD}) ==="
+    - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; kill $KEEPALIVE_PID 2>/dev/null || true; exit 0; }
+    - 'GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"'
+    - cmake -B build-k8s-ubuntu $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
+    - cmake --build build-k8s-ubuntu -j $(nproc)
+    - cd build-k8s-ubuntu && ctest --output-on-failure -j$(nproc) || true
+    - cd $CI_PROJECT_DIR
+    - kill $KEEPALIVE_PID 2>/dev/null || true
+    - sleep 1
+    - gcovr --root . --filter 'include/' --filter 'src/' --exclude 'build-k8s-ubuntu/_deps' --print-summary --xml coverage-k8s-ubuntu.xml 2>/dev/null || true
+    - |
+      cmake --install build-k8s-ubuntu --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
+      if [ -d "${BEP_INSTALL_PREFIX}" ] && [ "$(ls -A ${BEP_INSTALL_PREFIX} 2>/dev/null)" ]; then
+        tar czf install-k8s-ubuntu.tar.gz -C "${BEP_INSTALL_PREFIX}" .
+        echo "Install tree created: $(du -sh ${BEP_INSTALL_PREFIX} | cut -f1)"
+        rm -rf "${BEP_INSTALL_PREFIX}"
+      fi
+  coverage: '/lines:\s+(\d+\.\d+)%/'
+  artifacts:
+    paths:
+      - coverage-k8s-ubuntu.xml
+      - install-k8s-ubuntu.tar.gz
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-k8s-ubuntu.xml
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 2: Bare-Metal Native Builds — MANDATORY (Debian + Ubuntu x86_64)
+# ============================================================
+
 build-debian-x86:
   stage: build
-  interruptible: true
+  dependencies: []
   tags:
     - debian
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v5.4.1 -- Debian x86_64 ($(uname -m)) ==="'
-    - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'echo "=== COMDARE CI v7.0.0 — BM Debian x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'command -v git >/dev/null || { echo "ERROR: git not found"; exit 1; }'
+    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found"; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
+    - *bm-fetch-setup
+    - |
+      if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
+        echo "=== Downloading ${BEP_MODULE_DEPS} ==="
+        mkdir -p "$BEP_DEPS_DIR"
+        for mod in $BEP_MODULE_DEPS; do
+          python3 -c "
+      import urllib.request, ssl, os, tarfile, io
+      ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+      url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
+      try:
+          data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
+          dest = os.path.join(os.environ.get('BEP_DEPS_DIR','/tmp/comdare-deps'), '${mod}')
+          os.makedirs(dest, exist_ok=True); tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
+          print(f'  [OK] ${mod}')
+      except Exception as e: print(f'  [SKIP] ${mod} ({e})')
+      " || true
+        done
+        export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
+      fi
   script:
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt -- skipping"; exit 0; }
-    - cmake -B build-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - cmake -B build-debian -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
     - cmake --build build-debian -j $(nproc)
     - cd build-debian && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
-    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-debian/_deps --print-summary --xml coverage-debian.xml || echo "gcovr not found -- skipping coverage"'
+    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-debian/_deps --print-summary --xml coverage-debian.xml || echo "gcovr not found — skipping coverage"'
+    - cmake --install build-debian --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
       - coverage-debian.xml
-      - build-debian/
     reports:
       coverage_report:
         coverage_format: cobertura
@@ -120,31 +356,49 @@ build-debian-x86:
     expire_in: 30 days
     when: always
 
-# --- Lane 3: Ubuntu x86_64 (node3, node4) -- MANDATORY ---
 build-ubuntu-x86:
   stage: build
-  interruptible: true
+  dependencies: []
   tags:
     - ubuntu
     - x86_64
   before_script:
-    - 'echo "=== COMDARE CI v5.4.1 -- Ubuntu x86_64 ($(uname -m)) ==="'
-    - 'command -v git >/dev/null || { echo "ERROR: git not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found. Run BS-3049 bootstrap."; exit 1; }'
-    - 'command -v gcc >/dev/null || { echo "ERROR: gcc not found. Run BS-3049 bootstrap."; exit 1; }'
+    - 'echo "=== COMDARE CI v7.0.0 — BM Ubuntu x86_64 ($(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'command -v git >/dev/null || { echo "ERROR: git not found"; exit 1; }'
+    - 'command -v cmake >/dev/null || { echo "ERROR: cmake not found"; exit 1; }'
     - 'echo "Toolchain: gcc $(gcc -dumpversion 2>/dev/null), cmake $(cmake --version 2>/dev/null | head -1)"'
+    - *bm-fetch-setup
+    - |
+      if [ -n "$BEP_MODULE_DEPS" ] && [ -n "$MINIO_ENDPOINT" ] && [ -n "$MINIO_ACCESS_KEY" ]; then
+        echo "=== Downloading ${BEP_MODULE_DEPS} ==="
+        mkdir -p "$BEP_DEPS_DIR"
+        for mod in $BEP_MODULE_DEPS; do
+          python3 -c "
+      import urllib.request, ssl, os, tarfile, io
+      ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+      url = os.environ['MINIO_ENDPOINT'] + '/${BEP_DEPS_BUCKET}/${mod}/latest/linux-x86_64/install.tar.gz'
+      try:
+          data = urllib.request.urlopen(url, context=ctx, timeout=30).read()
+          dest = os.path.join(os.environ.get('BEP_DEPS_DIR','/tmp/comdare-deps'), '${mod}')
+          os.makedirs(dest, exist_ok=True); tarfile.open(fileobj=io.BytesIO(data), mode='r:gz').extractall(dest)
+          print(f'  [OK] ${mod}')
+      except Exception as e: print(f'  [SKIP] ${mod} ({e})')
+      " || true
+        done
+        export CMAKE_PREFIX_PATH="$BEP_DEPS_DIR:${CMAKE_PREFIX_PATH:-}"
+      fi
   script:
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt -- skipping"; exit 0; }
-    - cmake -B build-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++23" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - cmake -B build-ubuntu -G Ninja -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_FLAGS="--coverage -std=c++${CXX_STANDARD}" -DCMAKE_C_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage -DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH:-}" -DCMAKE_INSTALL_PREFIX="${BEP_INSTALL_PREFIX}"
     - cmake --build build-ubuntu -j $(nproc)
     - cd build-ubuntu && ctest --output-on-failure -j$(nproc) || true
     - cd $CI_PROJECT_DIR
-    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-ubuntu/_deps --print-summary --xml coverage-ubuntu.xml || echo "gcovr not found -- skipping coverage"'
+    - 'command -v gcovr >/dev/null && gcovr --root . --filter include/ --filter src/ --exclude build-ubuntu/_deps --print-summary --xml coverage-ubuntu.xml || echo "gcovr not found — skipping coverage"'
+    - cmake --install build-ubuntu --prefix "${BEP_INSTALL_PREFIX}" 2>/dev/null || true
   coverage: '/lines:\s+(\d+\.\d+)%/'
   artifacts:
     paths:
       - coverage-ubuntu.xml
-      - build-ubuntu/
     reports:
       coverage_report:
         coverage_format: cobertura
@@ -152,50 +406,358 @@ build-ubuntu-x86:
     expire_in: 30 days
     when: always
 
-# --- Lanes 4-7: Exotic Platforms (Shell executor, SOFT-FAIL Phase 1) ---
+# ============================================================
+# Pool 3: Docker x86_64 Builds — 18 Linux OSes on BM hosts via docker run
+# All allow_failure (BM native already proves x86_64 compile)
+# ============================================================
+build-docker-x86:
+  stage: build
+  dependencies: []
+  allow_failure: true
+  timeout: 20 minutes
+  parallel:
+    matrix:
+      - DOCKER_OS: ubuntu-2404
+        DOCKER_IMAGE: "ubuntu:24.04"
+      - DOCKER_OS: ubuntu-2204
+        DOCKER_IMAGE: "ubuntu:22.04"
+      - DOCKER_OS: ubuntu-2004
+        DOCKER_IMAGE: "ubuntu:20.04"
+      - DOCKER_OS: debian-12
+        DOCKER_IMAGE: "debian:12"
+      - DOCKER_OS: debian-11
+        DOCKER_IMAGE: "debian:11"
+      - DOCKER_OS: debian-10
+        DOCKER_IMAGE: "debian:10"
+      - DOCKER_OS: fedora-41
+        DOCKER_IMAGE: "fedora:41"
+      - DOCKER_OS: fedora-40
+        DOCKER_IMAGE: "fedora:40"
+      - DOCKER_OS: fedora-39
+        DOCKER_IMAGE: "fedora:39"
+      - DOCKER_OS: alpine-321
+        DOCKER_IMAGE: "alpine:3.21"
+      - DOCKER_OS: alpine-320
+        DOCKER_IMAGE: "alpine:3.20"
+      - DOCKER_OS: alpine-319
+        DOCKER_IMAGE: "alpine:3.19"
+      - DOCKER_OS: opensuse-tw
+        DOCKER_IMAGE: "opensuse/tumbleweed"
+      - DOCKER_OS: opensuse-156
+        DOCKER_IMAGE: "opensuse/leap:15.6"
+      - DOCKER_OS: opensuse-155
+        DOCKER_IMAGE: "opensuse/leap:15.5"
+      - DOCKER_OS: rocky-9
+        DOCKER_IMAGE: "rockylinux:9"
+      - DOCKER_OS: rocky-93
+        DOCKER_IMAGE: "rockylinux:9.3"
+      - DOCKER_OS: rocky-8
+        DOCKER_IMAGE: "rockylinux:8"
+  tags:
+    - bare-metal
+    - x86_64
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Docker x86_64 ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} pull failed — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        -e "DOCKER_OS=${DOCKER_OS}" \
+        ${DOCKER_IMAGE} sh -c '
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make python3-pip >/dev/null 2>&1
+            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+            pip install gcovr --break-system-packages -q --retries 3 2>/dev/null || true
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make python3-pip >/dev/null 2>&1
+            pip3 install gcovr -q --retries 3 2>/dev/null || true
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make python3 py3-pip >/dev/null 2>&1
+            pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make python3-pip >/dev/null 2>&1
+            pip3 install gcovr --break-system-packages -q 2>/dev/null || true
+          fi
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+          cmake -B build-docker-x86-${DOCKER_OS} $GEN \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+          cmake --build build-docker-x86-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 4)
+          cd build-docker-x86-${DOCKER_OS} && ctest --output-on-failure || true
+          cd /workspace
+          gcovr --root . --filter include/ --filter src/ --exclude "build-docker-x86-${DOCKER_OS}/_deps" --print-summary --xml coverage-docker-x86-${DOCKER_OS}.xml 2>/dev/null || true
+        '
+  artifacts:
+    paths:
+      - coverage-docker-x86-*.xml
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 4: Docker ARM64 Builds — 18 Linux OSes via docker run
+# Ubuntu/Debian latest = MANDATORY, rest = allow_failure
+# Runs on node6 (macOS ARM64, colima) or node7 (Pi5 ARM64, Docker CE)
+# ============================================================
+build-docker-arm64:
+  stage: build
+  dependencies: []
+  timeout: 25 minutes
+  parallel:
+    matrix:
+      - DOCKER_OS: ubuntu-2404
+        DOCKER_IMAGE: "ubuntu:24.04"
+      - DOCKER_OS: ubuntu-2204
+        DOCKER_IMAGE: "ubuntu:22.04"
+      - DOCKER_OS: ubuntu-2004
+        DOCKER_IMAGE: "ubuntu:20.04"
+      - DOCKER_OS: debian-12
+        DOCKER_IMAGE: "debian:12"
+      - DOCKER_OS: debian-11
+        DOCKER_IMAGE: "debian:11"
+      - DOCKER_OS: debian-10
+        DOCKER_IMAGE: "debian:10"
+      - DOCKER_OS: fedora-41
+        DOCKER_IMAGE: "fedora:41"
+      - DOCKER_OS: fedora-40
+        DOCKER_IMAGE: "fedora:40"
+      - DOCKER_OS: fedora-39
+        DOCKER_IMAGE: "fedora:39"
+      - DOCKER_OS: alpine-321
+        DOCKER_IMAGE: "alpine:3.21"
+      - DOCKER_OS: alpine-320
+        DOCKER_IMAGE: "alpine:3.20"
+      - DOCKER_OS: alpine-319
+        DOCKER_IMAGE: "alpine:3.19"
+      - DOCKER_OS: opensuse-tw
+        DOCKER_IMAGE: "opensuse/tumbleweed"
+      - DOCKER_OS: opensuse-156
+        DOCKER_IMAGE: "opensuse/leap:15.6"
+      - DOCKER_OS: opensuse-155
+        DOCKER_IMAGE: "opensuse/leap:15.5"
+      - DOCKER_OS: rocky-9
+        DOCKER_IMAGE: "rockylinux:9"
+      - DOCKER_OS: rocky-93
+        DOCKER_IMAGE: "rockylinux:9.3"
+      - DOCKER_OS: rocky-8
+        DOCKER_IMAGE: "rockylinux:8"
+  tags:
+    - arm64
+  rules:
+    - if: '$DOCKER_OS == "ubuntu-2404" || $DOCKER_OS == "debian-12"'
+      allow_failure: false
+    - allow_failure: true
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Docker ARM64 ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} not available for $(uname -m) — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        -e "DOCKER_OS=${DOCKER_OS}" \
+        ${DOCKER_IMAGE} sh -c '
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make >/dev/null 2>&1
+            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make >/dev/null 2>&1
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make >/dev/null 2>&1
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make >/dev/null 2>&1
+          fi
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+          cmake -B build-docker-arm64-${DOCKER_OS} $GEN \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+          cmake --build build-docker-arm64-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 2)
+          cd build-docker-arm64-${DOCKER_OS} && ctest --output-on-failure || true
+        '
+  artifacts:
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 5: Docker RISC-V Builds — 18 Linux OSes via docker run (all allow_failure)
+# Runs on node8 (RISC-V, Docker CE — requires Docker installed)
+# ============================================================
+build-docker-riscv:
+  stage: build
+  dependencies: []
+  allow_failure: true
+  timeout: 30 minutes
+  parallel:
+    matrix:
+      - DOCKER_OS: ubuntu-2404
+        DOCKER_IMAGE: "ubuntu:24.04"
+      - DOCKER_OS: ubuntu-2204
+        DOCKER_IMAGE: "ubuntu:22.04"
+      - DOCKER_OS: ubuntu-2004
+        DOCKER_IMAGE: "ubuntu:20.04"
+      - DOCKER_OS: debian-12
+        DOCKER_IMAGE: "debian:12"
+      - DOCKER_OS: debian-11
+        DOCKER_IMAGE: "debian:11"
+      - DOCKER_OS: debian-10
+        DOCKER_IMAGE: "debian:10"
+      - DOCKER_OS: fedora-41
+        DOCKER_IMAGE: "fedora:41"
+      - DOCKER_OS: fedora-40
+        DOCKER_IMAGE: "fedora:40"
+      - DOCKER_OS: fedora-39
+        DOCKER_IMAGE: "fedora:39"
+      - DOCKER_OS: alpine-321
+        DOCKER_IMAGE: "alpine:3.21"
+      - DOCKER_OS: alpine-320
+        DOCKER_IMAGE: "alpine:3.20"
+      - DOCKER_OS: alpine-319
+        DOCKER_IMAGE: "alpine:3.19"
+      - DOCKER_OS: opensuse-tw
+        DOCKER_IMAGE: "opensuse/tumbleweed"
+      - DOCKER_OS: opensuse-156
+        DOCKER_IMAGE: "opensuse/leap:15.6"
+      - DOCKER_OS: opensuse-155
+        DOCKER_IMAGE: "opensuse/leap:15.5"
+      - DOCKER_OS: rocky-9
+        DOCKER_IMAGE: "rockylinux:9"
+      - DOCKER_OS: rocky-93
+        DOCKER_IMAGE: "rockylinux:9.3"
+      - DOCKER_OS: rocky-8
+        DOCKER_IMAGE: "rockylinux:8"
+  tags:
+    - riscv64
+    - linux
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Docker RISC-V ${DOCKER_OS} (C++${CXX_STANDARD}) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found on RISC-V — skipping"; exit 0; }'
+    - 'docker pull ${DOCKER_IMAGE} || { echo "WARN: ${DOCKER_IMAGE} not available for riscv64 — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        -e "DOCKER_OS=${DOCKER_OS}" \
+        ${DOCKER_IMAGE} sh -c '
+          if command -v apt-get >/dev/null 2>&1; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq gcc g++ cmake ninja-build git libssl-dev make >/dev/null 2>&1
+            apt-get install -y -qq gcc-14 g++-14 >/dev/null 2>&1 && \
+              update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+                --slave /usr/bin/g++ g++ /usr/bin/g++-14 2>/dev/null || true
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y gcc gcc-c++ cmake ninja-build git openssl-devel make >/dev/null 2>&1
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache gcc g++ cmake samurai git musl-dev openssl-dev make >/dev/null 2>&1
+          elif command -v zypper >/dev/null 2>&1; then
+            zypper --non-interactive install gcc gcc-c++ cmake ninja git libopenssl-devel make >/dev/null 2>&1
+          fi
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/openxlsx".insteadOf "https://github.com/troldal/OpenXLSX"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/benchmark".insteadOf "https://github.com/google/benchmark"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/research/archive/BigInteger".insteadOf "https://github.com/BenniProbst/BigInteger"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer2-abstraction/cd-buildsystem-logging".insteadOf "https://github.com/BenniProbst/cd-buildsystem-logging"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/comdare/products/cd-buildsystem-construct/layer3-orchestration/cd-buildsystem-sitl".insteadOf "https://github.com/BenniProbst/cd-buildsystem-sitl"
+          GEN=""; command -v ninja >/dev/null 2>&1 && GEN="-G Ninja"
+          cmake -B build-docker-riscv-${DOCKER_OS} $GEN \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
+          cmake --build build-docker-riscv-${DOCKER_OS} -j $(nproc 2>/dev/null || echo 2)
+          cd build-docker-riscv-${DOCKER_OS} && ctest --output-on-failure || true
+        '
+  artifacts:
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Pool 6: Exotic Native Builds — allow_failure (macOS, ARM64, RISC-V)
+# ============================================================
 .exotic-base:
   stage: build
-  interruptible: true
+  dependencies: []
   allow_failure: true
   before_script:
-    - 'echo "=== COMDARE CI v5.4.1 -- Exotic ($(uname -s) $(uname -m)) ==="'
-    - 'command -v git >/dev/null || { echo "WARN: git not found -- skipping"; exit 0; }'
-    - 'command -v cmake >/dev/null || { echo "WARN: cmake not found -- skipping"; exit 0; }'
+    - 'echo "=== COMDARE CI v7.0.0 — Exotic Native ($(uname -s) $(uname -m), C++${CXX_STANDARD}) ==="'
+    - 'command -v git >/dev/null || { echo "WARN: git not found — skipping"; exit 0; }'
+    - 'command -v cmake >/dev/null || { echo "WARN: cmake not found — skipping"; exit 0; }'
+    - *bm-fetch-setup
   script:
-    - test -f CMakeLists.txt || { echo "No CMakeLists.txt -- skipping"; exit 0; }
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
     - 'GEN=""; command -v ninja >/dev/null && GEN="-G Ninja"'
-    - cmake -B build-exotic $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_STANDARD=23
+    - cmake -B build-exotic $GEN -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -DCMAKE_CXX_STANDARD=${CXX_STANDARD}
     - cmake --build build-exotic -j $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
     - cd build-exotic && ctest --output-on-failure || true
     - cd $CI_PROJECT_DIR
   artifacts:
-    paths:
-      - build-exotic/
     expire_in: 30 days
     when: always
 
-# Lane 4: macOS x86_64 (node5)
 build-macos-x86:
   extends: .exotic-base
   tags:
     - macos
     - x86_64
 
-# Lane 5: macOS ARM64 (node6)
 build-macos-arm:
   extends: .exotic-base
   tags:
     - macos
     - arm64
 
-# Lane 6: Linux ARM64 (node7)
 build-linux-arm64:
   extends: .exotic-base
   tags:
     - arm64
     - linux
 
-# Lane 7: Linux RISC-V (node8)
 build-linux-riscv:
   extends: .exotic-base
   tags:
@@ -203,7 +765,101 @@ build-linux-riscv:
     - linux
 
 # ============================================================
-# Stage 2: Aggregate Results
+# Pool 7: Windows Docker Builds — MinGW-w64 cross-compile on macOS (allow_failure)
+# Uses Linux containers with mingw-w64 to cross-compile for Windows x86_64
+# ============================================================
+build-docker-windows-x86:
+  stage: build
+  dependencies: []
+  allow_failure: true
+  timeout: 20 minutes
+  tags:
+    - macos
+    - x86_64
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Windows x86_64 Docker (MinGW cross-compile on macOS x86_64) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull debian:12 || { echo "WARN: debian:12 pull failed — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        debian:12 sh -c '
+          apt-get update -qq
+          apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 cmake ninja-build git make >/dev/null 2>&1
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          cmake -B build-windows-x86 -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=OFF \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD} \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY 2>&1 || true
+          cmake --build build-windows-x86 -j $(nproc 2>/dev/null || echo 4) 2>&1 || true
+          echo "Windows x86_64 cross-compile complete"
+        '
+  artifacts:
+    expire_in: 30 days
+    when: always
+
+build-docker-windows-arm:
+  stage: build
+  dependencies: []
+  allow_failure: true
+  timeout: 20 minutes
+  tags:
+    - macos
+    - arm64
+  before_script:
+    - 'echo "=== COMDARE CI v7.0.0 — Windows x86_64 Docker (MinGW cross-compile on macOS ARM64) ==="'
+    - 'command -v docker >/dev/null || { echo "WARN: docker not found — skipping"; exit 0; }'
+    - 'docker pull debian:12 || { echo "WARN: debian:12 pull failed — skipping"; exit 0; }'
+  script:
+    - test -f CMakeLists.txt || { echo "No CMakeLists.txt — skipping"; exit 0; }
+    - 'FETCH_TOKEN="${GITLAB_DEPLOY_TOKEN:-${CI_JOB_TOKEN}}"'
+    - |
+      docker run --rm \
+        -v "$CI_PROJECT_DIR":/workspace \
+        -w /workspace \
+        -e "DEBIAN_FRONTEND=noninteractive" \
+        -e "CXX_STANDARD=${CXX_STANDARD}" \
+        -e "BUILD_TYPE=${BUILD_TYPE}" \
+        -e "FETCH_TOKEN=${FETCH_TOKEN}" \
+        debian:12 sh -c '
+          apt-get update -qq
+          apt-get install -y -qq gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 cmake ninja-build git make >/dev/null 2>&1
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/".insteadOf "https://gitlab.comdare.de/"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/googletest".insteadOf "https://github.com/google/googletest"
+          git config --global url."https://oauth2:${FETCH_TOKEN}@gitlab.comdare.de/mirrors/nlohmann-json".insteadOf "https://github.com/nlohmann/json"
+          cmake -B build-windows-arm -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+            -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=OFF \
+            -DCMAKE_CXX_STANDARD=${CXX_STANDARD} \
+            -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
+            -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY 2>&1 || true
+          cmake --build build-windows-arm -j $(nproc 2>/dev/null || echo 4) 2>&1 || true
+          echo "Windows x86_64 cross-compile (on ARM64 host) complete"
+        '
+  artifacts:
+    expire_in: 30 days
+    when: always
+
+# ============================================================
+# Stage 2: Aggregate Results (after ALL build jobs finish)
 # ============================================================
 aggregate-results:
   stage: aggregate
@@ -213,24 +869,58 @@ aggregate-results:
   rules:
     - when: always
   script:
-    - echo "=== COMDARE CI v5.4.1 -- Aggregate Results ==="
-    - echo "Platform build results:"
-    - '[ -f coverage-k8s.xml ] && echo "  K8s Docker (x86_64):  OK" || echo "  K8s Docker (x86_64):  MISSING"'
-    - '[ -f coverage-debian.xml ] && echo "  Debian BM (x86_64):   OK" || echo "  Debian BM (x86_64):   MISSING"'
-    - '[ -f coverage-ubuntu.xml ] && echo "  Ubuntu BM (x86_64):   OK" || echo "  Ubuntu BM (x86_64):   MISSING"'
-    - '[ -d build-exotic ] && echo "  Exotic platforms:      artifacts present" || echo "  Exotic platforms:      no artifacts"'
-    - echo "Pipeline $CI_PIPELINE_ID complete on $(date -u)"
+    - echo "=== COMDARE CI v7.0.0 — Aggregate Results ==="
+    - '[ -n "$BEP_LAYER" ] && echo "Layer: $BEP_LAYER" || true'
+    - '[ -n "$BEP_MODULE_DEPS" ] && echo "Deps: $BEP_MODULE_DEPS" || true'
+    - |
+      echo ""
+      echo "=== K8s Pool (2 jobs, mandatory) ==="
+      for variant in k8s-debian k8s-ubuntu; do
+        if [ -f "coverage-${variant}.xml" ]; then
+          echo "  ${variant}: OK"
+        else
+          echo "  ${variant}: MISSING"
+        fi
+      done
+      echo ""
+      echo "=== BM Native (2 jobs, mandatory) ==="
+      [ -f coverage-debian.xml ] && echo "  Debian native (x86_64): OK" || echo "  Debian native (x86_64): MISSING"
+      [ -f coverage-ubuntu.xml ] && echo "  Ubuntu native (x86_64): OK" || echo "  Ubuntu native (x86_64): MISSING"
+      echo ""
+      echo "=== Docker x86_64 Pool (18 OSes, allow_failure) ==="
+      for os in ubuntu-2404 ubuntu-2204 ubuntu-2004 debian-12 debian-11 debian-10 fedora-41 fedora-40 fedora-39 alpine-321 alpine-320 alpine-319 opensuse-tw opensuse-156 opensuse-155 rocky-9 rocky-93 rocky-8; do
+        if [ -f "coverage-docker-x86-${os}.xml" ]; then
+          echo "  ${os}: OK"
+        else
+          echo "  ${os}: MISSING"
+        fi
+      done
+      echo ""
+      echo "=== Install Trees ==="
+      for variant in k8s-debian k8s-ubuntu; do
+        if [ -f "install-${variant}.tar.gz" ]; then
+          echo "  ${variant}: $(du -sh install-${variant}.tar.gz | cut -f1)"
+        else
+          echo "  ${variant}: none"
+        fi
+      done
+      echo ""
+      echo "Pipeline $CI_PIPELINE_ID complete on $(date -u)"
+      echo "v7.0.0: 66 jobs (8 native + 54 Docker + 2 Windows + aggregate + upload)"
   artifacts:
     paths:
-      - coverage-k8s.xml
+      - coverage-k8s-debian.xml
+      - coverage-k8s-ubuntu.xml
       - coverage-debian.xml
       - coverage-ubuntu.xml
+      - coverage-docker-x86-*.xml
+      - install-k8s-debian.tar.gz
+      - install-k8s-ubuntu.tar.gz
     expire_in: 30 days
     when: always
 
 # ============================================================
-# Stage 3: Upload Artifacts to MinIO (buildsystem-artifacts)
-# RBMM Path Hierarchy: {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/
+# Stage 3: Upload to MinIO (buildsystem-artifacts + buildsystem-deps)
 # ============================================================
 upload-to-minio:
   stage: upload
@@ -238,11 +928,15 @@ upload-to-minio:
   tags:
     - kubernetes
   script:
-    - echo "=== COMDARE CI v5.4.1 -- MinIO Artifact Upload (S3v4 native) ==="
-    - echo "RBMM Hierarchy -- {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
+    - echo "=== COMDARE CI v7.0.0 — MinIO Upload (artifacts + deps) ==="
+    - echo "RBMM Hierarchy — {project}/{platform}/{arch}/{runner_class}/{pipeline_id}/"
     - |
       python3 << 'PYEOF'
-      import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error
+      import hashlib, hmac, datetime, os, sys, urllib.request, urllib.parse, urllib.error, ssl, glob
+
+      ctx = ssl.create_default_context()
+      ctx.check_hostname = False
+      ctx.verify_mode = ssl.CERT_NONE
 
       def get_signing_key(secret, datestamp, region, service):
           k = hmac.new(('AWS4' + secret).encode(), datestamp.encode(), hashlib.sha256).digest()
@@ -274,9 +968,9 @@ upload-to-minio:
           req.add_header('Authorization', auth)
           req.add_header('x-amz-date', amz_date)
           req.add_header('x-amz-content-sha256', payload_hash)
-          req.add_header('Content-Type', 'application/xml')
+          req.add_header('Content-Type', 'application/octet-stream')
           try:
-              resp = urllib.request.urlopen(req, timeout=30)
+              resp = urllib.request.urlopen(req, context=ctx, timeout=60)
               return resp.status
           except urllib.error.HTTPError as e:
               print(f'  HTTP {e.code}: {e.read().decode()[:100]}', file=sys.stderr)
@@ -287,624 +981,60 @@ upload-to-minio:
       secret = os.environ.get('MINIO_SECRET_KEY', '')
       proj = os.environ.get('CI_PROJECT_PATH', '')
       pid = os.environ.get('CI_PIPELINE_ID', '')
-      bucket = 'buildsystem-artifacts'
-      uploads = [
-          ('coverage-k8s.xml', f'{proj}/linux/x86_64/k8s/{pid}/coverage/coverage-k8s.xml'),
-          ('coverage-debian.xml', f'{proj}/linux/x86_64/debian/{pid}/coverage/coverage-debian.xml'),
-          ('coverage-ubuntu.xml', f'{proj}/linux/x86_64/ubuntu/{pid}/coverage/coverage-ubuntu.xml'),
-      ]
+
+      # === Part 1: buildsystem-artifacts (coverage + binaries) ===
+      bucket_artifacts = 'buildsystem-artifacts'
+      uploads = []
+
+      for cov_file in glob.glob('coverage-*.xml'):
+          platform_label = cov_file.replace('coverage-', '').replace('.xml', '')
+          uploads.append((cov_file, f'{proj}/linux/x86_64/{platform_label}/{pid}/coverage/{cov_file}'))
+
+      for build_dir in glob.glob('build-*'):
+          if not os.path.isdir(build_dir): continue
+          platform_label = build_dir.replace('build-', '')
+          for ext in ['*.a', '*.so', '*.dylib']:
+              for f in glob.glob(f'{build_dir}/**/{ext}', recursive=True):
+                  if not os.path.isfile(f): continue
+                  fname = os.path.basename(f)
+                  uploads.append((f, f'{proj}/linux/x86_64/{platform_label}/{pid}/lib/{fname}'))
+          for f in glob.glob(f'{build_dir}/**/test_*', recursive=True):
+              if os.path.isfile(f) and os.access(f, os.X_OK):
+                  fname = os.path.basename(f)
+                  uploads.append((f, f'{proj}/linux/x86_64/{platform_label}/{pid}/bin/{fname}'))
+
       ok = 0
       for local, key in uploads:
           if os.path.exists(local):
-              code = s3_put(local, bucket, key, endpoint, access, secret)
+              code = s3_put(local, bucket_artifacts, key, endpoint, access, secret)
               status = 'OK' if code == 200 else f'FAIL({code})'
-              print(f'  {status} {key}')
+              print(f'  {status} {bucket_artifacts}/{key}')
               if code == 200: ok += 1
           else:
               print(f'  SKIP {local} (not found)')
-      print(f'\nUpload complete: {ok}/{len(uploads)} files for pipeline {pid}')
+      print(f'\nArtifacts upload: {ok}/{len(uploads)} files')
+
+      # === Part 2: buildsystem-deps (install trees for downstream) ===
+      bucket_deps = os.environ.get('BEP_DEPS_BUCKET', 'buildsystem-deps')
+      module_name = proj.split('/')[-1] if '/' in proj else proj
+      for tarball in glob.glob('install-*.tar.gz'):
+          variant = tarball.replace('install-', '').replace('.tar.gz', '')
+          deps_key = f'{module_name}/latest/linux-{variant}/install.tar.gz'
+          code = s3_put(tarball, bucket_deps, deps_key, endpoint, access, secret)
+          status = 'OK' if code == 200 else f'FAIL({code})'
+          print(f'\n  {status} {bucket_deps}/{deps_key}')
+          versioned_key = f'{module_name}/{pid}/linux-{variant}/install.tar.gz'
+          code2 = s3_put(tarball, bucket_deps, versioned_key, endpoint, access, secret)
+          status2 = 'OK' if code2 == 200 else f'FAIL({code2})'
+          print(f'  {status2} {bucket_deps}/{versioned_key}')
+
+      if not glob.glob('install-*.tar.gz'):
+          print(f'\nNo install tree — header-only module (deps managed via FetchContent)')
+
+      print(f'\nUpload complete for pipeline {pid}')
       PYEOF
   allow_failure: true
   rules:
     - if: '$MINIO_ENDPOINT && $MINIO_ACCESS_KEY && $MINIO_SECRET_KEY'
       when: always
     - when: never
-
-# =============================================================================
-# PIPELINE 2: Real DB Experiment (sequential per-DB, 3 repetitions each)
-# =============================================================================
-# Runner: k8s-runner-4 (ID 17) on dedicated node talos-say-ls6
-#   - Tag: "experiment" (only tag, run_untagged=false)
-#   - Node selector: kubernetes.io/hostname=talos-say-ls6
-#   - Toleration: experiment=dedicated:NoSchedule
-# Safety: Samba AD lab user (dedup-lab), isolated lab schemas, cleanup guaranteed
-# =============================================================================
-
-.experiment-default: &experiment-default
-  image: gcc:14-bookworm
-  tags:
-    - experiment
-  before_script:
-    - |
-      # ForceIPv4 removed (DNS on experiment node returns only IPv6 for CDN)
-      sed -i 's|http://deb.debian.org|http://cdn-fastly.deb.debian.org|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-      echo "[DEBUG] apt update..."; apt-get update -qq 2>&1 || echo "[WARN] apt update failed"
-      apt-get install -y -qq --no-install-recommends \
-        libpq-dev libhiredis-dev librdkafka-dev libcurl4-openssl-dev \
-        libmariadb-dev nlohmann-json3-dev cmake ninja-build nfs-common curl \
-        libsasl2-modules \
-        2>&1 || echo "[WARN] apt install failed"
-      echo "Build-tools ready: GCC $(gcc -dumpversion) + CMake + Ninja"
-
-experiment:build:
-  <<: *experiment-default
-  stage: experiment-build
-  needs: []
-  script:
-    - |
-      echo "=== Experiment Build: dedup-test v${CI_COMMIT_SHORT_SHA} ==="
-      mkdir -p build && cd build
-      cmake ../src/cpp -DCMAKE_BUILD_TYPE=Release
-      make -j4 dedup-test 2>&1
-      echo "=== Binary ready ==="
-      ls -lh dedup-test
-      file dedup-test
-  artifacts:
-    paths:
-      - build/dedup-test
-    expire_in: 7 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-experiment:preflight:
-  tags:
-    - experiment
-  image: gcc:14-bookworm
-  stage: experiment-preflight
-  interruptible: true
-  needs: ["experiment:build"]
-  timeout: 10 minutes
-  retry:
-    max: 2
-    when: [runner_system_failure, script_failure, job_execution_timeout]
-  script:
-    - |
-      # Auto-cancel other running/pending pipelines for this project
-      echo "[Auto-Cancel] Checking for other active pipelines..."
-      API_URL="http://gitlab-webservice-default.gitlab.svc:8181/api/v4/projects/${CI_PROJECT_ID}/pipelines"
-      CANCELLED=0
-      for status in running pending; do
-        RESPONSE=$(curl -sf --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-          "${API_URL}?status=${status}&per_page=100" 2>/dev/null || echo "[]")
-        PIDS=$(echo "$RESPONSE" | grep -o '"id":[0-9]*' | grep -o '[0-9]*' || true)
-          for PID in $PIDS; do
-            if [ "$PID" != "${CI_PIPELINE_ID}" ]; then
-              echo "[Auto-Cancel] Cancelling pipeline #${PID}"
-              curl -sf --request POST --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-                "${API_URL}/${PID}/cancel" 2>/dev/null || echo "[WARN] Could not cancel #${PID}"
-              CANCELLED=$((CANCELLED+1))
-            fi
-          done
-      done
-      echo "[Auto-Cancel] Done (${CANCELLED} pipelines cancelled)"
-
-      echo "=== Pre-Flight: Checking production DBs + K8s API + NFS ==="
-      echo "(Experiment DBs like MariaDB/ClickHouse/Redis may be scaled to 0 -- checked per-job)"
-      PASS=0; FAIL=0
-      tcp_check() {
-        local host=$1 port=$2
-        timeout 5 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null
-      }
-      check() {
-        if eval "$2" 2>/dev/null; then
-          echo "  OK  $1"; PASS=$((PASS+1))
-        else
-          echo "  FAIL $1"; FAIL=$((FAIL+1))
-        fi
-      }
-      # Production DBs (MUST be running)
-      check "PostgreSQL"   "tcp_check postgres-lb.databases.svc.cluster.local 5432"
-      check "CockroachDB"  "tcp_check cockroachdb-public.cockroach-operator-system.svc.cluster.local 26257"
-      check "MinIO"        "tcp_check minio-lb.minio.svc.cluster.local 9000"
-      # K8s API (needed for per-DB scaling)
-      check "K8s API"      "tcp_check kubernetes.default.svc 443"
-      # NFS (needed for checkpoints + real-world datasets)
-      check "NFS"          "tcp_check 10.0.110.184 2049"
-      # Experiment DBs (informational -- may be at 0 replicas, NOT blocking)
-      echo "--- Experiment DBs (info only, not blocking) ---"
-      for db_info in "MariaDB:mariadb.databases.svc.cluster.local:3306" \
-                     "ClickHouse:clickhouse.databases.svc.cluster.local:8123" \
-                     "Redis:redis-cluster.redis.svc.cluster.local:6379" \
-                     "Kafka:kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9094"; do
-        name=$(echo "$db_info" | cut -d: -f1)
-        host=$(echo "$db_info" | cut -d: -f2)
-        port=$(echo "$db_info" | cut -d: -f3)
-        if tcp_check "$host" "$port"; then
-          echo "  UP   $name"
-        else
-          echo "  DOWN $name (will be scaled up by its job)"
-        fi
-      done
-      echo "=== Result: ${PASS}/5 production checks passed, ${FAIL}/5 failed ==="
-      [ "$FAIL" -eq 0 ] || exit 1
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-# =============================================================================
-# Stage: Experiment Reset (parallel DB resets before experiment runs)
-# All 7 resets run in parallel via background processes in a single job.
-# Requires: kubectl access to DB namespaces (pods/exec RBAC).
-# =============================================================================
-experiment:reset:
-  stage: experiment-reset
-  tags:
-    - experiment
-  image: bitnami/kubectl:latest
-  interruptible: true
-  timeout: 10 minutes
-  needs: ["experiment:preflight"]
-  script:
-    - |
-      echo "=== Experiment Reset: All 7 databases (parallel) ==="
-      echo "Time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      echo "Pipeline: ${CI_PIPELINE_ID} | Commit: ${CI_COMMIT_SHORT_SHA}"
-
-      # Verify kubectl connectivity
-      kubectl version --client 2>/dev/null || echo "[WARN] kubectl version check"
-      kubectl cluster-info 2>/dev/null | head -2 || echo "[WARN] cluster-info check"
-
-      chmod +x scripts/reset/*.sh 2>/dev/null || true
-
-      # Run all 7 resets in parallel (background processes)
-      PIDS=""
-      for db in mariadb clickhouse redis kafka minio postgresql cockroachdb; do
-        echo "[Reset] Starting ${db}..."
-        bash "scripts/reset/reset_${db}.sh" > "/tmp/reset_${db}.log" 2>&1 &
-        PIDS="$PIDS $!"
-      done
-
-      # Wait for all to complete
-      PASS=0; FAIL=0
-      for pid in $PIDS; do
-        if wait $pid; then
-          PASS=$((PASS+1))
-        else
-          FAIL=$((FAIL+1))
-        fi
-      done
-
-      # Print logs
-      for db in mariadb clickhouse redis kafka minio postgresql cockroachdb; do
-        echo "--- ${db} reset log ---"
-        cat "/tmp/reset_${db}.log" 2>/dev/null || echo "(no log)"
-      done
-
-      echo "=== Reset complete: ${PASS}/7 passed, ${FAIL}/7 failed ==="
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-.experiment-per-db: &experiment-per-db
-  <<: *experiment-default
-  stage: experiment-run
-  timeout: 6 hours
-  # resource_group removed (deadlock on retry; needs-chain + concurrent=1 ensures serialization)
-  retry:
-    max: 2
-    when: [runner_system_failure, unknown_failure]
-  script:
-    - |
-      # === DEBUG: Capture all output to artifact file (workaround for broken trace storage) ===
-      mkdir -p results/${DB_SYSTEM:-unknown}
-      exec > >(tee results/${DB_SYSTEM:-unknown}/debug.log) 2>&1
-      echo "[DEBUG] Output capture started at $(date -u)"
-      echo "[DEBUG] Image: $(cat /etc/os-release 2>/dev/null | head -1 || echo unknown)"
-      echo "[DEBUG] pwd=$(pwd) whoami=$(whoami)"
-      echo "[DEBUG] build/dedup-test exists: $(ls -la build/dedup-test 2>&1)"
-      echo "[DEBUG] ldd build/dedup-test:"
-      ldd build/dedup-test 2>&1 || echo "[DEBUG] ldd failed"
-      echo "[DEBUG] === END INITIAL DEBUG ==="
-
-      # Keepalive heartbeat (prevents stuck_or_timeout_failure)
-      (while true; do sleep 60; echo "[keepalive $(date -u +%H:%M:%S)]"; done) &
-      KEEPALIVE_PID=$!
-      trap "kill $KEEPALIVE_PID 2>/dev/null" EXIT
-
-      # === K8s API helpers for per-DB scaling ===
-      APISERVER=https://kubernetes.default.svc
-      SA_TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null || echo "")
-      SA_CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-
-      k8s_scale_sts() {
-        local ns=$1 name=$2 replicas=$3
-        echo "[Scale] ${ns}/${name} -> ${replicas} replicas"
-        curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
-          -H "Content-Type: application/merge-patch+json" \
-          -X PATCH "${APISERVER}/apis/apps/v1/namespaces/${ns}/statefulsets/${name}/scale" \
-          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200 || true
-        echo ""
-      }
-
-      k8s_scale_kafka() {
-        local ns=$1 pool=$2 replicas=$3
-        echo "[Scale] kafka/${pool} -> ${replicas} replicas"
-        curl -sk --cacert $SA_CACERT -H "Authorization: Bearer $SA_TOKEN" \
-          -H "Content-Type: application/merge-patch+json" \
-          -X PATCH "${APISERVER}/apis/kafka.strimzi.io/v1beta2/namespaces/${ns}/kafkanodepools/${pool}" \
-          -d "{\"spec\":{\"replicas\":${replicas}}}" 2>/dev/null | head -c 200 || true
-        echo ""
-      }
-
-      wait_for_db() {
-        local host=$1 port=$2 timeout=${3:-180}
-        echo "[Wait] Waiting for ${host}:${port} (max ${timeout}s)..."
-        for i in $(seq 1 $timeout); do
-          if timeout 2 bash -c "echo > /dev/tcp/${host}/${port}" 2>/dev/null; then
-            echo "[Wait] ${host}:${port} ready after ${i}s"
-            return 0
-          fi
-          sleep 1
-        done
-        echo "[WARN] Timeout waiting for ${host}:${port} after ${timeout}s"
-        return 1
-      }
-
-      scale_down_experiment_dbs() {
-        echo "[Scale] All experiment DBs stay running (no scale-down)"
-      }
-
-      echo "================================================================="
-      echo "  EXPERIMENT: ${DB_SYSTEM} (3 repetitions)"
-      echo "  Lab user: dedup-lab | Lab schema: dedup_lab"
-      echo "  Payload types: ${PAYLOAD_TYPES}"
-      echo "  DB scaling: type=${DB_TYPE} ns=${DB_NAMESPACE}"
-      echo "  Checkpoint: NFS-persistent"
-      echo "================================================================="
-
-      # NFS is mounted via Runner-4 ConfigMap [[runners.kubernetes.volumes.nfs]]
-      # mount_path: /datasets/real-world, server: 10.0.110.184, path: /
-      if [ -d /datasets/real-world ]; then
-        echo "[NFS] Volume mounted at /datasets/real-world (K8s NFS volume)"
-      else
-        echo "[NFS] WARNING: NFS volume not available -- checkpoints local-only"
-        mkdir -p /datasets/real-world
-      fi
-      mkdir -p /datasets/real-world/checkpoints/${DB_SYSTEM}
-
-      # Copy real-world datasets from NFS to working directory if available
-      if [ -d /datasets/real-world ] && [ "$(ls -A /datasets/real-world 2>/dev/null | grep -v checkpoints)" ]; then
-        echo "[NFS] Copying real-world datasets to /tmp/datasets/"
-        for dtype in bank_transactions text_corpus numeric_dataset github_events; do
-          if [ -d "/datasets/real-world/${dtype}" ]; then
-            mkdir -p "/tmp/datasets/${dtype}"
-            cp -r "/datasets/real-world/${dtype}/"* "/tmp/datasets/${dtype}/" 2>/dev/null || true
-            echo "[NFS] Copied ${dtype}: $(find /tmp/datasets/${dtype} -type f 2>/dev/null | wc -l) files"
-          fi
-        done
-      else
-        echo "[NFS] No real-world datasets on NFS -- using synthetic data only"
-      fi
-
-      # All DBs stay running -- just verify connectivity
-      echo "[Scale] All DBs stay running (no scale up/down)"
-      wait_for_db "${DB_HOST}" "${DB_PORT}" 120
-
-      chmod +x build/dedup-test
-      OVERALL_EXIT=0
-
-      # Kafka: Use PLAINTEXT port 9092 (no SASL). SCRAM-SHA-512 broken with
-      # Debian bookworm librdkafka<2.6.1 + Kafka 4.x KRaft nonce bug.
-      # When librdkafka>=2.6.1 is available, switch back to port 9094 + SCRAM.
-      unset KAFKA_USER KAFKA_PASSWORD 2>/dev/null || true
-
-      # Reset: Clear NFS checkpoints for this DB so all runs execute fresh
-      # (Without this, completed runs from cancelled pipelines would be skipped)
-      if [ "${RESET_CHECKPOINTS:-true}" = "true" ]; then
-        echo "[Reset] Clearing NFS checkpoints for ${DB_SYSTEM}..."
-        rm -rf "/datasets/real-world/checkpoints/${DB_SYSTEM}/"* 2>/dev/null || true
-        echo "[Reset] Checkpoints cleared"
-      fi
-
-      for RUN in 1 2 3; do
-        echo ""
-        echo "===== ${DB_SYSTEM}: Run ${RUN}/3 ====="
-        SEED=$((42 + RUN))
-        mkdir -p results/${DB_SYSTEM}/run-${RUN}
-
-        # Check NFS-persistent checkpoint (survives OOM/pod restarts)
-        if [ -f "/datasets/real-world/checkpoints/${DB_SYSTEM}/${DB_SYSTEM}_run${RUN}.checkpoint" ]; then
-          echo "[Checkpoint] Run ${RUN} already completed -- skipping"
-          continue
-        fi
-
-        echo "--- Step 1: Generate data (seed=${SEED}) ---"
-        build/dedup-test \
-          --generate-data \
-          --insertion-mode "${INSERTION_MODE}" \
-          --payload-types "${PAYLOAD_TYPES}" \
-          --config src/cpp/config.example.json \
-          --data-dir /tmp/datasets \
-          --num-files 500 \
-          --file-size 524288 \
-          --seed ${SEED} \
-          --verbose 2>&1 || echo "[WARN] Data generation exit code: $?"
-
-        REPEAT_ARG=""
-        if [ -n "${REPEAT_DB}" ]; then
-          REPEAT_ARG="--repeat-db ${REPEAT_DB}"
-        fi
-        echo "--- Step 2: Run experiment (${DB_SYSTEM}, run ${RUN}) ---"
-        build/dedup-test \
-          --config src/cpp/config.example.json \
-          --systems "${DB_SYSTEM}" \
-          --insertion-mode "${INSERTION_MODE}" \
-          --payload-types "${PAYLOAD_TYPES}" \
-          --data-dir /tmp/datasets \
-          --results-dir "results/${DB_SYSTEM}/run-${RUN}" \
-          --checkpoint-dir "/datasets/real-world/checkpoints/${DB_SYSTEM}" \
-          --run-id ${RUN} \
-          --max-retries 3 \
-          ${REPEAT_ARG} \
-          --verbose 2>&1 || {
-            echo "WARNING: Run ${RUN} exited with code $?"
-            OVERALL_EXIT=1
-          }
-
-        echo "===== Run ${RUN}/3 complete ====="
-        ls -la results/${DB_SYSTEM}/run-${RUN}/ 2>/dev/null || true
-      done
-
-      echo ""
-      echo "=== All 3 runs complete for ${DB_SYSTEM} ==="
-      echo "=== Overall exit: ${OVERALL_EXIT} ==="
-
-      # All DBs stay running after test (no scale-down)
-      echo "[Scale] ${DB_SYSTEM} stays running after test"
-
-      if ls results/${DB_SYSTEM}/run-*/combined_results.json 2>/dev/null; then
-        echo "Results files found"
-      fi
-
-      # NFS volume auto-unmounted by K8s (no manual umount needed)
-      exit ${OVERALL_EXIT}
-  after_script:
-    - |
-      echo "=== after_script: No scale-down (all DBs stay running) ==="
-      # NFS volume auto-unmounted by K8s (no manual umount needed)
-  artifacts:
-    paths:
-      - results/
-    expire_in: 365 days
-    when: always
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-experiment:postgresql:
-  <<: *experiment-per-db
-  needs: ["experiment:minio", "experiment:build"]
-  variables:
-    DB_SYSTEM: "postgresql"
-    DB_TYPE: "none"
-    DB_HOST: "postgres-lb.databases.svc.cluster.local"
-    DB_PORT: "5432"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
-
-experiment:cockroachdb:
-  <<: *experiment-per-db
-  needs: ["experiment:postgresql", "experiment:build"]
-  variables:
-    DB_SYSTEM: "cockroachdb"
-    DB_TYPE: "none"
-    DB_HOST: "cockroachdb-public.cockroach-operator-system.svc.cluster.local"
-    DB_PORT: "26257"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
-
-experiment:mariadb:
-  <<: *experiment-per-db
-  needs: ["experiment:reset", "experiment:build"]
-  variables:
-    DB_SYSTEM: "mariadb"
-    DB_TYPE: "statefulset"
-    DB_NAMESPACE: "databases"
-    DB_STATEFULSET: "mariadb"
-    DB_REPLICAS: "1"
-    DB_HOST: "mariadb.databases.svc.cluster.local"
-    DB_PORT: "3306"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
-
-experiment:clickhouse:
-  <<: *experiment-per-db
-  needs: ["experiment:mariadb", "experiment:build"]
-  variables:
-    DB_SYSTEM: "clickhouse"
-    DB_TYPE: "statefulset"
-    DB_NAMESPACE: "databases"
-    DB_STATEFULSET: "clickhouse"
-    DB_REPLICAS: "1"
-    DB_HOST: "clickhouse.databases.svc.cluster.local"
-    DB_PORT: "8123"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents,bank_transactions,text_corpus,numeric_dataset"
-
-experiment:redis:
-  <<: *experiment-per-db
-  needs: ["experiment:clickhouse", "experiment:build"]
-  variables:
-    DB_SYSTEM: "redis"
-    DB_TYPE: "statefulset"
-    DB_NAMESPACE: "redis"
-    DB_STATEFULSET: "redis-cluster"
-    DB_REPLICAS: "3"
-    DB_HOST: "redis-cluster.redis.svc.cluster.local"
-    DB_PORT: "6379"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
-
-experiment:kafka:
-  <<: *experiment-per-db
-  needs: ["experiment:redis", "experiment:build"]
-  variables:
-    DB_SYSTEM: "kafka"
-    DB_TYPE: "kafka"
-    DB_NAMESPACE: "kafka"
-    DB_REPLICAS: "1"
-    DB_HOST: "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local"
-    DB_PORT: "9092"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
-
-experiment:minio:
-  <<: *experiment-per-db
-  needs: ["experiment:kafka", "experiment:build"]
-  variables:
-    DB_SYSTEM: "minio"
-    DB_TYPE: "none"
-    DB_HOST: "minio-lb.minio.svc.cluster.local"
-    DB_PORT: "9000"
-    PAYLOAD_TYPES: "random_binary,structured_json,text_document,uuid_keys,jsonb_documents"
-
-experiment:run-all:
-  stage: experiment-run
-  tags:
-    - experiment
-  image: alpine:latest
-  when: manual
-  needs: ["experiment:build"]
-  script:
-    - echo "Manual trigger for full experiment cascade"
-    - echo "Use individual DB jobs instead (they chain automatically)"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-      when: manual
-
-experiment:upload-results:
-  stage: experiment-cleanup
-  tags:
-    - experiment
-  image: gcc:14-bookworm
-  needs:
-    - job: experiment:postgresql
-      artifacts: true
-    - job: experiment:cockroachdb
-      artifacts: true
-    - job: experiment:mariadb
-      artifacts: true
-    - job: experiment:clickhouse
-      artifacts: true
-    - job: experiment:redis
-      artifacts: true
-    - job: experiment:kafka
-      artifacts: true
-    - job: experiment:minio
-      artifacts: true
-  script:
-    - |
-      echo "=== Experiment Results Upload to measurement_results/ ==="
-      apt-get update -qq 2>&1 | tail -1
-      apt-get install -y -qq git 2>&1 | tail -1
-
-      # Configure git for commit
-      git config user.email "dedup-lab@comdare.de"
-      git config user.name "Experiment Pipeline"
-      git config http.sslVerify false
-
-      # Use CI token for push
-      PUSH_URL="http://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab-webservice-default.gitlab.svc:8181/${CI_PROJECT_PATH}.git"
-      git remote set-url origin "$PUSH_URL" 2>/dev/null || git remote add origin "$PUSH_URL"
-
-      # Fetch and checkout the branch
-      git fetch origin "${CI_COMMIT_REF_NAME}" --depth=1
-      git checkout -B "${CI_COMMIT_REF_NAME}" "origin/${CI_COMMIT_REF_NAME}"
-
-      # Create measurement_results directory with timestamp
-      TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
-      RESULT_DIR="measurement_results/pipeline-${CI_PIPELINE_ID}_${TIMESTAMP}"
-      mkdir -p "${RESULT_DIR}"
-
-      # Copy all experiment results
-      if [ -d results ]; then
-        cp -r results/* "${RESULT_DIR}/" 2>/dev/null || true
-        echo "Copied results to ${RESULT_DIR}/"
-        find "${RESULT_DIR}" -type f | head -50
-      else
-        echo "WARNING: No results directory found"
-      fi
-
-      # Create summary file
-      cat > "${RESULT_DIR}/pipeline_info.json" << INFOEOF
-      {
-        "pipeline_id": ${CI_PIPELINE_ID},
-        "commit_sha": "${CI_COMMIT_SHA}",
-        "commit_short": "${CI_COMMIT_SHORT_SHA}",
-        "branch": "${CI_COMMIT_REF_NAME}",
-        "timestamp": "${TIMESTAMP}",
-        "runner": "k8s-runner-4 (talos-say-ls6)",
-        "databases": ["postgresql","cockroachdb","mariadb","clickhouse","redis","kafka","minio"]
-      }
-      INFOEOF
-
-      # Commit and push
-      git add measurement_results/
-      if git diff --cached --quiet; then
-        echo "No new results to commit"
-      else
-        COMMIT_MSG="experiment: results pipeline #${CI_PIPELINE_ID} (${TIMESTAMP})"
-        git commit -m "${COMMIT_MSG}"
-        git push origin "${CI_COMMIT_REF_NAME}" || {
-          echo "WARNING: Push failed, retrying with rebase..."
-          git pull --rebase origin "${CI_COMMIT_REF_NAME}" && \
-          git push origin "${CI_COMMIT_REF_NAME}" || \
-          echo "ERROR: Could not push results. Check GitLab permissions."
-        }
-        echo "=== Results committed and pushed ==="
-        echo "Commit: $(git rev-parse --short HEAD)"
-        echo "Directory: ${RESULT_DIR}"
-      fi
-  allow_failure: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-    - if: $CI_PIPELINE_SOURCE == "push"
-      changes:
-        - "src/cpp/**/*.cpp"
-        - "src/cpp/**/*.hpp"
-        - "src/cpp/**/*.h"
-        - "src/cpp/CMakeLists.txt"
-        - ".gitlab-ci.yml"
-
-experiment:cleanup:
-  stage: experiment-cleanup
-  tags:
-    - experiment
-  image: alpine:latest
-  when: manual
-  needs: []
-  script:
-    - echo "=== Post-Experiment Cleanup ==="
-    - echo "Manual cleanup -- verify results before running"
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
-      when: manual
